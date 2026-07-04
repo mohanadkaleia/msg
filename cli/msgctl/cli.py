@@ -26,6 +26,7 @@ from msgctl import __version__, verify
 from msgctl.append import append_event
 from msgctl.errors import MsgctlError
 from msgctl.projection import PROJECTION_DB_NAME, open_db, project
+from msgctl.rebuild import rebuild_projection
 from msgctl.workspace import Workspace, init_workspace, now_rfc3339, resolve_or_create_stream
 
 
@@ -82,6 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     project_parser.add_argument("dir", help="workspace directory")
     project_parser.set_defaults(handler=cmd_project)
+
+    # ENG-59: append-only per the §6 cli.py collision protocol — a self-contained
+    # subparser block at the end of build_parser, dispatched via set_defaults.
+    rebuild_parser = subparsers.add_parser(
+        "rebuild",
+        help="drop the projection and replay the whole log",
+    )
+    rebuild_parser.add_argument("dir", help="workspace directory")
+    rebuild_parser.set_defaults(handler=cmd_rebuild)
 
     # ENG-60: `verify` — append-only block (ENG-58 adds `project` in parallel; keep both
     # additions surgical so the two tickets conflict on at most this one file, trivially).
@@ -165,6 +175,23 @@ def cmd_project(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
+                "applied": result.applied,
+                "skipped": result.skipped,
+                "streams": result.stream_heads,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def cmd_rebuild(args: argparse.Namespace) -> int:
+    ws = Workspace.open(args.dir)
+    result = rebuild_projection(ws)
+    print(
+        json.dumps(
+            {
+                "rebuilt": True,
                 "applied": result.applied,
                 "skipped": result.skipped,
                 "streams": result.stream_heads,
