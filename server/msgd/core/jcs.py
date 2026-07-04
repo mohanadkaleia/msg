@@ -36,7 +36,11 @@ Pinned semantics (locked by tests in ``server/tests/test_jcs.py``)
   with one deliberate exception: the current library coerces ``tuple`` to a JSON
   array rather than rejecting it (hash-safe; ``JSONValue`` still excludes ``tuple``,
   so mypy forbids it at every call site, and no test locks the coercion in — a future
-  vendored implementation remains free to reject tuples).
+  vendored implementation remains free to reject tuples). Container nesting deeper
+  than :data:`MAX_DEPTH` (128 levels) also raises :class:`JCSError` — an explicit
+  protocol cap under D1, not an implementation accident, so the accept/reject
+  boundary is deterministic across workers and across the Python/TypeScript
+  implementations (a stack-dependent boundary would vary by process and engine).
 * **Floats** serialize per RFC 8785 = ECMAScript ``Number::toString``.
 * **NaN / Infinity** are rejected → :class:`JCSError`.
 * **Integer range:** we adopt the RFC 8785 interop cap ``[-(2**53)+1, 2**53-1]``;
@@ -58,7 +62,17 @@ it arbitrary JSON.
 
 import rfc8785
 
-__all__ = ["JSONValue", "JCSError", "canonicalize"]
+__all__ = ["JSONValue", "JCSError", "MAX_DEPTH", "canonicalize"]
+
+#: Maximum container nesting depth accepted by :func:`canonicalize`. Protocol constant:
+#: part of the locked JCS input domain (D1) — the web client must enforce the same value,
+#: and ENG-56 freezes it alongside the hash vectors. Depth counts container levels only:
+#: a scalar is depth 0, ``{}``/``[]`` is 1, the §2.1 example body is 3 (``tuple`` counts
+#: as a container too, since the library coerces tuple→array). 128 gives ~40x headroom
+#: over any plausible real body, sits far below Python's ~997 stack-failure point (so
+#: the RecursionError backstop is never load-bearing), is trivially within every JS
+#: engine's limits for the TS mirror, and matches serde_json's well-known default.
+MAX_DEPTH: int = 128
 
 #: Any value expressible in JSON. Recursive alias (PEP 695): objects are string-keyed
 #: mappings, arrays are lists, plus the JSON scalars. ``str`` is a scalar here, never
@@ -75,28 +89,54 @@ class JCSError(ValueError):
     """
 
 
+def _check_depth(obj: object) -> None:
+    """Raise :class:`JCSError` if container nesting in ``obj`` exceeds ``MAX_DEPTH``.
+
+    Iterative worklist traversal, never recursive — the guard itself must be immune
+    to the stack-exhaustion failure it guards against. Only descends into ``dict``
+    values and ``list``/``tuple`` items; scalars (including ``str``) are not iterated.
+    """
+    stack: list[tuple[object, int]] = [(obj, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, dict):
+            if depth + 1 > MAX_DEPTH:
+                raise JCSError(f"nesting depth exceeds {MAX_DEPTH}")
+            stack.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, (list, tuple)):
+            if depth + 1 > MAX_DEPTH:
+                raise JCSError(f"nesting depth exceeds {MAX_DEPTH}")
+            stack.extend((child, depth + 1) for child in value)
+
+
 def canonicalize(obj: JSONValue) -> bytes:
     """Return the RFC 8785 (JCS) canonicalization of ``obj`` as UTF-8 bytes.
 
     ``obj`` must be a JSON value: ``dict`` (string keys) / ``list`` / ``str`` /
-    ``int`` / ``float`` / ``bool`` / ``None``. The production caller passes the event
-    ``body`` dict. Output is deterministic and suitable for hashing. (Caveat: the
-    current library coerces ``tuple`` to a JSON array instead of rejecting it; see
-    the module docstring — do not rely on either behavior.)
+    ``int`` / ``float`` / ``bool`` / ``None``, with container nesting no deeper than
+    ``MAX_DEPTH``. The production caller passes the event ``body`` dict. Output is
+    deterministic and suitable for hashing. (Caveat: the current library coerces
+    ``tuple`` to a JSON array instead of rejecting it; see the module docstring —
+    do not rely on either behavior.)
 
     Raises:
         JCSError: if ``obj`` (or a nested value) is out of the JSON domain — a
             non-finite float, an integer outside ``[-(2**53)+1, 2**53-1]``, an
-            unsupported type, a non-string object key, or a string key containing
-            a lone surrogate.
+            unsupported type, a non-string object key, a string key containing
+            a lone surrogate, or container nesting deeper than ``MAX_DEPTH``.
     """
+    _check_depth(obj)
     try:
         return rfc8785.dumps(obj)
-    except (rfc8785.CanonicalizationError, UnicodeEncodeError) as exc:
+    except (rfc8785.CanonicalizationError, UnicodeEncodeError, RecursionError) as exc:
         # UnicodeEncodeError: a lone-surrogate *object key* escapes the library's own
         # error type (it leaks from the UTF-16BE key sort), while surrogates in string
         # values are already CanonicalizationError. Client-reachable via json.loads on
         # upload, so it must surface as JCSError, not a 500. Deliberately NOT bare
-        # ValueError: both caught types already subclass it, and a blanket catch would
-        # swallow unrelated bugs in our own logic as a clean reject.
+        # ValueError: both already subclass it, and a blanket catch would swallow
+        # unrelated bugs in our own logic as a clean reject.
+        # RecursionError is defense-in-depth only: unreachable given the _check_depth
+        # pre-pass (the library needs depth ~997 to blow the stack, far above
+        # MAX_DEPTH=128), and safe to catch here because canonicalize is pure and the
+        # stack is fully unwound by the time the handler runs.
         raise JCSError(str(exc)) from exc

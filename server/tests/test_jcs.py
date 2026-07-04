@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from msgd.core.jcs import JCSError, canonicalize
+from msgd.core.jcs import MAX_DEPTH, JCSError, canonicalize
 
 # --------------------------------------------------------------------------- #
 # A. RFC 8785 appendix vectors (acceptance)
@@ -316,6 +316,52 @@ def test_rejections_do_not_leak_library_exception() -> None:
         canonicalize(2**53)
     assert type(exc_info.value).__module__ == "msgd.core.jcs"
     assert str(exc_info.value)  # message is non-empty / actionable
+
+
+# --- Nesting depth cap (MAX_DEPTH — protocol constant under D1) ------------- #
+
+
+def _nested_list(depth: int) -> Any:
+    obj: Any = 1
+    for _ in range(depth):
+        obj = [obj]
+    return obj
+
+
+def test_depth_at_cap_accepted() -> None:
+    # A list nested exactly MAX_DEPTH deep canonicalizes, byte-exact. (128 appears
+    # literally only here, in the expected-bytes literal.)
+    assert canonicalize(_nested_list(MAX_DEPTH)) == b"[" * 128 + b"1" + b"]" * 128
+
+
+def test_depth_over_cap_rejected_list_and_dict() -> None:
+    # One level past the cap raises JCSError, for both container kinds.
+    with pytest.raises(JCSError):
+        canonicalize(_nested_list(MAX_DEPTH + 1))
+    obj: Any = 1
+    for _ in range(MAX_DEPTH + 1):
+        obj = {"k": obj}
+    with pytest.raises(JCSError):
+        canonicalize(obj)
+
+
+def test_reviewer_repro_deep_json_rejected_cleanly() -> None:
+    # Security-review repro: ~4 KB of JSON (far under the 64 KB event cap) parses fine
+    # via the C scanner but used to blow the interpreter stack inside rfc8785.dumps at
+    # depth ~997 with RecursionError, which is NOT a ValueError and escaped the wrapper
+    # (unhandled 500 at the §3.2 upload path). pytest.raises(JCSError) inherently
+    # asserts no RecursionError escapes on the parse-then-canonicalize path.
+    deep = json.loads("[" * 2000 + "1" + "]" * 2000)
+    with pytest.raises(JCSError):
+        canonicalize(deep)
+
+
+def test_depth_cap_does_not_affect_real_bodies() -> None:
+    # Depth-counting sanity: the §2.1 example body is depth 3 (body -> payload ->
+    # file_ids/mentions), nowhere near MAX_DEPTH; the pre-pass changes nothing for
+    # real bodies and the frozen snapshot is untouched.
+    assert 3 < MAX_DEPTH
+    assert canonicalize(EXAMPLE_BODY) == EXAMPLE_BODY_CANONICAL
 
 
 # --------------------------------------------------------------------------- #
