@@ -16,6 +16,7 @@ __all__ = [
     "WorkspaceError",
     "CorruptLogError",
     "StreamError",
+    "UsageError",
 ]
 
 
@@ -44,3 +45,14 @@ class CorruptLogError(MsgctlError):
 
 class StreamError(MsgctlError):
     """A requested stream could not be resolved on a read-only operation."""
+
+
+class UsageError(MsgctlError):
+    """A usage / IO error (not a workspace, unreadable path) — exit code 2.
+
+    ``msgctl verify`` raises this when the target directory is not an initialized
+    workspace or its log tree cannot be read: an operator/CI mistake, distinct from a
+    successful run that *found* integrity problems (which returns exit 1 via the report).
+    """
+
+    exit_code: int = 2
