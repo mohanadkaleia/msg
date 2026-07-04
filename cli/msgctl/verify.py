@@ -486,6 +486,10 @@ def verify_workspace(root: Path | str, *, verbose: bool = False) -> VerifyReport
     (empty registry): all per-line hash/sequence/schema checks still run, but the
     registry/``workspace_id`` cross-checks are suppressed (unknown => noise).
 
+    A mid-walk ``OSError`` on a month file aborts the run with exit 2 (environmental, not
+    a finding): a partially-read stream cannot honestly be reported gapless. Revisit at M4
+    scale if long-running verifies want per-stream isolation.
+
     ``verbose`` collects unknown-type notes and enables per-stream OK lines in the human
     formatter.
     """
@@ -497,13 +501,25 @@ def verify_workspace(root: Path | str, *, verbose: bool = False) -> VerifyReport
     try:
         ws = Workspace.open(root)
     except WorkspaceError as exc:
-        # Not an initialized workspace: a usage error, not a finding (exit 2).
+        # Not an initialized workspace: a usage error, not a finding (exit 2). Must stay
+        # FIRST and separate from the malformed-manifest tuple below.
         raise UsageError(str(exc)) from exc
-    except CorruptLogError as exc:
-        # Malformed manifest / duplicate stream name: one failure, then best-effort mode.
+    except (CorruptLogError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        # Malformed manifest: one failure, then best-effort mode. The tuple covers every
+        # shape Workspace.open can actually raise on a valid-JSON-but-wrong manifest
+        # (missing workspace_id -> KeyError, non-dict "streams" -> AttributeError, non-dict
+        # stream entry -> TypeError) plus ValueError for malformed scalars. A bare
+        # `except Exception` is deliberately rejected: it would relabel genuine verify
+        # bugs as manifest_invalid findings and hide crashes CI must see.
         findings.append(
             Finding(
-                Severity.FAILURE, "manifest_invalid", None, None, None, "workspace.json", str(exc)
+                Severity.FAILURE,
+                "manifest_invalid",
+                None,
+                None,
+                None,
+                "workspace.json",
+                f"malformed manifest: {exc!r}",
             )
         )
         ws = None

@@ -8,9 +8,12 @@ report (fine-grained) and via ``cli.main`` (end-to-end exit codes / stdout).
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
+from conftest import run_cli
 from msgctl import verify
 from msgctl.cli import main
 from verify_helpers import (
@@ -138,7 +141,16 @@ def test_verify_coercion_tamper_is_caught(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------- sequence class
 
 
-def test_verify_deleted_line_is_gap(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("delete_index", "expected_missing"),
+    [
+        (1, "missing 2..2"),  # deleted middle line
+        (0, "missing 1..1"),  # deleted FIRST line — the chopped-head case (gap at start)
+    ],
+)
+def test_verify_deleted_line_is_gap(
+    tmp_path: Path, delete_index: int, expected_missing: str
+) -> None:
     root = tmp_path / "ws"
     init_ws(root)
     send(root, "general", "one")
@@ -147,15 +159,40 @@ def test_verify_deleted_line_is_gap(tmp_path: Path) -> None:
     send(root, "general", "four")
     path = month_file(stream_dirs(root)[0])
     lines = read_raw_lines(path)
-    del lines[1]  # remove seq 2
+    del lines[delete_index]
     write_lines(path, lines)
 
     report = verify.verify_workspace(root)
     # Exactly one gap — a single gap must resync, not cascade one finding per later line.
     gaps = [f for f in report.findings if f.cls == "gap"]
     assert len(gaps) == 1
-    assert "2" in gaps[0].detail
+    assert expected_missing in gaps[0].detail
     assert _classes(report) == ["gap"]
+    assert report.exit_code == 1
+
+
+def test_verify_out_of_order(tmp_path: Path) -> None:
+    """Ruled semantics: a late-arriving sequence is reported as BOTH the hole it left
+    (``gap``) and the out-of-place line (``out_of_order``) — two true statements about
+    the disk, not double-counting."""
+    root = tmp_path / "ws"
+    init_ws(root)
+    send(root, "general", "one")
+    b = send(root, "general", "two")
+    send(root, "general", "three")
+    path = month_file(stream_dirs(root)[0])
+    lines = read_raw_lines(path)
+    # The same three UNMODIFIED real lines, reordered on disk: 1, 3, 2. Lines untouched
+    # => hashes stay faithful, so the only findings are sequence findings.
+    write_lines(path, [lines[0], lines[2], lines[1]])
+
+    report = verify.verify_workspace(root)
+    assert sorted(_classes(report)) == ["gap", "out_of_order"]
+    gap = next(f for f in report.findings if f.cls == "gap")
+    assert "missing 2..2" in gap.detail
+    ooo = next(f for f in report.findings if f.cls == "out_of_order")
+    assert ooo.sequence == 2
+    assert ooo.event_id == b["body"]["event_id"]
     assert report.exit_code == 1
 
 
@@ -282,6 +319,37 @@ def test_verify_unknown_type_wrong_seq_is_gap(tmp_path: Path) -> None:
     assert "gap" in _classes(report)
 
 
+def test_verify_unknown_type_tampered_hash_is_caught(tmp_path: Path) -> None:
+    """Unknown types must never become a hashing blind spot: Pass A hashes every line
+    BEFORE the D9 skip in Pass C, so a tampered unknown-type line still fails."""
+    root = tmp_path / "ws"
+    init_ws(root)
+    send(root, "general", "real")
+    sdir = stream_dirs(root)[0]
+    path = month_file(sdir)
+    ws = json.loads((root / "workspace.json").read_text())
+    tampered = make_envelope_line(
+        workspace_id=ws["workspace_id"],
+        stream_id=sdir.name,
+        server_sequence=2,  # correct next seq — only the hash is wrong
+        type="widget.exploded",
+        payload={"boom": True},
+        event_hash="sha256:" + "0" * 64,  # syntactically valid, wrong digest
+    )
+    write_lines(path, read_raw_lines(path) + [tampered])
+
+    report = verify.verify_workspace(root)
+    assert _classes(report) == ["hash_mismatch"]
+    finding = report.findings[0]
+    assert finding.stream_id == sdir.name
+    assert finding.sequence == 2
+    assert finding.event_id == json.loads(tampered)["body"]["event_id"]
+    # The D9 skip still applied: payload validation stayed off, only the hash fired.
+    assert "schema_invalid" not in _classes(report)
+    assert "unparseable" not in _classes(report)
+    assert report.exit_code == 1
+
+
 def test_verify_schema_invalid_known_type(tmp_path: Path) -> None:
     root = tmp_path / "ws"
     init_ws(root)
@@ -385,6 +453,49 @@ def test_verify_manifest_invalid_best_effort(tmp_path: Path) -> None:
     classes = _classes(report)
     assert "manifest_invalid" in classes
     # Best-effort: registry/workspace_id checks suppressed, but per-line checks still ran.
+    assert "unregistered_stream_dir" not in classes
+    assert "workspace_id_mismatch" not in classes
+    assert report.exit_code == 1
+
+
+def _drop_workspace_id(manifest: dict[str, Any]) -> dict[str, Any]:
+    del manifest["workspace_id"]  # KeyError path inside Workspace.open
+    return manifest
+
+
+def _streams_as_list(manifest: dict[str, Any]) -> dict[str, Any]:
+    manifest["streams"] = []  # AttributeError path (.items() on a list)
+    return manifest
+
+
+@pytest.mark.parametrize("mangle", [_drop_workspace_id, _streams_as_list])
+def test_verify_manifest_malformed_shapes_best_effort(
+    tmp_path: Path, mangle: Callable[[dict[str, Any]], dict[str, Any]]
+) -> None:
+    """Valid-JSON-but-wrong manifests must yield manifest_invalid + best-effort walk,
+    never an uncaught traceback (review round 1, finding 1)."""
+    root = tmp_path / "ws"
+    init_ws(root)
+    send(root, "general", "real")
+    manifest_path = root / "workspace.json"
+    manifest = mangle(json.loads(manifest_path.read_text()))
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    # Subprocess: prove no traceback escapes (an uncaught KeyError would sail past
+    # main's `except MsgctlError`).
+    proc = run_cli("verify", str(root), "--json")
+    assert proc.returncode == 1
+    assert "Traceback" not in proc.stderr
+    payload = json.loads(proc.stdout)  # well-formed JSON object
+    assert payload["ok"] is False
+
+    report = verify.verify_workspace(root)
+    classes = _classes(report)
+    assert classes.count("manifest_invalid") == 1
+    # The stream walk still ran: the one real event was visited and its hash is clean.
+    assert report.total_events == 1
+    assert "hash_mismatch" not in classes
+    # Best-effort mode suppresses the registry/workspace_id cross-checks (no noise).
     assert "unregistered_stream_dir" not in classes
     assert "workspace_id_mismatch" not in classes
     assert report.exit_code == 1
