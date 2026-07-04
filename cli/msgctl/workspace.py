@@ -51,6 +51,29 @@ STREAM_LOCK: Final = ".lock"
 FORMAT_VERSION: Final = 1
 
 
+def _fsync_dir(path: Path) -> None:
+    """fsync a directory so a just-created/renamed dirent survives power loss.
+
+    ``os.fsync`` on a file fd makes the file's *data* durable, but a newly
+    created file's directory entry is not durable until the parent directory is
+    fsync'd — without this, power loss can vanish a whole new month file
+    including an already-acknowledged ``server_sequence`` (a lost *acked* event,
+    not a torn one). Called after new-file/new-dir creation and after the
+    manifest ``os.replace``.
+
+    Platform nuance (explicitly waived for M0, alongside the flock/Windows
+    note): on macOS ``fsync`` does not force a media flush — only ``F_FULLFSYNC``
+    does, at large latency cost. Plain ``os.fsync(dirfd)`` is the correct
+    baseline; macOS is dev-only, Linux (the §11 deployment target) has honest
+    ``fsync``.
+    """
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def now_rfc3339() -> str:
     """Current UTC time as an RFC 3339 ``…Z`` string, millisecond precision.
 
@@ -196,8 +219,10 @@ class Workspace:
         """Atomically (over)write ``workspace.json``.
 
         Temp file in ``root`` → ``flush`` + :func:`os.fsync` → :func:`os.replace`
-        (atomic rename on POSIX), so a crashed write leaves the prior manifest
-        intact. The caller MUST hold the workspace lock (Ruling 4).
+        (atomic rename on POSIX) → fsync of ``root`` (the rename is atomic
+        w.r.t. readers but not *durable* until the containing directory is
+        fsync'd), so a crashed write leaves the prior manifest intact. The
+        caller MUST hold the workspace lock (Ruling 4).
         """
         payload = json.dumps(self.to_manifest(), ensure_ascii=False, indent=2) + "\n"
         tmp_path = self.root / f".{MANIFEST_NAME}.tmp.{os.getpid()}"
@@ -208,6 +233,7 @@ class Workspace:
         finally:
             os.close(fd)
         os.replace(tmp_path, self.manifest_path)
+        _fsync_dir(self.root)
 
 
 def init_workspace(root: Path | str, *, name: str | None = None) -> Workspace:
@@ -226,6 +252,7 @@ def init_workspace(root: Path | str, *, name: str | None = None) -> Workspace:
         raise WorkspaceError(f"workspace already initialized: {root}")
 
     (root / STREAMS_DIR).mkdir(parents=True, exist_ok=True)
+    _fsync_dir(root)  # make the fresh streams/ dirent durable
     ws = Workspace(
         root=root,
         workspace_id=ids.new_workspace_id(),
@@ -273,6 +300,7 @@ def resolve_or_create_stream(ws: Workspace, name: str, *, kind: str = "channel")
                 created_at=now_rfc3339(),
             )
             fresh.stream_dir(stream_id).mkdir(parents=True, exist_ok=True)
+            _fsync_dir(fresh.streams_dir)  # make the new stream dirent durable
             fresh.write_manifest()
         # Reflect the freshly loaded registry back into the caller's handle.
         ws.streams = fresh.streams

@@ -32,9 +32,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from msgd.core.envelope import Envelope
+from pydantic import ValidationError
 
 from msgctl.errors import CorruptLogError
-from msgctl.workspace import STREAM_LOCK, Workspace, now_rfc3339
+from msgctl.workspace import STREAM_LOCK, Workspace, _fsync_dir, now_rfc3339
 
 __all__ = [
     "ScanResult",
@@ -132,7 +133,10 @@ def _scan_file(path: Path, last_seq: int, event_ids: dict[str, str]) -> int:
             parsed = json.loads(line)
         except json.JSONDecodeError as exc:
             raise CorruptLogError(f"corrupt terminated line in {path}: {exc}") from exc
-        envelope = Envelope.model_validate(parsed)
+        try:
+            envelope = Envelope.model_validate(parsed)
+        except ValidationError as exc:
+            raise CorruptLogError(f"corrupt terminated line in {path}: {exc}") from exc
         if envelope.server is None:
             raise CorruptLogError(f"stored line missing server metadata in {path}")
         seq = envelope.server.server_sequence
@@ -173,10 +177,16 @@ def append_event(
 
     The line is written including its trailing ``\\n`` in one ``write``, then
     flushed and ``fsync``ed **before** returning — so the event is durable before
-    it is acknowledged and a torn write can never be accepted.
+    it is acknowledged and a torn write can never be accepted. When the append
+    *creates* the month file (or the stream dir), the parent directory is
+    fsync'd too, so the new dirent — and with it the acked event — survives
+    power loss (see :func:`msgctl.workspace._fsync_dir`).
     """
     stream_dir = ws.stream_dir(stream_id)
+    created_stream_dir = not stream_dir.exists()
     stream_dir.mkdir(parents=True, exist_ok=True)
+    if created_stream_dir:
+        _fsync_dir(ws.streams_dir)
 
     with flock_exclusive(stream_dir / STREAM_LOCK):
         scan = _scan_stream(stream_dir)
@@ -194,8 +204,13 @@ def append_event(
             separators=(",", ":"),
         )
         month_path = _month_file(stream_dir, recv_at)
+        is_new_file = not month_path.exists()
         with open(month_path, "ab") as fh:
             fh.write((record + "\n").encode("utf-8"))
             fh.flush()
             os.fsync(fh.fileno())
+        if is_new_file:
+            # A new month file's dirent is only durable once the stream dir is
+            # fsync'd; appends to an existing file are covered by the data fsync.
+            _fsync_dir(stream_dir)
         return AppendResult(line=record, appended=True)

@@ -18,7 +18,7 @@ import json
 import sys
 
 import msgd.core  # noqa: F401  -- proves the msgd.core dependency edge at import time
-from msgd.core.envelope import Envelope, ServerMetadata
+from msgd.core.envelope import Envelope, EventTooLargeError, ServerMetadata, check_event_size
 from msgd.core.hashing import hash_event
 from msgd.core.payloads import build_message_created_body
 
@@ -101,7 +101,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             event_id=args.event_id,
         )
         event_hash = hash_event(body.model_dump(mode="json"))
-        return Envelope(
+        envelope = Envelope(
             body=body,
             event_hash=event_hash,
             signature=None,
@@ -111,8 +111,17 @@ def cmd_send(args: argparse.Namespace) -> int:
                 payload_redacted=False,
             ),
         )
+        # Enforce the §2.1 64 KB hard cap the real sequencer applies at upload —
+        # the M0 stand-in must never ack an event the M1 server would reject.
+        # Raising here unwinds out of the locked section before any write, so a
+        # rejection consumes no sequence and appends nothing.
+        check_event_size(envelope)
+        return envelope
 
-    result = append_event(ws, stream_id, build_envelope=build_envelope)
+    try:
+        result = append_event(ws, stream_id, build_envelope=build_envelope)
+    except EventTooLargeError as exc:
+        raise MsgctlError(str(exc)) from exc
     print(result.line)
     if not result.appended:
         event_id = json.loads(result.line)["body"]["event_id"]

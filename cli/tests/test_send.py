@@ -63,3 +63,28 @@ def test_send_format_plain(tmp_path: Path) -> None:
 def test_send_on_uninitialized_workspace_errors(tmp_path: Path) -> None:
     root = tmp_path / "nope"
     assert main(["send", str(root), "--stream", "general", "--text", "x"]) == 1
+
+
+def test_oversized_send_rejected_without_burning_a_sequence(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The §2.1 64 KB cap is enforced locally; a rejection consumes no sequence."""
+    root = tmp_path / "ws"
+    assert main(["init", str(root)]) == 0
+    capsys.readouterr()
+
+    # ~66,000 chars > MAX_EVENT_SIZE_BYTES (65,536) on the {body, event_hash} wire form.
+    assert main(["send", str(root), "--stream", "general", "--text", "x" * 66_000]) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("msgctl:")
+    assert "exceeds" in captured.err  # mentions the cap
+
+    # Nothing appended: no month file was ever written.
+    stream_dir = only_stream_dir(root)
+    assert read_lines(stream_dir) == []
+
+    # A following normal send gets sequence 1 — the rejection burned no sequence.
+    assert main(["send", str(root), "--stream", "general", "--text", "small"]) == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["server"]["server_sequence"] == 1
+    assert_every_line_verifies(stream_dir)

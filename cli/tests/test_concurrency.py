@@ -14,9 +14,18 @@ from conftest import assert_every_line_verifies, read_lines, run_cli
 pytest.importorskip("fcntl")
 
 _WORKER = """
-import sys
+import sys, time
+from pathlib import Path
 from msgctl.cli import main
-root, label, k = sys.argv[1], sys.argv[2], int(sys.argv[3])
+root, label, k, go = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+# Start gate (review F5): spin until the go-file appears so both workers hit
+# their FIRST send -- the maximal-contention scan->write window -- together,
+# making the lock-guard collision deterministic rather than probabilistic.
+deadline = time.monotonic() + 10.0
+while not Path(go).exists():
+    if time.monotonic() > deadline:
+        sys.exit(3)  # gate never opened; fail loudly instead of hanging CI
+    time.sleep(0.001)
 rc = 0
 for i in range(k):
     rc |= main(["send", root, "--stream", "general", "--text", f"{label}-{i}"])
@@ -29,15 +38,17 @@ def test_two_processes_do_not_fork_the_sequence(tmp_path: Path) -> None:
     assert run_cli("init", str(root)).returncode == 0
 
     k = 15
+    go_file = tmp_path / "go"
     procs = [
         subprocess.Popen(
-            [sys.executable, "-c", _WORKER, str(root), label, str(k)],
+            [sys.executable, "-c", _WORKER, str(root), label, str(k), str(go_file)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
         )
         for label in ("A", "B")
     ]
+    go_file.touch()  # both workers spin on the gate: release them together
     for proc in procs:
         _, err = proc.communicate()
         assert proc.returncode == 0, err
