@@ -1,0 +1,361 @@
+{
+  "_meta": {
+    "purpose": "Frozen cross-language JCS+hash vectors for msg (M0 exit criterion).",
+    "spec": "event_hash = 'sha256:' + hex(sha256(RFC8785-JCS(body)))",
+    "input": "input_json is raw JSON SOURCE TEXT. Consumers MUST json-parse it with their standard parser, then hash the parsed value \u2014 this mirrors the \u00a73.2 wire path (bytes -> parse -> hash) and is the ONLY representation that can carry the must-reject inputs (NaN, lone surrogates, over-depth, over-cap integers).",
+    "encoding": "base64",
+    "hash_format": "sha256:<lowercase-hex>",
+    "max_depth": 128,
+    "int_interop_cap": [
+      -9007199254740991,
+      9007199254740991
+    ],
+    "version": 1,
+    "frozen": true,
+    "note_ts_client": "JSON.parse loses precision >= 2^53 and rejects NaN/Infinity at PARSE time; error cases are stage-agnostic ('must not produce a hash') \u2014 the 'stage' field is a hint, not a hard assertion, because parsers differ."
+  },
+  "cases": [
+    {
+      "id": "tdd-2.1-example",
+      "desc": "The exact TDD \u00a72.1 message.created body (ULIDs filled). Anchor vector.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"message.created\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"text\":\"Hello everyone\",\"format\":\"markdown\",\"thread_root_id\":null,\"file_ids\":[],\"mentions\":[\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PG\"]}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZmlsZV9pZHMiOltdLCJmb3JtYXQiOiJtYXJrZG93biIsIm1lbnRpb25zIjpbInVfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEciXSwibWVzc2FnZV9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEYiLCJ0ZXh0IjoiSGVsbG8gZXZlcnlvbmUiLCJ0aHJlYWRfcm9vdF9pZCI6bnVsbH0sInN0cmVhbV9pZCI6InNfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEMiLCJ0eXBlIjoibWVzc2FnZS5jcmVhdGVkIiwidHlwZV92ZXJzaW9uIjoxLCJ3b3Jrc3BhY2VfaWQiOiJ3XzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBCIn0=",
+      "hash": "sha256:49d43880190e9b17c2b4eb5cd4fbe39c972ba0d214b3f751d6033cb0fd707e51"
+    },
+    {
+      "id": "empty-object",
+      "desc": "Empty object.",
+      "input_json": "{}",
+      "canonical_b64": "e30=",
+      "hash": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "empty-array",
+      "desc": "Empty array.",
+      "input_json": "[]",
+      "canonical_b64": "W10=",
+      "hash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "id": "scalar-null",
+      "desc": "Bare null scalar.",
+      "input_json": "null",
+      "canonical_b64": "bnVsbA==",
+      "hash": "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "scalar-true",
+      "desc": "Bare true scalar.",
+      "input_json": "true",
+      "canonical_b64": "dHJ1ZQ==",
+      "hash": "sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+    },
+    {
+      "id": "scalar-false",
+      "desc": "Bare false scalar.",
+      "input_json": "false",
+      "canonical_b64": "ZmFsc2U=",
+      "hash": "sha256:fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa"
+    },
+    {
+      "id": "mixed-array",
+      "desc": "Heterogeneous array; element order preserved (only object keys reorder).",
+      "input_json": "[3,\"a\",null,true,1,{},[]]",
+      "canonical_b64": "WzMsImEiLG51bGwsdHJ1ZSwxLHt9LFtdXQ==",
+      "hash": "sha256:2d10ed0c2eba889b551c1de493e3459eff5345bb4848ce63f5b37c1f2e498b09"
+    },
+    {
+      "id": "nested-under-cap",
+      "desc": "Moderate nesting well under MAX_DEPTH; keys reorder, arrays do not.",
+      "input_json": "{\"a\":{},\"z\":[1,{\"y\":[2,{\"x\":[3,[]]}]}]}",
+      "canonical_b64": "eyJhIjp7fSwieiI6WzEseyJ5IjpbMix7IngiOlszLFtdXX1dfV19",
+      "hash": "sha256:7da714c11781fdd17c9dff3844dd3106deeecdda94241f3e75409d749f918f1d"
+    },
+    {
+      "id": "keys-unsorted",
+      "desc": "Object keys emitted in sorted order.",
+      "input_json": "{\"b\":1,\"a\":2,\"c\":3}",
+      "canonical_b64": "eyJhIjoyLCJiIjoxLCJjIjozfQ==",
+      "hash": "sha256:e145110e712e3ed0a6b233551b27a90aa39b4c93ed67e111ba2002d16e5ed1fa"
+    },
+    {
+      "id": "keys-case-sensitive",
+      "desc": "Uppercase ASCII keys sort before lowercase (byte/code-unit order).",
+      "input_json": "{\"b\":1,\"B\":2,\"a\":3,\"A\":4}",
+      "canonical_b64": "eyJBIjo0LCJCIjoyLCJhIjozLCJiIjoxfQ==",
+      "hash": "sha256:07ef08f01b496e1c02f78ac6ff33df9938cec88da07c3c15b317776325597d79"
+    },
+    {
+      "id": "keys-utf16-astral",
+      "desc": "Keys sorted by UTF-16 code units: U+1F600 (lead surrogate 0xD83D) sorts BEFORE U+FFFF. Naive code-point sort and json.dumps(sort_keys=True) get this wrong.",
+      "input_json": "{\"\\uffff\":1,\"\\ud83d\\ude00\":2}",
+      "canonical_b64": "eyLwn5iAIjoyLCLvv78iOjF9",
+      "hash": "sha256:48c5d098713870a7b88be7fc0ffc0a79e912d20f80ea8a4a5604426f49add103"
+    },
+    {
+      "id": "unicode-bmp",
+      "desc": "BMP accents and CJK, emitted as raw UTF-8.",
+      "input_json": "\"caf\\u00e9 \\u00fcn\\u00efc\\u00f6 \\u4e16\\u754c\"",
+      "canonical_b64": "ImNhZsOpIMO8bsOvY8O2IOS4lueVjCI=",
+      "hash": "sha256:623278994cc4bed51793d93628d5a475595f0304108af7543816f7ed45eca969"
+    },
+    {
+      "id": "unicode-astral",
+      "desc": "Astral chars U+1F600 (emoji) and U+1D11E (G-clef) as raw UTF-8, not escaped.",
+      "input_json": "{\"clef\":\"\\ud834\\udd1e\",\"emoji\":\"\\ud83d\\ude00\"}",
+      "canonical_b64": "eyJjbGVmIjoi8J2EniIsImVtb2ppIjoi8J+YgCJ9",
+      "hash": "sha256:3407ddba751fb2969d2194c599316604f64241c5ba1d571fcd1c44c04a021aa1"
+    },
+    {
+      "id": "unicode-nfc",
+      "desc": "Composed e-acute (NFC, U+00E9). Distinct hash from unicode-nfd; JCS never normalizes.",
+      "input_json": "\"\\u00e9\"",
+      "canonical_b64": "IsOpIg==",
+      "hash": "sha256:f2886017e9c7abacf804b54d64787dce2b611c9544ba21f3affdd126a6e50086"
+    },
+    {
+      "id": "unicode-nfd",
+      "desc": "Decomposed e-acute (NFD, U+0065 U+0301). Distinct hash from unicode-nfc.",
+      "input_json": "\"e\\u0301\"",
+      "canonical_b64": "ImXMgSI=",
+      "hash": "sha256:3d68ce21f2899a475713cdbe7562ba9bdb6b1dfde8af1f221bdff4a0935b53b2"
+    },
+    {
+      "id": "escapes-short",
+      "desc": "JCS two-char escapes for \" \\ \\n \\t \\b \\f \\r.",
+      "input_json": "\"\\\"\\\\\\n\\t\\b\\f\\r\"",
+      "canonical_b64": "IlwiXFxcblx0XGJcZlxyIg==",
+      "hash": "sha256:bd043f1e11887235bf25154296650b3c4e5258a8e6858e212611f89bf6b329cb"
+    },
+    {
+      "id": "escapes-control",
+      "desc": "Control chars below 0x20 without a short escape use lowercase \\u00XX.",
+      "input_json": "\"\\u0000\\u0001\\u001f\"",
+      "canonical_b64": "Ilx1MDAwMFx1MDAwMVx1MDAxZiI=",
+      "hash": "sha256:842096a6d3fcd0968fe35809ea5810d33f7072b93743fc0f7b4ff484ae727d20"
+    },
+    {
+      "id": "raw-0x7f",
+      "desc": "Canonical bytes contain a literal 0x7f (DEL is NOT escaped by JCS) \u2014 the concrete reason canonical_b64 cannot be a JSON string.",
+      "input_json": "{\"a\":1,\"x\":\"\\u007f\"}",
+      "canonical_b64": "eyJhIjoxLCJ4IjoifyJ9",
+      "hash": "sha256:fbd5dfa9e4c4001923ae68e84bf703b8aa185e24e62262e72ed3afa76ad7ac71"
+    },
+    {
+      "id": "num-int-zero",
+      "desc": "Integer 0.",
+      "input_json": "0",
+      "canonical_b64": "MA==",
+      "hash": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "id": "num-neg-zero-int",
+      "desc": "Source -0 (integer) canonicalizes to 0.",
+      "input_json": "-0",
+      "canonical_b64": "MA==",
+      "hash": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "id": "num-neg-zero-float",
+      "desc": "Source -0.0 (float) canonicalizes to 0.",
+      "input_json": "-0.0",
+      "canonical_b64": "MA==",
+      "hash": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "id": "num-int-one",
+      "desc": "Integer 1.",
+      "input_json": "1",
+      "canonical_b64": "MQ==",
+      "hash": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "id": "num-neg-one",
+      "desc": "Integer -1.",
+      "input_json": "-1",
+      "canonical_b64": "LTE=",
+      "hash": "sha256:1bad6b8cf97131fceab8543e81f7757195fbb1d36b376ee994ad1cf17699c464"
+    },
+    {
+      "id": "num-float-two",
+      "desc": "Source 2.0 (float) canonicalizes to 2.",
+      "input_json": "2.0",
+      "canonical_b64": "Mg==",
+      "hash": "sha256:d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+    },
+    {
+      "id": "num-cap-max",
+      "desc": "2^53-1, the largest accepted integer (interop cap boundary).",
+      "input_json": "9007199254740991",
+      "canonical_b64": "OTAwNzE5OTI1NDc0MDk5MQ==",
+      "hash": "sha256:f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+    },
+    {
+      "id": "num-frac",
+      "desc": "0.1.",
+      "input_json": "0.1",
+      "canonical_b64": "MC4x",
+      "hash": "sha256:14be4b45f18e0d8c67b4f719b5144eee88497e413709d11d85b096d8e2346310"
+    },
+    {
+      "id": "num-exp-large",
+      "desc": "1e30 canonicalizes to 1e+30.",
+      "input_json": "1e30",
+      "canonical_b64": "MWUrMzA=",
+      "hash": "sha256:7412d94bdf30adfa71080e057185e1a8de86e2e99a8350b011df8ac41ed5a6e3"
+    },
+    {
+      "id": "num-exp-small",
+      "desc": "1e-7.",
+      "input_json": "1e-7",
+      "canonical_b64": "MWUtNw==",
+      "hash": "sha256:5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+    },
+    {
+      "id": "num-9999e22",
+      "desc": "9.999e22 canonicalizes to 9.999e+22.",
+      "input_json": "9.999e22",
+      "canonical_b64": "OS45OTllKzIy",
+      "hash": "sha256:48374e8ba10999f6ca3dc4ca3c131980d1b54ef4451426935595bf654da98d4d"
+    },
+    {
+      "id": "num-1e21",
+      "desc": "1e21 canonicalizes to 1e+21.",
+      "input_json": "1e21",
+      "canonical_b64": "MWUrMjE=",
+      "hash": "sha256:241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c"
+    },
+    {
+      "id": "num-subnormal",
+      "desc": "5e-324, smallest positive double (subnormal).",
+      "input_json": "5e-324",
+      "canonical_b64": "NWUtMzI0",
+      "hash": "sha256:c46e7ca1be4c8734f373a56530787288fa2058d73d07855e9247e949f811a42a"
+    },
+    {
+      "id": "body-optional-empty",
+      "desc": "message.created body with null thread_root_id and empty file_ids/mentions.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"message.created\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"text\":\"hi\",\"format\":\"markdown\",\"thread_root_id\":null,\"file_ids\":[],\"mentions\":[]}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZmlsZV9pZHMiOltdLCJmb3JtYXQiOiJtYXJrZG93biIsIm1lbnRpb25zIjpbXSwibWVzc2FnZV9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEYiLCJ0ZXh0IjoiaGkiLCJ0aHJlYWRfcm9vdF9pZCI6bnVsbH0sInN0cmVhbV9pZCI6InNfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEMiLCJ0eXBlIjoibWVzc2FnZS5jcmVhdGVkIiwidHlwZV92ZXJzaW9uIjoxLCJ3b3Jrc3BhY2VfaWQiOiJ3XzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBCIn0=",
+      "hash": "sha256:6e30d7af3721c68bbdf591523f3e4b0b40b7581067b5d6f98e7e3ecef38059c8"
+    },
+    {
+      "id": "body-nested-populated",
+      "desc": "Body with populated file_ids, mentions, and a non-null thread_root_id.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"message.created\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"text\":\"with refs\",\"format\":\"markdown\",\"thread_root_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4Q5\",\"file_ids\":[\"f_01JZ7N6A4M6Y8W5K2H7DGKX4Q1\",\"f_01JZ7N6A4M6Y8W5K2H7DGKX4Q2\"],\"mentions\":[\"u_01JZ7N6A4M6Y8W5K2H7DGKX4Q3\",\"u_01JZ7N6A4M6Y8W5K2H7DGKX4Q4\"]}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZmlsZV9pZHMiOlsiZl8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRRMSIsImZfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UTIiXSwiZm9ybWF0IjoibWFya2Rvd24iLCJtZW50aW9ucyI6WyJ1XzAxSlo3TjZBNE02WThXNUsySDdER0tYNFEzIiwidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRRNCJdLCJtZXNzYWdlX2lkIjoibV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRiIsInRleHQiOiJ3aXRoIHJlZnMiLCJ0aHJlYWRfcm9vdF9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UTUifSwic3RyZWFtX2lkIjoic18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQyIsInR5cGUiOiJtZXNzYWdlLmNyZWF0ZWQiLCJ0eXBlX3ZlcnNpb24iOjEsIndvcmtzcGFjZV9pZCI6IndfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEIifQ==",
+      "hash": "sha256:ecb740a96efd5d78c677925b1f7b24d72cbba60743c469986338595a28d88794"
+    },
+    {
+      "id": "body-unknown-extra-fields",
+      "desc": "Body with an extra top-level field AND an extra field inside payload (\u00a72.3 additive). Unknown fields are part of body, are canonicalized, and DO change the hash \u2014 unlike server metadata.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"message.created\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"text\":\"Hello everyone\",\"format\":\"markdown\",\"thread_root_id\":null,\"file_ids\":[],\"mentions\":[\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PG\"],\"future_payload_field\":\"kept\"},\"future_field\":{\"anything\":[1,2,3]}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsImZ1dHVyZV9maWVsZCI6eyJhbnl0aGluZyI6WzEsMiwzXX0sInBheWxvYWQiOnsiZmlsZV9pZHMiOltdLCJmb3JtYXQiOiJtYXJrZG93biIsImZ1dHVyZV9wYXlsb2FkX2ZpZWxkIjoia2VwdCIsIm1lbnRpb25zIjpbInVfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEciXSwibWVzc2FnZV9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEYiLCJ0ZXh0IjoiSGVsbG8gZXZlcnlvbmUiLCJ0aHJlYWRfcm9vdF9pZCI6bnVsbH0sInN0cmVhbV9pZCI6InNfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEMiLCJ0eXBlIjoibWVzc2FnZS5jcmVhdGVkIiwidHlwZV92ZXJzaW9uIjoxLCJ3b3Jrc3BhY2VfaWQiOiJ3XzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBCIn0=",
+      "hash": "sha256:02d0ad1d98f1a78063677fade9e0ecfd42d11a906714b4fc10299e1e3c53593d"
+    },
+    {
+      "id": "depth-at-cap-list",
+      "desc": "List nested exactly MAX_DEPTH deep; accepted. Pins the acceptance boundary.",
+      "input_json": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "canonical_b64": "W1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1sxXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV0=",
+      "hash": "sha256:68da6c21da4d39e99f241a56379e98c2053372e77cd74f72400af6d3a37261c3"
+    },
+    {
+      "id": "depth-at-cap-dict",
+      "desc": "Dict nested exactly MAX_DEPTH deep; accepted.",
+      "input_json": "{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}",
+      "canonical_b64": "eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOnsiayI6eyJrIjp7ImsiOjF9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fQ==",
+      "hash": "sha256:09210ec1bb48e28dff24fb9e2bde70a3a95f9f9f6dc49391b767db4fb7cf50e2"
+    },
+    {
+      "id": "reject-nan",
+      "desc": "NaN is non-finite (Python parses it, canonicalize rejects; JS rejects at parse).",
+      "input_json": "NaN",
+      "error": {
+        "kind": "non_finite_float",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-infinity",
+      "desc": "Infinity is non-finite.",
+      "input_json": "Infinity",
+      "error": {
+        "kind": "non_finite_float",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-neg-infinity",
+      "desc": "-Infinity is non-finite.",
+      "input_json": "-Infinity",
+      "error": {
+        "kind": "non_finite_float",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-surrogate-key",
+      "desc": "Lone-surrogate object key (\\ud800). Key path \u2014 must surface as a reject, not a 500.",
+      "input_json": "{\"\\ud800\":1}",
+      "error": {
+        "kind": "lone_surrogate",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-surrogate-value",
+      "desc": "Lone-surrogate string value (\\ud800).",
+      "input_json": "{\"x\":\"\\ud800\"}",
+      "error": {
+        "kind": "lone_surrogate",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-int-over-cap",
+      "desc": "2^53 exceeds the interop cap. Cross-language caveat: JS JSON.parse silently truncates to 2^53, so the TS client must reject on magnitude, not exact compare.",
+      "input_json": "9007199254740992",
+      "error": {
+        "kind": "integer_out_of_range",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-int-over-cap-plus1",
+      "desc": "2^53+1 exceeds the interop cap.",
+      "input_json": "9007199254740993",
+      "error": {
+        "kind": "integer_out_of_range",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-depth-over-cap-list",
+      "desc": "List nested MAX_DEPTH+1 deep; over the cap.",
+      "input_json": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "error": {
+        "kind": "max_depth_exceeded",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-depth-over-cap-dict",
+      "desc": "Dict nested MAX_DEPTH+1 deep; over the cap.",
+      "input_json": "{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":{\"k\":1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}",
+      "error": {
+        "kind": "max_depth_exceeded",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-depth-pathological",
+      "desc": "2000-deep list (the reviewer repro). Must reject cleanly via the iterative depth pre-pass \u2014 no RecursionError escapes on the parse-then-hash path.",
+      "input_json": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "error": {
+        "kind": "max_depth_exceeded",
+        "stage": "canonicalize"
+      }
+    }
+  ]
+}
