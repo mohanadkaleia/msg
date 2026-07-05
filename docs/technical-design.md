@@ -10,7 +10,7 @@
 
 ## 0. The one-page version
 
-We are building a Slack-like team messaging app for 5–50-person technical teams, where the source of truth is an **append-only event log** and every rendering surface is a **rebuildable projection** of it. A self-hosted **sync server** validates, sequences, stores, and fans out events; clients replicate per-stream and render locally.
+We are building a modern team messaging app for 5–50-person technical teams, where the source of truth is an **append-only event log** and every rendering surface is a **rebuildable projection** of it. A self-hosted **sync server** validates, sequences, stores, and fans out events; clients replicate per-stream and render locally.
 
 **The layering rule that governs everything** (resolves the design doc's web-vs-local-first tension):
 
@@ -29,12 +29,12 @@ We are building a Slack-like team messaging app for 5–50-person technical team
 | D4 | Web client: **online-first**, Dexie/IndexedDB cache, outbox, SharedWorker-owned WebSocket |
 | D5 | Stack: **FastAPI + Postgres** (single uvicorn process), **Vue 3 + TS + Pinia + Tailwind + TipTap** |
 | D6 | Auth: argon2id + opaque per-device session tokens + single-use invite links; **no JWT, no SMTP dependency** |
-| D7 | Threads: `thread_root_id` on `message.created`, same stream (Slack model) |
+| D7 | Threads: `thread_root_id` on `message.created`, same stream (flat-channel thread model) |
 | D8 | Attachments: content-addressed blobs on **local disk**, download authorized via `file_id` → membership, **never by hash**; no GC in MVP; size/quota caps |
 | D9 | Event schema evolution: per-type versions, additive-only, unknown types preserved-but-skipped; projection version bump ⇒ rebuild |
 | D10 | Search: **server-side Postgres FTS** for MVP; client FTS5 arrives with desktop |
 | D11 | Export format: **NDJSON per stream per month** + content-addressed blobs + `manifest.json` |
-| D12 | Plugins: server-side only, out-of-process, webhook-shaped, Slack-compatible incoming payloads |
+| D12 | Plugins: server-side only, out-of-process, webhook-shaped, de-facto-standard incoming payloads |
 | D13 | Stream access requires **current membership**; removal cuts all server-side history access; local copies are not retractable (documented property) |
 | D14 | Ordering and display timestamps derive from **server sequence / server time only**; `client_created_at` is untrusted metadata |
 
@@ -302,7 +302,7 @@ Enforcement points (each independently tested):
 4. **Files (§6):** via `file_id` → stream → membership.
 5. **Search:** filtered by readable streams in the query itself.
 
-Removal from a private channel cuts server-side access to *all* of its history immediately (Slack semantics). Already-synced local copies are not retractable — this is documented user-facing behavior, inherent to local-first.
+Removal from a private channel cuts server-side access to *all* of its history immediately (mainstream team-chat semantics). Already-synced local copies are not retractable — this is documented user-facing behavior, inherent to local-first.
 
 ---
 
@@ -495,7 +495,7 @@ State machine per connection: `connecting → syncing → live → degraded(offl
 - **Sidebar:** channels (unread bold, mention badge), DMs, presence dots; instant channel switching (projection reads, no network).
 - **Message list:** virtualized scroll, day dividers, backward pagination on scroll-top, edit/delete affordances, reactions with picker, hover toolbar.
 - **Composer (TipTap):** markdown shortcuts, `@mention` autocomplete (fed from workspace-meta projection), file drag-drop/paste, Enter-to-send / Shift-Enter newline, edit-last-message on ArrowUp.
-- **Threads:** right-hand panel (Slack model); root messages show reply count/participants from projection.
+- **Threads:** right-hand panel (flat-channel model); root messages show reply count/participants from projection.
 - **Notifications:** in-app badges + tab-title count + `Notification` API (permission-gated) for mentions/DMs while the app is open, respecting per-stream prefs. Web Push = M3 stretch, not blocking.
 - **Search:** search box → `GET /v1/search?q=…&in=…&from=…` (server FTS), results panel with jump-to-context (jump = targeted `before/after` pulls around the hit).
 - **Keyboard:** Cmd+K switcher (fuzzy channel/DM/user), Alt+↑/↓ unread channel nav, Esc marks read. The switcher ships in M2 — it is cheap and defines the "fast" feel.
@@ -517,7 +517,7 @@ Upload (server-proxied in MVP — no presigned URLs until S3 backend exists):
 - Blob store: local disk `blobs/sha256/ab/abcd1234…`, behind a `BlobStore` interface (`put/get/exists/delete`) so S3/MinIO is a config change later.
 - **Download authz by `file_id` only** (`GET /v1/files/{file_id}` → membership check on its stream → stream response). Raw hashes are never a URL. Dedup (`upload_needed: false`) is only revealed *after* the caller passed authz and quota checks for creating a file record.
 - Orphaned blobs (initiated, never attached): kept in MVP; `files.stream_id` null marks them. Post-MVP GC design (written now, built later): refcount = live `files` rows per sha256; sweep unreferenced blobs older than 30 days via `msgctl gc`.
-- Image files get server-generated thumbnails (Pillow, max 720 px, stored as derived blobs) — M3, needed for a Slack-feel message list.
+- Image files get server-generated thumbnails (Pillow, max 720 px, stored as derived blobs) — M3, needed for a polished message list.
 
 ---
 
@@ -568,7 +568,7 @@ workspace-export/
 
 ## 10. Plugins (M5, D12)
 
-- **Incoming webhooks:** `POST /v1/hooks/<hook_token>` accepting the Slack-compatible shape (`{"text": …, "blocks"?: …}` — text + a small supported subset), producing a `message.created` authored by the hook's bot user in its configured channel. This makes every existing "post to Slack" integration work day one.
+- **Incoming webhooks:** `POST /v1/hooks/<hook_token>` accepting the de-facto standard incoming-webhook shape (`{"text": …, "blocks"?: …}` — text + a small supported subset), producing a `message.created` authored by the hook's bot user in its configured channel. This makes existing chat-webhook integrations work day one.
 - **Outgoing subscriptions:** registration record `{plugin_id, name, url, secret, event_types[], stream_ids[]|all-public}`. Server POSTs matching envelopes (HMAC-SHA256 signature header, 5 s timeout, 3 retries with backoff, auto-disable after 100 consecutive failures + admin notification). At-least-once delivery; consumers dedupe by `event_id`.
 - **Bot users:** `is_bot=true`, no password; auth via scoped tokens (`events:write:<stream>`, `events:read:<stream>`, `files:write`). Bot-authored events are flagged in UI by authorship (no envelope change needed).
 - Explicitly not in MVP: in-process/WASM plugin runtime, slash-command framework (a bot can implement commands by reading messages), plugin marketplace.
@@ -626,14 +626,14 @@ Sized for ~1 engineer + AI tooling; each milestone has a hard exit criterion.
 | **M0 — Protocol spike** (1 wk) | `core/` envelope + JCS + hashing; `msgctl` appends `message.created` to NDJSON, projects to SQLite, `rebuild`, `verify` | Rebuild ≡ incremental, hash vectors frozen, envelope schema locked for TDD §2 |
 | **M1 — Sync server** (3 wk) | Auth/sessions/invites, streams + membership, `workspace-meta`, batch upload w/ per-stream sequencing + idempotency, pull (`after`/`before`), `/v1/sync`, WS push w/ scoped fanout, Postgres schema + migrations, compose file | Two `msgctl`-driven clients converge over the real server; simulation suite skeleton green |
 | **M2 — Web client + sync proof** (3 wk) | Vue shell: login, sidebar, message list, composer; SharedWorker + Dexie cache + cursors + outbox; reconnect catch-up; pending→acked settling; Cmd+K switcher | **All six §12 invariants green in CI.** Hard gate: no M3 work until they pass |
-| **M3 — Slack-like core** (5 wk) | Threads, reactions, edits/deletes, mentions + notifications (in-app/tab/Notification API), read-state + unread badges, presence/typing, file upload/download + thumbnails, server search, channel & member management UI | **Dogfood gate: builders use msg as their only team chat for 2 weeks** |
+| **M3 — Messaging core** (5 wk) | Threads, reactions, edits/deletes, mentions + notifications (in-app/tab/Notification API), read-state + unread badges, presence/typing, file upload/download + thumbnails, server search, channel & member management UI | **Dogfood gate: builders use msg as their only team chat for 2 weeks** |
 | **M4 — Portability** (1–2 wk) | `export` / `import` / `verify` (NDJSON + blobs + manifest) | Round-trip export→import→export identical; verify green on dogfood workspace |
-| **M5 — Plugins** (2 wk) | Incoming Slack-compatible webhooks, outgoing subscriptions, bot tokens; GitHub notifier as reference plugin | GitHub PR events posting into dogfood workspace via the public plugin API only |
+| **M5 — Plugins** (2 wk) | Incoming de-facto-standard webhooks, outgoing subscriptions, bot tokens; GitHub notifier as reference plugin | GitHub PR events posting into dogfood workspace via the public plugin API only |
 | **M6 — Desktop (Tauri)** | Same Vue app in Tauri; real SQLite + FTS5 projection, NDJSON logs on disk, true offline, local search | "Workspace is a folder" demo: kill network, full app works; folder passes `msgctl verify` |
 
 Cut entirely: federation experiment (design doc M6). The envelope reserves what federation needs (`signature`, origin fields, content hashes); building it earns nothing before the product has users.
 
-**Post-MVP backlog (designed-not-built, in priority order):** Web Push notifications · blob GC (`msgctl gc`) · redaction mechanism (`payload_redacted`) · Slack import · per-user export · self-serve password reset via SMTP · S3 blob backend · mobile.
+**Post-MVP backlog (designed-not-built, in priority order):** Web Push notifications · blob GC (`msgctl gc`) · redaction mechanism (`payload_redacted`) · proprietary-chat import · per-user export · self-serve password reset via SMTP · S3 blob backend · mobile.
 
 ---
 
@@ -641,7 +641,7 @@ Cut entirely: federation experiment (design doc M6). The envelope reserves what 
 
 | Risk | Mitigation |
 |---|---|
-| UX worse than Slack despite sound architecture (design doc §25.1 — the #1 risk) | M3 dogfood gate is mandatory; composer/switcher/unread polish are milestone line items, not "later"; virtualized list + optimistic sends from day one |
+| UX worse than incumbent chat apps despite sound architecture (design doc §25.1 — the #1 risk) | M3 dogfood gate is mandatory; composer/switcher/unread polish are milestone line items, not "later"; virtualized list + optimistic sends from day one |
 | Sync bugs erode trust (lost/duplicated/reordered messages) | §12 simulation suite as CI gate before features; delivery contract (§3.3) makes push safe-by-construction; idempotent outbox |
 | Single-process fanout ceiling | Documented constraint; at 5–50 users the ceiling is far away; the protocol is process-count-agnostic, so a pub/sub layer or Go sync-path port slots in without protocol changes |
 | Scope creep toward federation/E2EE/offline-web | This TDD's cut lines (D-table, §13 cuts) are the contract; changes require revising this doc, not drive-by PRs |

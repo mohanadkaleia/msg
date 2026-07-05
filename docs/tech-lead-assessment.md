@@ -14,7 +14,7 @@
 
 **Weakest part:** The collision between "web-only first" (Open Q1) and "local-first" (§5.2, §8). The entire §8 local storage model — NDJSON files on disk, workspace folders, hidden files (Open Q2) — **does not exist in a browser**. A browser has IndexedDB and OPFS, storage that can be evicted, no user-visible files, and no `workspace-acme/` folder. The doc designed a desktop client's storage layer and then chose web as the first client without reconciling the two. This isn't fatal — the fix is a clean layering decision (see §4 below) — but the TDD must not inherit this confusion, or Milestone 1 will burn weeks fighting SQLite-WASM/OPFS instead of shipping chat.
 
-Second-weakest: several **must-have features (§20.1) have no design at all** — unread state, threads, presence, notifications, auth mechanics. These are exactly the features the doc itself says make or break Slack-feel (§25.1). They need real designs in the TDD, not line items.
+Second-weakest: several **must-have features (§20.1) have no design at all** — unread state, threads, presence, notifications, auth mechanics. These are exactly the features the doc itself says make or break the polished-chat feel (§25.1). They need real designs in the TDD, not line items.
 
 ---
 
@@ -27,7 +27,7 @@ Second-weakest: several **must-have features (§20.1) have no design at all** �
 5. **Content-addressed attachments with hash-first upload flow (§13).** Compute sha256 → request upload → attach by `file_id`. Correct shape; enables dedup, integrity verification, and portable export.
 6. **Server remains the authority in MVP (§11.4, §25.2).** "Local-first" here means local *replica*, not peer-to-peer consensus. That single decision removes ~80% of distributed-systems risk.
 7. **Scope discipline (§4, §18, §20.1).** Federation is a roadmap (§18), not a requirement; the envelope carries just enough (origin, client IDs, hash fields) to not paint federation into a corner.
-8. **Realistic competitive framing (§6) and positioning (§24 Option C/D).** The wedge — Slack polish + Git-like ownership for 5–50-person technical teams — is a real gap, and §25.1's "the architecture must not make the UX worse" is the right #1 risk.
+8. **Realistic competitive framing (§6) and positioning (§24 Option C/D).** The wedge — commercial-grade chat polish + Git-like ownership for 5–50-person technical teams — is a real gap, and §25.1's "the architecture must not make the UX worse" is the right #1 risk.
 9. **Milestone 0 (§26) — CLI event-log prototype.** Cheap, fast validation of the format and replay semantics before any UI exists. Keep it.
 
 ---
@@ -57,7 +57,7 @@ Why per-workspace fails:
 
 The doc checks permissions at upload time (§17) and never addresses read-side semantics over time. The TDD must state:
 
-- **Rule (MVP): access to a stream's events requires *current* membership.** Removed from a private channel ⇒ server stops serving that stream entirely, including history. This matches Slack semantics and is the simplest correct rule.
+- **Rule (MVP): access to a stream's events requires *current* membership.** Removed from a private channel ⇒ server stops serving that stream entirely, including history. This matches mainstream team-chat semantics and is the simplest correct rule.
 - **Be honest about local copies:** events already synced to a removed member's device cannot be retracted. Document this as a property of local-first, not a bug.
 - **Message deletion vs. immutability:** tombstones (§12.4) hide messages in projections, but the original text stays in the log forever — on the server *and on every member's replica*. That is a real product/GDPR problem. MVP: accept it, but design the envelope now for **redaction**: server may null the payload of a referenced event and set `payload_redacted: true`; `event_hash` is defined over the client-authored portion and a redacted event is explicitly exempt from hash verification. Ship the mechanism post-MVP, reserve the field now.
 
@@ -78,7 +78,7 @@ Related envelope bug: §9.1 mixes client-authored fields (`event_id`, `payload`,
 
 ### 3.6 Presence and typing indicators: absent
 
-Slack-feel is impossible without them. They must be **ephemeral protocol messages, never logged events**: WebSocket frames (`presence.update`, `typing.start/stop`), server keeps them in memory (per-connection registry; no Redis needed single-process at this scale), TTL-expired. The TDD needs a section distinguishing the three message classes: **durable events** (the log), **synced state** (read markers), **ephemeral signals** (presence/typing). The doc currently only has the first class.
+A polished chat feel is impossible without them. They must be **ephemeral protocol messages, never logged events**: WebSocket frames (`presence.update`, `typing.start/stop`), server keeps them in memory (per-connection registry; no Redis needed single-process at this scale), TTL-expired. The TDD needs a section distinguishing the three message classes: **durable events** (the log), **synced state** (read markers), **ephemeral signals** (presence/typing). The doc currently only has the first class.
 
 ### 3.7 Auth and invites: hand-waved (§16)
 
@@ -113,7 +113,7 @@ FTS5 is a client-side answer (§14.1), but the web client's storage is a cache, 
 
 ### 3.12 Threads: must-have, model unspecified
 
-Decide: **`thread_root_id` (the root `message_id`) as an optional field on `message.created`.** Threads are *not* separate streams in MVP — they share the channel's stream and sequence (Slack model, not Zulip). Projection maintains `reply_count`, `last_reply_at`, participant set per root. Drop the `thread.created` event from §9's list — the first reply *is* thread creation. Thread-follow/notification granularity: post-MVP.
+Decide: **`thread_root_id` (the root `message_id`) as an optional field on `message.created`.** Threads are *not* separate streams in MVP — they share the channel's stream and sequence (the flat-channel thread model, not topic-first threading). Projection maintains `reply_count`, `last_reply_at`, participant set per root. Drop the `thread.created` event from §9's list — the first reply *is* thread creation. Thread-follow/notification granularity: post-MVP.
 
 ### 3.13 Notifications for web MVP
 
@@ -145,7 +145,7 @@ Rationale: full browser offline means SQLite-WASM + OPFS + COOP/COEP headers + e
 
 ### Open Q7: Plugins server-side only at first? — **Yes. Server-side only, out-of-process, webhook-shaped.**
 
-MVP plugin surface: (1) **incoming webhooks** (Slack-compatible payload shape — instant ecosystem familiarity), (2) **outgoing event subscriptions** (server POSTs matching events to a registered plugin URL), (3) **bot users** with scoped tokens whose events are marked plugin-authored. Plugins are separate processes/containers talking HTTP — no in-process runtime, no sandbox to build, and crash isolation for free. Local/WASM plugin runtime (§15.5) is explicitly post-MVP. This makes Milestone 5 small: the manifest (§15.3) becomes a registration record, permissions map to token scopes.
+MVP plugin surface: (1) **incoming webhooks** (compatible with the de-facto standard incoming-webhook payload shape — instant ecosystem familiarity), (2) **outgoing event subscriptions** (server POSTs matching events to a registered plugin URL), (3) **bot users** with scoped tokens whose events are marked plugin-authored. Plugins are separate processes/containers talking HTTP — no in-process runtime, no sandbox to build, and crash isolation for free. Local/WASM plugin runtime (§15.5) is explicitly post-MVP. This makes Milestone 5 small: the manifest (§15.3) becomes a registration record, permissions map to token scopes.
 
 ### Open Q9: Durable event log file format? — **NDJSON, one file per stream per month, as the canonical export/archival format. SQLite for all hot-path storage.**
 
@@ -202,11 +202,11 @@ Justification:
 
 **M2 must prove, with automated tests, all of:** (1) idempotent retry — kill the network mid-send, retry, no duplicates; (2) two clients converge to identical order after concurrent sends; (3) reconnect after N missed events catches up via cursors with no gaps/dupes, verified against server sequence; (4) a user with no access to a private stream can neither pull nor receive its events via any endpoint (fanout included); (5) pending messages reorder correctly to server order without visible jank; (6) projection rebuild from pulled events matches incremental state. **If M2 can't demonstrate these, stop and fix the protocol before adding features.** This is the project's go/no-go gate.
 
-**M3 — Slack-like core (~5 weeks, the long one).** Threads (`thread_root_id`), reactions, edits/deletes, mentions + in-app/tab/Notification-API notifications, **read-state sync + unread badges**, **presence/typing (ephemeral)**, file upload/download (local disk, authz via file_id), server-side search, channel management, member management UI. *Exit: dogfood — the team building it uses it as its only chat for two weeks.*
+**M3 — Messaging core (~5 weeks, the long one).** Threads (`thread_root_id`), reactions, edits/deletes, mentions + in-app/tab/Notification-API notifications, **read-state sync + unread badges**, **presence/typing (ephemeral)**, file upload/download (local disk, authz via file_id), server-side search, channel management, member management UI. *Exit: dogfood — the team building it uses it as its only chat for two weeks.*
 
 **M4 — Portability (~1–2 weeks, moved up from doc's M5).** `export` → workspace folder (NDJSON per stream/month + blobs + manifest), `import`, rebuild, blob hash verification. Moved before plugins because it's small, it's *the differentiating promise*, and it hardens the same replay code M2 depends on — cheap insurance that the log really is the source of truth.
 
-**M5 — Plugins (from doc's M4).** Incoming webhooks (Slack-compatible), outgoing event subscriptions, bot users + scoped tokens, GitHub plugin as the reference implementation.
+**M5 — Plugins (from doc's M4).** Incoming webhooks (de-facto-standard payload shape), outgoing event subscriptions, bot users + scoped tokens, GitHub plugin as the reference implementation.
 
 **M6 — Desktop (Tauri) = the true local-first release.** Real SQLite + FTS5, NDJSON logs on disk, full offline, "workspace is a folder" made literal.
 
@@ -222,7 +222,7 @@ Justification:
 4. **Web client = online-first with IndexedDB (Dexie) cache + outbox + SharedWorker-owned WebSocket; no SQLite-WASM, no browser NDJSON.** Desktop (Tauri, M6) owns full offline, SQLite+FTS5, and file-based logs. State this layering on page 1 of the TDD.
 5. **Stack: FastAPI + Postgres + single-process uvicorn; Vue 3 + TS + Pinia + Tailwind + TipTap.** Document the single-writer-process fanout constraint in the compose file. Two containers only (app, Postgres); blob storage = local disk behind a storage interface.
 6. **Specify auth end-to-end:** argon2id passwords, opaque per-device session tokens (server table, revocable), single-use expiring invite links (email optional), device registration at first login. No JWT, no SMTP hard dependency.
-7. **Threads = `thread_root_id` on `message.created`, same stream, Slack semantics**; drop `thread.created` from the event list; projection maintains reply counts/participants.
+7. **Threads = `thread_root_id` on `message.created`, same stream, flat-channel semantics**; drop `thread.created` from the event list; projection maintains reply counts/participants.
 8. **Attachment rules:** blob access authorized via `file_id`→stream membership, never by hash; dedup responses only post-authz; max file size + per-workspace quota; no GC in MVP but the refcount design written down; server proxies downloads in MVP.
 9. **Schema evolution contract:** per-type versions, additive-only within a version, unknown fields ignored, unknown event types preserved-but-skipped, projection version bump forces rebuild. Make `rebuild` a tested first-class operation from M0.
 10. **Make M2's six convergence proofs (see §6) the acceptance suite**, implemented as property-based/simulation tests (two simulated clients, random interleavings, drops, retries ⇒ identical projections), and add operational guardrails to the TDD: event size cap (~64 KB), per-user rate limits, batch limits, server-time-only ordering/display, and a one-paragraph backup story (data dir snapshot + export).

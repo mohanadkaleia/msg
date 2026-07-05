@@ -4,13 +4,13 @@
 **Author:** Mohanad / ChatGPT  
 **Date:** 2026-07-03  
 **Working name:** TBD  
-**One-line pitch:** **Slack-quality team messaging where the workspace is portable, self-hostable, scriptable, and syncs like Git.**
+**One-line pitch:** **Best-in-class team messaging where the workspace is portable, self-hostable, scriptable, and syncs like Git.**
 
 ---
 
 ## 1\. Summary
 
-This document proposes a local-first, file-based messaging application inspired by Slack, but designed around ownership, portability, self-hosting, federation, and extensibility.
+This document proposes a local-first, file-based messaging application inspired by the best commercial team-chat products, but designed around ownership, portability, self-hosting, federation, and extensibility.
 
 The core idea:
 
@@ -18,30 +18,30 @@ The core idea:
 
 The initial product should not try to beat Matrix, Mattermost, [Rocket.Chat](<http://Rocket.Chat>), or Zulip on protocol ambition. It should instead focus on a sharper wedge:
 
-> **A polished Slack-like app for small technical teams that want ownership, local speed, file portability, and plugins.**
+> **A polished team-chat app for small technical teams that want ownership, local speed, file portability, and plugins.**
 
-Federation can come later. The MVP should feel like Slack first and like infrastructure second.
+Federation can come later. The MVP should feel like a polished chat product first and like infrastructure second.
 
 ---
 
 ## 2\. Problem
 
-Slack is the best team messaging product in terms of user experience, speed, polish, integrations, and daily usability. However, it has major weaknesses for some teams:
+The market-leading SaaS chat product sets the bar for user experience, speed, polish, integrations, and daily usability. However, it has major weaknesses for some teams:
 
 * Workspace data is locked inside a cloud vendor.
 * Self-hosting is not available.
 * Full-fidelity export/import is limited.
 * Offline usage is weak.
 * Search and history depend on the service.
-* Custom workflows require Slack's platform constraints.
+* Custom workflows are constrained by the vendor's platform.
 * Long-term archival and ownership are not first-class.
 * Federation between organizations is not native in the way open protocols imagine it.
 
-Open/self-hosted alternatives exist, but many feel less polished or more complex than Slack.
+Open/self-hosted alternatives exist, but many feel less polished or more complex than the market leader.
 
 This creates a product gap:
 
-> A self-hosted/local-first team chat that preserves Slack-like usability while giving users durable ownership of their communication history.
+> A self-hosted/local-first team chat that preserves mainstream-chat usability while giving users durable ownership of their communication history.
 
 ---
 
@@ -49,7 +49,7 @@ This creates a product gap:
 
 ### Product goals
 
-1. Provide a Slack-like experience:
+1. Provide a familiar, polished chat experience:
    * channels
    * direct messages
    * threads
@@ -79,7 +79,7 @@ This creates a product gap:
    * plugins can observe events
    * plugins can emit events
    * plugin permissions are explicit
-   * Slack-style webhooks should be easy
+   * Industry-standard webhooks should be easy
 6. Prepare for future federation:
    * protocol should support multiple servers later
    * event identity should not depend entirely on one server
@@ -99,7 +99,7 @@ The MVP should deliberately avoid these in version 1:
 * Voice/video calls.
 * Large public communities.
 * Multi-million-user scale.
-* Replacing Slack for huge enterprises on day one.
+* Replacing the incumbent chat vendor for huge enterprises on day one.
 
 The first version should be excellent for a team of 5–50 people.
 
@@ -107,7 +107,7 @@ The first version should be excellent for a team of 5–50 people.
 
 ## 5\. Design Principles
 
-### 5.1 Slack UX first
+### 5.1 Chat UX first
 
 The architecture can be unique, but the user experience should feel familiar.
 
@@ -183,17 +183,17 @@ Later, this can evolve to:
 
 | Product | Strength | Weakness / gap |
 | -- | -- | -- |
-| Slack | Best UX, integrations, polish | Cloud lock-in, no self-hosting, limited ownership |
-| Mattermost | Self-hosted Slack-like app | Less delightful UX, enterprise/devops feel |
-| [Rocket.Chat](<http://Rocket.Chat>) | Self-hosted, customizable | Less polished than Slack |
-| Zulip | Strong async topic/thread model | Different mental model, less Slack-like |
-| Element / Matrix | Federation, encryption, open protocol | Complex, UX often less smooth than Slack |
+| Market-leading SaaS chat | Best UX, integrations, polish | Cloud lock-in, no self-hosting, limited ownership |
+| Mattermost | Self-hosted chat-style app | Less delightful UX, enterprise/devops feel |
+| [Rocket.Chat](<http://Rocket.Chat>) | Self-hosted, customizable | Less polished than the market leader |
+| Zulip | Strong async topic/thread model | Different mental model, less familiar to mainstream chat users |
+| Element / Matrix | Federation, encryption, open protocol | Complex, UX often less smooth than the market leader |
 | Nextcloud Talk | Self-hosted collaboration suite | Chat is not the core magic |
 | Discord | Great real-time community UX | Not file/local-first, not workplace ownership-focused |
 
 Opportunity:
 
-> Build a product that feels closer to Slack but has ownership properties closer to Git/Obsidian.
+> Build a product that feels closer to the best commercial chat apps but has ownership properties closer to Git/Obsidian.
 
 ---
 
@@ -583,7 +583,7 @@ For MVP, use **per-workspace sequence** unless performance proves otherwise.
 
 ## 12\. Conflict Handling
 
-Most Slack-like messaging actions do not need complex conflict handling.
+Most everyday messaging actions do not need complex conflict handling.
 
 ### 12.1 Message creation
 
@@ -798,7 +798,7 @@ Plugins should be:
 * easy to write
 * portable
 * able to run locally or server-side
-* compatible with Slack-style webhooks when possible
+* compatible with de-facto-standard webhook payloads when possible
 
 ### 15.2 Plugin capabilities
 
@@ -1073,7 +1073,7 @@ Nice-to-have:
 * slash commands
 * GitHub webhook plugin
 * AI summarization plugin
-* import from Slack export
+* import from proprietary chat-platform exports
 * export workspace as folder
 
 Not MVP:
@@ -1178,7 +1178,7 @@ Possible positioning:
 
 ### Option A
 
-> **Slack, but your workspace is a folder.**
+> **Team chat, but your workspace is a folder.**
 
 Clear and memorable.
 
@@ -1190,13 +1190,13 @@ Strong for developers, but may sound too technical.
 
 ### Option C
 
-> **A local-first Slack for teams that want to own their history.**
+> **Local-first team chat for teams that want to own their history.**
 
 Probably the clearest serious positioning.
 
 ### Option D
 
-> **Self-hosted team chat with Slack polish and local-first ownership.**
+> **Self-hosted team chat with commercial-grade polish and local-first ownership.**
 
 Most explicit.
 
@@ -1206,11 +1206,11 @@ Most explicit.
 
 ### 25.1 UX risk
 
-The app may become architecturally interesting but worse than Slack.
+The app may become architecturally interesting but worse than the incumbents.
 
 Mitigation:
 
-* copy familiar Slack interaction patterns
+* copy familiar mainstream-chat interaction patterns
 * optimize channel switching
 * make message composer excellent
 * obsess over notifications and unread state
@@ -1249,7 +1249,7 @@ Mitigation:
 
 ### 25.5 Search quality
 
-Slack search is a major expectation.
+Fast, reliable search is a major user expectation.
 
 Mitigation:
 
@@ -1297,7 +1297,7 @@ messenger rebuild
 
 Goal:
 
-* prove Slack-like UI can render from local projection
+* prove a polished chat UI can render from local projection
 
 Build:
 
@@ -1322,7 +1322,7 @@ Build:
 * server sequencing
 * local outbox
 
-### Milestone 3: Slack-like core
+### Milestone 3: Messaging core
 
 Goal:
 
@@ -1430,7 +1430,7 @@ To avoid overengineering, choose these defaults:
 
 ## 29\. Mental Model
 
-The product should feel like Slack to users.
+The product should feel like a polished commercial chat app to users.
 
 But under the hood, think:
 
@@ -1460,11 +1460,11 @@ It means the product inherits Git's best ownership ideas:
 
 The strongest version of this idea is not:
 
-> “Another self-hosted Slack clone.”
+> “Another self-hosted chat clone.”
 
 It is:
 
-> **A local-first, file-based team workspace that feels as polished as Slack, but gives teams Git-like ownership of their communication history.**
+> **A local-first, file-based team workspace that feels as polished as the best commercial chat apps, but gives teams Git-like ownership of their communication history.**
 
 The first technical bet should be:
 

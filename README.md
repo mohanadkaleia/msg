@@ -1,6 +1,6 @@
 # msg
 
-**Slack-quality team messaging where the workspace is portable, self-hostable, scriptable, and syncs like Git.**
+**Best-in-class team messaging where the workspace is portable, self-hostable, scriptable, and syncs like Git.**
 
 msg is a local-first, file-based team messaging app for 5–50-person technical teams. The source of truth is an **append-only event log**; every rendering surface — server tables, client caches, search — is a **rebuildable projection** of it. A self-hosted sync server validates, sequences, stores, and fans out events; clients replicate per-stream and render locally.
 
@@ -16,9 +16,9 @@ msg is a local-first, file-based team messaging app for 5–50-person technical 
 | **M0 — Protocol spike** | `core/` envelope + JCS + hashing; `msgctl` append → project → rebuild → verify | ✅ Done |
 | M1 — Sync server | Auth, streams, batch upload, sync, WebSocket fanout, Postgres | Next |
 | M2 — Web client + sync proof | Vue shell, SharedWorker + Dexie, six invariants green in CI | — |
-| M3 — Slack-like core | Threads, reactions, mentions, files, search, presence | — |
+| M3 — Messaging core | Threads, reactions, mentions, files, search, presence | — |
 | M4 — Portability | `export` / `import` / `verify` round-trip | — |
-| M5 — Plugins | Slack-compatible webhooks, bot tokens | — |
+| M5 — Plugins | Industry-standard incoming webhooks, bot tokens | — |
 | M6 — Desktop (Tauri) | True offline; "workspace is a folder" | — |
 
 Full design docs: [`docs/design-doc.md`](docs/design-doc.md) (product), [`docs/tech-lead-assessment.md`](docs/tech-lead-assessment.md) (pre-implementation review), [`docs/technical-design.md`](docs/technical-design.md) (the implementation contract — locked decisions D1–D14 live here).
