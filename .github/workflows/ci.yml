@@ -34,11 +34,11 @@ jobs:
       - name: Mypy
         run: uv run mypy
 
-      - name: Pytest
-        run: uv run pytest
-
       # permanent M0 exit gate, never remove (TDD §5)
       - name: Equivalence gate (rebuild ≡ incremental)
         run: uv run pytest cli/tests/test_equivalence_gate.py -q
         env:
           CI: "true"
+
+      - name: Pytest
+        run: uv run pytest
