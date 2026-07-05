@@ -85,6 +85,9 @@ class Device(Base):
 
 class Session(Base):
     __tablename__ = "sessions"
+    # Non-PK lookup path: GET /v1/auth/sessions and future bulk-revoke filter by
+    # user_id (ENG-64). Paired with migration 0002; keeps compare_metadata green.
+    __table_args__ = (Index("ix_sessions_user_id", "user_id"),)
 
     token_hash: Mapped[str] = mapped_column(  # sha256 of the opaque token
         Text, primary_key=True

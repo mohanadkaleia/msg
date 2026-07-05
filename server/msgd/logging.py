@@ -20,6 +20,25 @@ _RESERVED = frozenset(
     logging.makeLogRecord({}).__dict__.keys() | {"message", "asctime", "taskName"}
 )
 
+# Structured `extra=` keys that must never reach a log line. Raw session tokens
+# and passwords are only ever placed in response models (ENG-64 D2); this filter
+# is belt-and-suspenders — if any of these keys is ever attached to a record via
+# `extra=`, it is dropped before formatting. A dedicated test greps captured log
+# output for the raw token to enforce the "never logged" rule.
+_REDACTED_KEYS = frozenset(
+    {"token", "password", "authorization", "secret", "session_token", "raw_token"}
+)
+
+
+class RedactSecretsFilter(logging.Filter):
+    """Drop sensitive ``extra=`` keys from every record before it is formatted."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        for key in _REDACTED_KEYS:
+            if key in record.__dict__:
+                record.__dict__[key] = "[REDACTED]"
+        return True
+
 
 class JsonFormatter(logging.Formatter):
     """Render a log record as a single-line JSON object."""
@@ -47,10 +66,12 @@ def configure_logging(level: str = "INFO") -> None:
             "version": 1,
             "disable_existing_loggers": False,
             "formatters": {"json": {"()": "msgd.logging.JsonFormatter"}},
+            "filters": {"redact": {"()": "msgd.logging.RedactSecretsFilter"}},
             "handlers": {
                 "default": {
                     "class": "logging.StreamHandler",
                     "formatter": "json",
+                    "filters": ["redact"],
                     "stream": "ext://sys.stdout",
                 }
             },

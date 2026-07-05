@@ -18,6 +18,9 @@ dependencies = [
     "asyncpg",
     "alembic",
     "pydantic-settings",
+    # Password hashing (TDD §7/D6). Argon2id is argon2-cffi's default algorithm;
+    # cost parameters are pinned explicitly in Settings for auditability (D8).
+    "argon2-cffi>=23.1",
 ]
 
 [build-system]

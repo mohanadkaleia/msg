@@ -89,13 +89,22 @@ def database_url(postgres_container: PostgresContainer) -> str:
 
 @pytest.fixture(scope="session")
 def settings(database_url: str, tmp_path_factory: pytest.TempPathFactory) -> Settings:
-    """Build settings pointed at the container (avoids reading the real env)."""
+    """Build settings pointed at the container (avoids reading the real env).
+
+    argon2 cost is forced to weak params (ENG-64 test plan): the 64 MiB
+    production profile makes a suite full of logins unacceptably slow. One
+    dedicated test (``test_login::test_production_argon2_defaults``) asserts the
+    *production* defaults remain the pinned values.
+    """
     data_dir = tmp_path_factory.mktemp("msg-data")
     return Settings(
         database_url=database_url,
         data_dir=data_dir,
         secret_key="test-secret-key",
         log_level="WARNING",
+        argon2_time_cost=1,
+        argon2_memory_cost_kib=8,
+        argon2_parallelism=1,
     )
 
 

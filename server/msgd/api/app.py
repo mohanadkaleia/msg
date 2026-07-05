@@ -18,7 +18,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
 
-from msgd.api.routers import health
+from msgd.api.problems import register_problem_handlers
+from msgd.api.routers import admin, auth, health
+from msgd.auth.ratelimit import RateLimiter
 from msgd.db.engine import create_engine, create_sessionmaker, set_sessionmaker
 from msgd.logging import configure_logging
 from msgd.settings import Settings, get_settings
@@ -47,6 +49,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await engine.dispose()
             logger.info("msgd shutdown complete", extra={"event": "shutdown"})
 
-    app = FastAPI(title="msgd", lifespan=lifespan)
+    # Config-gate the interactive docs + schema (PR #12 security review): when
+    # disabled (secure prod default), FastAPI serves 404 for all three.
+    docs_kwargs: dict[str, str | None] = (
+        {} if settings.docs_enabled else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    )
+    app = FastAPI(title="msgd", lifespan=lifespan, **docs_kwargs)  # type: ignore[arg-type]
+
+    # Shared per-app state for dependencies (settings + the one auth limiter).
+    app.state.settings = settings
+    app.state.auth_limiter = RateLimiter(settings.auth_rate_limit_per_minute, 60)
+
+    # RFC 9457 problem+json — the app-wide error convention every router inherits.
+    register_problem_handlers(app)
+
     app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(admin.router)
     return app
