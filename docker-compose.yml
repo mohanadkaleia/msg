@@ -7,7 +7,13 @@ services:
     build: .
     image: msg/server
     ports:
-      - "8080:8080"
+      # Loopback-only bind, deliberately: Docker port-publishing bypasses host
+      # firewalls (the ufw-bypass behavior), so "8080:8080" would expose the
+      # plain-HTTP unauthenticated API on all interfaces in parallel with the
+      # TLS proxy. The docs/deploy.md Caddy recipe (`reverse_proxy
+      # localhost:8080`) assumes exactly this loopback bind. Widen it only as a
+      # conscious decision (e.g. LAN-direct access with your own firewalling).
+      - "127.0.0.1:8080:8080"
     environment:
       # Only the four MSG_* vars settings.py consumes today (plan D5). Guardrail
       # env (§4.3) is intentionally NOT set here — reserved, documented in

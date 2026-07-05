@@ -11,6 +11,7 @@ queue (TDD §11 / §4.1). TLS is terminated by your own reverse proxy.
 ```sh
 # 1. Secrets — copy the template and fill it in (.env is gitignored)
 cp .env.example .env
+chmod 600 .env
 #    POSTGRES_PASSWORD=<a strong password>
 #    MSG_SECRET_KEY=$(openssl rand -hex 32)
 
@@ -26,9 +27,13 @@ curl -fsS localhost:8080/healthz          # -> {"status":"ok"}
 docker compose exec app msgctl --version  # msgctl ships inside the image
 ```
 
-The app listens on plain HTTP `:8080`. Migrations run automatically on every
-startup (idempotent — a no-op once the schema is at head), so a fresh `up` and a
-redeploy both converge to the right schema with no manual step.
+The app listens on plain HTTP `:8080`, **bound to loopback only**
+(`127.0.0.1:8080` in the compose file): it must only be reached through your TLS
+reverse proxy. Docker port-publishing bypasses host firewalls, so operators who
+genuinely want LAN-direct access must widen the bind consciously in
+`docker-compose.yml`. Migrations run automatically on every startup (idempotent
+— a no-op once the schema is at head), so a fresh `up` and a redeploy both
+converge to the right schema with no manual step.
 
 `msgctl` is on the image `PATH`, so any ops command runs via
 `docker compose exec app msgctl <cmd>`.
