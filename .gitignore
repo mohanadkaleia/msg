@@ -12,3 +12,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Deployment (ENG-72): local secrets and host state directories
+.env
+/data/
+/postgres/

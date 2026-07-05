@@ -51,3 +51,40 @@ jobs:
       # an ephemeral Postgres via testcontainers (Docker present on the runner).
       - name: Pytest
         run: uv run pytest
+
+  # Image build + compose validation (ENG-72). Runs in parallel with `checks`.
+  # Deliberately does NOT run `compose up`: a live migrate→serve cycle is the
+  # ENG-73 M1 exit gate, and duplicating it here would cost runner time + flake
+  # for coverage that gate already owns (plan D8).
+  image:
+    name: docker build · compose config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Advisory Dockerfile lint. Pinned by digest per our image-pinning
+      # convention; non-blocking (if a rule fires it surfaces without gating).
+      - name: Hadolint (advisory)
+        continue-on-error: true
+        run: |
+          docker run --rm -i \
+            hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e \
+            hadolint - < Dockerfile
+
+      - name: Build image
+        run: docker build -t msg/server:ci .
+
+      # Proves the msgctl console script is on PATH in the runtime image
+      # (acceptance criterion). The image ENTRYPOINT is the migrate→serve script
+      # and ignores its args, so override it to invoke msgctl directly. No DB.
+      - name: Smoke — msgctl --version
+        run: docker run --rm --entrypoint msgctl msg/server:ci --version
+
+      # `docker compose config` interpolates ${...}; feed dummy secrets so it
+      # validates instead of failing on empties.
+      - name: Validate compose config
+        run: docker compose config
+        env:
+          POSTGRES_PASSWORD: ci
+          MSG_SECRET_KEY: ci

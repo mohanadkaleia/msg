@@ -1,0 +1,28 @@
+# Keep the build context tiny and reproducible. The build needs only
+# pyproject.toml, uv.lock, .python-version, server/, and cli/.
+.git
+.github
+.venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.hypothesis
+.claude
+docs
+data
+postgres
+*.md
+.env
+.env.*
+# Tests never ship (wheels package only the msgd/msgctl dirs); drop them from
+# the context so an edit to a test does not bust the build cache.
+server/tests
+cli/tests
+Dockerfile
+docker-compose.yml
+.dockerignore
+.gitignore
+.gitattributes

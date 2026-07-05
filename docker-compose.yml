@@ -1,0 +1,67 @@
+# msg self-hosting compose (TDD §11, ENG-72). Exactly two services: the FastAPI
+# app (one uvicorn worker) and Postgres. No MinIO, no Redis, no queue.
+# Secrets come from a gitignored .env (see .env.example). `docker compose up -d`
+# from a clean checkout brings up a healthy server.
+services:
+  app:
+    build: .
+    image: msg/server
+    ports:
+      - "8080:8080"
+    environment:
+      # Only the four MSG_* vars settings.py consumes today (plan D5). Guardrail
+      # env (§4.3) is intentionally NOT set here — reserved, documented in
+      # docs/deploy.md, wired by the enforcing subsystems' own tickets (D4).
+      MSG_DATABASE_URL: postgresql+asyncpg://msg:${POSTGRES_PASSWORD}@postgres:5432/msg
+      MSG_DATA_DIR: /data
+      MSG_SECRET_KEY: ${MSG_SECRET_KEY}
+      MSG_LOG_LEVEL: ${MSG_LOG_LEVEL:-INFO}
+    volumes:
+      # M3 blob-store placeholder; path pinned now so M3 wires the real store
+      # against /data/blobs with zero compose churn (plan D6, §6). Ensure the
+      # host ./data/blobs is writable by the container user before M3 (see
+      # docs/deploy.md "blob dir permissions").
+      - ./data/blobs:/data/blobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # slim has no curl/wget → probe /healthz with the Python stdlib. urlopen
+      # raises on non-200 (e.g. 503 when the DB ping fails) → non-zero exit →
+      # unhealthy, which is the correct signal.
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz').status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # covers migrate-on-startup before the first probe
+    restart: unless-stopped
+    # ── SINGLE WORKER, DELIBERATE ─────────────────────────────────────────────
+    # Exactly one app container / one uvicorn worker (--workers 1 in the
+    # entrypoint). The WebSocket registry + fanout hub are in-process/in-memory;
+    # a second worker would not see the first's connections. Horizontal scale
+    # needs a shared pub/sub (Redis/NATS), explicitly out of MVP scope
+    # (TDD §11 / §4.1: "no Redis, no queue"). Do NOT raise the worker count or
+    # run replicas without adding a shared fanout bus first.
+  postgres:
+    image: postgres:17
+    # postgres:17 @sha256:5c855ad7b85e68e48a62f34662853f38b57c1c1d80f3a927ab58034fd6d31c5e
+    environment:
+      POSTGRES_DB: msg
+      POSTGRES_USER: msg
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # Named volume (deliberate deviation from TDD §11's ./postgres bind mount):
+      # avoids host-UID permission pain for the PG data dir; standard pattern.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U msg -d msg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+volumes:
+  pgdata:
