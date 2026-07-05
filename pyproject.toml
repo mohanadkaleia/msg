@@ -43,9 +43,9 @@ files = ["server/msgd", "server/tests", "cli/msgctl", "cli/tests"]
 # map both to the module name `conftest` and abort with "duplicate module".
 # They cannot be disambiguated by package: making a `tests/` dir a package would
 # break the existing sibling imports there (e.g. the M0 schema-freeze test), and
-# `explicit_package_bases` double-maps the editable `msgd` distribution. The
-# server harness is exercised end-to-end by the integration suite; exclude only
-# its conftest from static analysis so cli/tests/conftest.py stays type-checked.
+# `explicit_package_bases` double-maps the editable `msgd` distribution. All
+# real harness logic lives in server/tests/harness.py (unique module name,
+# fully type-checked); only the thin re-export shim conftest.py is excluded.
 exclude = ["^server/tests/conftest\\.py$"]
 
 [tool.pytest.ini_options]

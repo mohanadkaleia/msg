@@ -77,7 +77,7 @@ def upgrade() -> None:
             "search_tsv",
             postgresql.TSVECTOR(),
             sa.Computed("to_tsvector('english', text)", persisted=True),
-            nullable=False,
+            nullable=True,  # §4.2 declares no NOT NULL on the generated column
         ),
         sa.PrimaryKeyConstraint("message_id", name=op.f("pk_messages_proj")),
     )

@@ -191,9 +191,12 @@ class MessageProj(Base):
     reply_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
     last_reply_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # GENERATED ALWAYS AS (...) STORED — non-insertable; no code ever writes it.
-    search_tsv: Mapped[str] = mapped_column(
+    # Nullable because §4.2 declares no NOT NULL on this column (in practice the
+    # generation expression over a NOT NULL `text` never yields NULL).
+    search_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('english', text)", persisted=True),
+        nullable=True,
     )
 
 

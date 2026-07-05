@@ -7,25 +7,37 @@ and TDD §4.2 together, and that prove the tsvector GENERATED DDL is real.
 from __future__ import annotations
 
 import msgd.db.models  # noqa: F401  (register tables on Base.metadata)
+import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from msgd.db.base import Base
-from sqlalchemy import text
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 
+@pytest.mark.filterwarnings(
+    # Alembic cannot compare a Computed (GENERATED) column's default and says so;
+    # informational only — the tsvector test below covers that column's DDL.
+    "ignore:Computed default on messages_proj.search_tsv:UserWarning"
+)
 async def test_migration_matches_models(migrated_db: str) -> None:
     """After ``run_migrations`` from empty, models == migration == §4.2 (no drift).
 
     A non-empty diff means the ORM models and the committed migration disagree —
-    i.e. the migration no longer reproduces §4.2. This gate is permanent.
+    i.e. the migration no longer reproduces §4.2. ``compare_server_default=True``
+    extends the gate to DEFAULT clauses (``now()``, quotas, flags). This gate is
+    permanent.
     """
     engine = create_async_engine(migrated_db)
     try:
         async with engine.connect() as conn:
             diffs = await conn.run_sync(
                 lambda sync_conn: compare_metadata(
-                    MigrationContext.configure(sync_conn, opts={"compare_type": True}),
+                    MigrationContext.configure(
+                        sync_conn,
+                        opts={"compare_type": True, "compare_server_default": True},
+                    ),
                     Base.metadata,
                 )
             )
@@ -33,6 +45,42 @@ async def test_migration_matches_models(migrated_db: str) -> None:
         await engine.dispose()
 
     assert diffs == [], f"schema drift between models and migration: {diffs}"
+
+
+async def test_check_constraints_present(migrated_db: str) -> None:
+    """The three §4.2 CHECK constraints exist in the migrated DB, by reflection.
+
+    Supplementary to the ``compare_metadata`` gate: Alembic does not reliably
+    autocompare CHECK-constraint SQL text, so their presence (and the enum
+    values inside) is asserted directly.
+    """
+    expected = {
+        ("users", "ck_users_role_valid"): ("owner", "admin", "member", "guest"),
+        ("streams", "ck_streams_kind_valid"): ("workspace-meta", "channel", "dm"),
+        ("streams", "ck_streams_visibility_valid"): ("public", "private"),
+    }
+
+    def _reflect(sync_conn: Connection) -> dict[tuple[str, str], str]:
+        inspector = inspect(sync_conn)
+        found: dict[tuple[str, str], str] = {}
+        for table in ("users", "streams"):
+            for ck in inspector.get_check_constraints(table):
+                name = ck["name"]
+                assert name is not None
+                found[(table, name)] = ck["sqltext"]
+        return found
+
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.connect() as conn:
+            found = await conn.run_sync(_reflect)
+    finally:
+        await engine.dispose()
+
+    for key, values in expected.items():
+        assert key in found, f"missing CHECK constraint {key}; found: {sorted(found)}"
+        for value in values:
+            assert value in found[key], f"{key} lost enum value {value!r}: {found[key]}"
 
 
 async def test_tsvector_generated_column_populates(db_session: AsyncSession) -> None:

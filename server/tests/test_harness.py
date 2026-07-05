@@ -41,3 +41,34 @@ async def test_rollback_isolation_second(db_session: AsyncSession) -> None:
         {"id": "w_isolation"},
     )
     assert count == 0
+
+
+async def test_session_commit_lands_on_savepoint(db_session: AsyncSession) -> None:
+    """A handler-style ``session.commit()`` inside a test does not break isolation.
+
+    With ``join_transaction_mode="create_savepoint"`` the commit releases a
+    SAVEPOINT nested in the fixture's outer transaction rather than committing
+    (and ending) that transaction. ENG-65's accept path commits for real, so the
+    harness must survive commits: the data stays visible to *this* session after
+    the commit, and the sibling test below proves it never reaches the database.
+    """
+    await db_session.execute(
+        text("INSERT INTO workspaces (workspace_id, name) VALUES (:id, :name)"),
+        {"id": "w_commit_leak", "name": "committed inside savepoint"},
+    )
+    await db_session.commit()
+    count = await db_session.scalar(
+        text("SELECT count(*) FROM workspaces WHERE workspace_id = :id"),
+        {"id": "w_commit_leak"},
+    )
+    assert count == 1
+
+
+async def test_session_commit_did_not_leak(db_session: AsyncSession) -> None:
+    """The committed row from the sibling test was still rolled back with the
+    outer transaction — no state leaked to this test."""
+    count = await db_session.scalar(
+        text("SELECT count(*) FROM workspaces WHERE workspace_id = :id"),
+        {"id": "w_commit_leak"},
+    )
+    assert count == 0
