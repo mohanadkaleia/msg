@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import assert_every_line_verifies, only_stream_dir, read_lines
+from conftest import assert_every_line_verifies, only_stream_dir, read_lines, run_cli
 from msgctl.cli import main
 from msgd.core.envelope import Envelope
 
@@ -63,6 +63,45 @@ def test_send_format_plain(tmp_path: Path) -> None:
 def test_send_on_uninitialized_workspace_errors(tmp_path: Path) -> None:
     root = tmp_path / "nope"
     assert main(["send", str(root), "--stream", "general", "--text", "x"]) == 1
+
+
+def test_send_malformed_event_id_clean_exit_1(tmp_path: Path) -> None:
+    """A non-ULID --event-id fails a Body field validator → clean exit 1, no traceback.
+
+    The ValidationError is raised while building the envelope, before append_event
+    writes anything, so the send consumes no sequence and appends nothing.
+    """
+    root = tmp_path / "ws"
+    assert run_cli("init", str(root)).returncode == 0
+
+    proc = run_cli(
+        "send", str(root), "--stream", "general", "--text", "x", "--event-id", "not-a-ulid"
+    )
+    assert proc.returncode == 1
+    assert "msgctl: invalid event field" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+    # Nothing appended; a normal send still gets sequence 1.
+    assert run_cli("send", str(root), "--stream", "general", "--text", "ok").returncode == 0
+    env = assert_every_line_verifies(only_stream_dir(root))[0]
+    assert env.server is not None
+    assert env.server.server_sequence == 1
+
+
+def test_send_malformed_author_user_id_clean_exit_1(tmp_path: Path) -> None:
+    """A bogus --author-user-id (missing u_ prefix) → clean exit 1, no traceback."""
+    root = tmp_path / "ws"
+    assert run_cli("init", str(root)).returncode == 0
+
+    proc = run_cli(
+        "send", str(root), "--stream", "general", "--text", "x", "--author-user-id", "bogus"
+    )
+    assert proc.returncode == 1
+    assert "msgctl: invalid event field" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+    # Nothing appended: the stream dir exists (resolved pre-build) but has no lines.
+    assert read_lines(only_stream_dir(root)) == []
 
 
 def test_oversized_send_rejected_without_burning_a_sequence(

@@ -21,6 +21,7 @@ import msgd.core  # noqa: F401  -- proves the msgd.core dependency edge at impor
 from msgd.core.envelope import Envelope, EventTooLargeError, ServerMetadata, check_event_size
 from msgd.core.hashing import hash_event
 from msgd.core.payloads import build_message_created_body
+from pydantic import ValidationError
 
 from msgctl import __version__, verify
 from msgctl.append import append_event
@@ -158,6 +159,8 @@ def cmd_send(args: argparse.Namespace) -> int:
         result = append_event(ws, stream_id, build_envelope=build_envelope)
     except EventTooLargeError as exc:
         raise MsgctlError(str(exc)) from exc
+    except ValidationError as exc:
+        raise MsgctlError(f"invalid event field: {exc}") from exc
     print(result.line)
     if not result.appended:
         event_id = json.loads(result.line)["body"]["event_id"]
