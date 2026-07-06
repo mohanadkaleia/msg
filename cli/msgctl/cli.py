@@ -23,7 +23,7 @@ from msgd.core.hashing import hash_event
 from msgd.core.payloads import build_message_created_body
 from pydantic import ValidationError
 
-from msgctl import __version__, verify
+from msgctl import __version__, credentials, remote, verify
 from msgctl.append import append_event
 from msgctl.errors import MsgctlError
 from msgctl.projection import PROJECTION_DB_NAME, open_db, project
@@ -110,6 +110,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.set_defaults(handler=cmd_verify)
 
+    # ENG-70: append-only per the §6/§10 cli.py collision protocol — four self-
+    # contained remote-mode subparser blocks + set_defaults(handler=...) at the end
+    # of build_parser. Namespaces (login/push/pull/invite) are disjoint from ENG-69's
+    # `rebuild-projections`; second-to-merge rebases (§10).
+    login_parser = subparsers.add_parser(
+        "login", help="bind a workspace to a live server (setup / accept-invite / re-login)"
+    )
+    login_parser.add_argument("dir", help="workspace directory (created if absent)")
+    login_parser.add_argument(
+        "--server-url", default=None, help="server base URL (e.g. http://localhost:8000)"
+    )
+    login_parser.add_argument(
+        "--setup", action="store_true", help="first-run: create workspace+owner"
+    )
+    login_parser.add_argument(
+        "--invite-token", default=None, help="join via a single-use invite token"
+    )
+    login_parser.add_argument("--email", default=None, help="account email")
+    login_parser.add_argument(
+        "--display-name", default=None, help="display name (setup/accept-invite)"
+    )
+    login_parser.add_argument(
+        "--workspace-name", default=None, help="workspace name (--setup only)"
+    )
+    login_parser.add_argument(
+        "--password",
+        default=None,
+        help="password (UNSAFE: leaks via argv; prefer MSGCTL_PASSWORD or the prompt)",
+    )
+    login_parser.add_argument(
+        "--device-label", default="msgctl", help="device label (default: msgctl)"
+    )
+    login_parser.set_defaults(handler=cmd_login)
+
+    push_parser = subparsers.add_parser("push", help="upload queued events to the bound server")
+    push_parser.add_argument("dir", help="workspace directory")
+    push_parser.set_defaults(handler=cmd_push)
+
+    pull_parser = subparsers.add_parser("pull", help="mirror server streams into the synced log")
+    pull_parser.add_argument("dir", help="workspace directory")
+    pull_parser.set_defaults(handler=cmd_pull)
+
+    invite_parser = subparsers.add_parser("invite", help="mint a single-use join URL (owner/admin)")
+    invite_parser.add_argument("dir", help="workspace directory")
+    invite_parser.add_argument(
+        "--role", choices=["member", "guest", "admin"], default="member", help="invitee role"
+    )
+    invite_parser.add_argument(
+        "--ttl-seconds", type=int, default=None, help="invite TTL in seconds"
+    )
+    invite_parser.set_defaults(handler=cmd_invite)
+
     return parser
 
 
@@ -121,6 +173,10 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_send(args: argparse.Namespace) -> int:
     ws = Workspace.open(args.dir)
+    # ENG-70: in a remote workspace the server is the sole sequencer, so authoring
+    # targets the outbox (never the M0 local-sequenced log). One-line branch.
+    if credentials.is_remote(ws):
+        return remote.cmd_send_remote(args, ws)
     stream_id = resolve_or_create_stream(ws, args.stream)
 
     author_user_id = args.author_user_id or ws.local_author.user_id
@@ -216,6 +272,23 @@ def cmd_verify(args: argparse.Namespace) -> int:
     else:
         print(verify.format_human(report, verbose=args.verbose))
     return report.exit_code
+
+
+# ENG-70: thin adapters delegating to msgctl.remote (self-contained per §6/§10).
+def cmd_login(args: argparse.Namespace) -> int:
+    return remote.cmd_login(args)
+
+
+def cmd_push(args: argparse.Namespace) -> int:
+    return remote.cmd_push(args)
+
+
+def cmd_pull(args: argparse.Namespace) -> int:
+    return remote.cmd_pull(args)
+
+
+def cmd_invite(args: argparse.Namespace) -> int:
+    return remote.cmd_invite(args)
 
 
 def main(argv: list[str] | None = None) -> int:

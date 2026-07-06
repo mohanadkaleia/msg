@@ -749,11 +749,15 @@ name = "msgctl"
 version = "0.1.0"
 source = { editable = "cli" }
 dependencies = [
+    { name = "httpx" },
     { name = "msgd" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "msgd", editable = "server" }]
+requires-dist = [
+    { name = "httpx" },
+    { name = "msgd", editable = "server" },
+]
 
 [[package]]
 name = "msgd"
