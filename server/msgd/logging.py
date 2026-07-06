@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import re
 from logging.config import dictConfig
 from typing import Any
 
@@ -29,14 +30,33 @@ _REDACTED_KEYS = frozenset(
     {"token", "password", "authorization", "secret", "session_token", "raw_token"}
 )
 
+# Belt-and-braces message-string scrub (ENG-68 security round 1): a ``token=<value>``
+# in a RENDERED log message (e.g. a URL printed by uvicorn or any future debug line)
+# is rewritten so no code path can log a raw session token, even though ENG-68 moved
+# the WS token off the URL onto ``Sec-WebSocket-Protocol``. Matches ``token=`` up to
+# the next whitespace / quote / ``&`` — enough for a query string or a bare pair.
+_QS_TOKEN_RE = re.compile(r"(?i)(token=)[^\s\"'&]+")
+
 
 class RedactSecretsFilter(logging.Filter):
-    """Drop sensitive ``extra=`` keys from every record before it is formatted."""
+    """Redact sensitive ``extra=`` keys AND any ``token=…`` in the rendered message.
+
+    The keys are dropped before formatting; the message-string scrub is the
+    defense-in-depth backstop for a secret that reaches the message text itself
+    (uvicorn's request-line log, a stray URL debug) rather than an ``extra=`` field.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         for key in _REDACTED_KEYS:
             if key in record.__dict__:
                 record.__dict__[key] = "[REDACTED]"
+        # Scrub the fully-rendered message (``getMessage`` applies ``%``-args), then
+        # pin it as ``msg`` with empty ``args`` so the redaction survives formatting.
+        message = record.getMessage()
+        scrubbed = _QS_TOKEN_RE.sub(r"\1[REDACTED]", message)
+        if scrubbed != message:
+            record.msg = scrubbed
+            record.args = ()
         return True
 
 

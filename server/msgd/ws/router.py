@@ -2,20 +2,38 @@
 
 Flow (§7):
 
-1. **Auth, pre-accept.** Read ``?token=…`` (WS clients cannot set ``Authorization``,
-   §3.3). Resolve it exactly as ``require_auth`` does — ``hash_token`` +
+1. **Auth, pre-accept.** The bearer token arrives via ``Sec-WebSocket-Protocol:
+   bearer, <token>`` — i.e. ``websocket.scope["subprotocols"] == ["bearer",
+   <token>]`` — **not** the query string. This overturns the plan's ``?token=…``
+   after security round 1 (finding b): a query token leaks the raw session token
+   into ``uvicorn.error`` request-line logs (and any proxy access log / browser
+   history / ``Referer``), defeating ENG-64 D2. The subprotocol form is the
+   idiomatic browser-WS bearer pattern (``new WebSocket(url, ["bearer", token])``)
+   and keeps the secret out of the URL entirely — do **not** "clean up" back to a
+   query param. The raw token is subprotocol-safe (``token_urlsafe`` → tchar-clean,
+   no padding). Resolve it exactly as ``require_auth`` does — ``hash_token`` +
    ``lookup_session`` + the same expiry/deactivation checks + the throttled
    ``bump_session`` (D4) — using the standard, test-overridable ``get_session``.
-   Any failure closes the socket **before** ``accept()`` with app code ``4401``
-   (uniform, non-disclosing). The session-loading is re-called inline rather than
-   factored out of the merged ``deps.require_auth``.
-2. **Accept + register (cap, §5).** ``accept()`` then register in the hub. Over the
-   per-user cap → accept-then-close ``4029`` (so the client receives the code).
+   Any failure (missing/malformed subprotocol, unknown/expired token, deactivated
+   user) closes the socket **before** ``accept()`` with app code ``4401`` (uniform,
+   non-disclosing). Session-loading is re-called inline rather than factored out of
+   the merged ``deps.require_auth``.
+2. **Accept + register (cap, §5).** ``accept(subprotocol="bearer")`` — the echo is
+   REQUIRED or a real browser aborts the handshake — then register in the hub. Over
+   the per-user cap → accept-then-close ``4029`` (so the client receives the code).
 3. **Serve.** Two concurrent coroutines for the socket's lifetime — a tolerant
    receive loop (client ``ping`` → server ``pong``; client ``pong`` clears the
    outstanding-ping flag; every other frame ignored, D9) and a 30 s heartbeat
    (send ``ping``; if the previous one is still unanswered, close ``4408``).
    Whichever ends first tears the other down; a single ``finally`` deregisters.
+
+Identity-snapshot caveat (security round 1, hardening note 2): the connection
+captures ``user_id``/``role``/``workspace_id``/``device_id`` at connect. **Stream
+membership is live per-send** (the hub re-runs the read predicate on every event),
+so a member removed from a channel stops receiving its fanout on the next event.
+Session *revocation* and *workspace-role* changes are **not** re-checked mid-socket
+— tearing a live socket down on those needs a hub signal that is M2/M3 work. So the
+"instant revocation" property is scoped to stream membership, not session validity.
 """
 
 from __future__ import annotations
@@ -43,6 +61,31 @@ router = APIRouter()
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
+#: The WS subprotocol carrying the bearer token: ``Sec-WebSocket-Protocol: bearer,
+#: <token>`` (security round 1 — token off the URL). Echoed on ``accept``.
+_BEARER_SUBPROTOCOL = "bearer"
+
+
+def _bearer_token(websocket: WebSocket) -> str | None:
+    """Return the bearer token from ``["bearer", <token>]`` subprotocols, else None.
+
+    Starlette parses ``Sec-WebSocket-Protocol`` into ``scope["subprotocols"]``. A
+    well-formed request is exactly ``[_BEARER_SUBPROTOCOL, <token>]``; anything else
+    (absent, ``["bearer"]`` with no token, a non-``bearer`` first element) yields
+    ``None`` → the uniform pre-accept ``4401``.
+
+    Elements are stripped of the RFC 7230 optional whitespace (OWS) around
+    list items: uvicorn strips it, but a naive comma-split (the ASGI test transport)
+    leaves a leading space on ``" <token>"``. A subprotocol token is ``tchar`` only
+    (``token_urlsafe`` output has no whitespace), so stripping is loss-free.
+    """
+    protocols: list[str] = list(websocket.scope.get("subprotocols") or [])
+    if len(protocols) >= 2 and protocols[0].strip() == _BEARER_SUBPROTOCOL:
+        token = protocols[1].strip()
+        if token:
+            return token
+    return None
+
 
 class _HeartbeatState:
     """Shared liveness flag between the receive loop and the heartbeat loop."""
@@ -62,7 +105,9 @@ async def websocket_endpoint(websocket: WebSocket, db: DbSession) -> None:
     if connection is None:
         return  # already closed pre-accept with 4401
 
-    await websocket.accept()
+    # Echo the negotiated subprotocol — a real browser aborts the handshake without
+    # it (the token travelled in Sec-WebSocket-Protocol, security round 1).
+    await websocket.accept(subprotocol=_BEARER_SUBPROTOCOL)
     if not hub.try_register(connection, max_connections=settings.ws_max_connections_per_user):
         # Accept-then-close so the client receives the 4029 close frame (§5).
         await websocket.close(code=WSCloseCode.TOO_MANY_CONNECTIONS)
@@ -77,13 +122,17 @@ async def websocket_endpoint(websocket: WebSocket, db: DbSession) -> None:
 async def _authenticate(
     websocket: WebSocket, db: AsyncSession, settings: Settings
 ) -> Connection | None:
-    """Resolve the query token → :class:`Connection`, or close ``4401`` and return None.
+    """Resolve the subprotocol token → :class:`Connection`, or close ``4401`` (None).
 
-    Uniform, non-disclosing failure (missing/unknown token, expired session,
-    deactivated user) — same discipline as ``require_auth`` — always closed
-    **before** ``accept()`` so no unauthenticated socket is ever accepted.
+    The token is the second value of ``Sec-WebSocket-Protocol: bearer, <token>`` —
+    read from ``scope["subprotocols"]`` (security round 1: never the URL, so it
+    cannot leak into request-line logs). A missing/malformed subprotocol is the
+    uniform, non-disclosing ``4401`` — identical to an unknown token, an expired
+    session, or a deactivated user — and always closed **before** ``accept()`` so no
+    unauthenticated socket is ever accepted. The ``?token=`` query param is
+    deliberately never consulted (no fallback that could re-expose the secret).
     """
-    token = websocket.query_params.get("token")
+    token = _bearer_token(websocket)
     if not token:
         await websocket.close(code=WSCloseCode.UNAUTHENTICATED)
         return None

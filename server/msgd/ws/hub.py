@@ -48,8 +48,13 @@ __all__ = ["Hub", "SessionFactory", "hub"]
 
 #: Per-socket send timeout (§4): a wedged socket cannot stall the fan-out or the
 #: post-commit tail of the accept request — its frame is dropped and it is
-#: deregistered. Generous because a healthy in-loop ASGI send is sub-millisecond.
-_SEND_TIMEOUT_SECONDS: float = 5.0
+#: deregistered. ~3 s because a healthy in-loop ASGI send is sub-millisecond; sends
+#: run concurrently under ``gather`` so the worst-case added tail is one timeout,
+#: not N (security round 1, hardening note 1 — the documented single-worker fanout
+#: ceiling, §4/§14). Promoting this to an operator-tunable ``Settings`` field is
+#: deferred: the hub is intentionally settings-less (the frozen seam carries no app
+#: handle), and the architectural fix is the post-M1 pub/sub layer.
+_SEND_TIMEOUT_SECONDS: float = 3.0
 
 #: A callable yielding a short-lived read session as an async context manager.
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]

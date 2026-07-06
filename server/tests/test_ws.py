@@ -7,6 +7,10 @@ the same rolled-back per-test transaction as the HTTP setup / batch calls. The
 ``make_ws_client(ws_app)`` in its own task (the transport's anyio task group must
 be opened and closed in the same task — see the harness note).
 
+The bearer token travels in ``Sec-WebSocket-Protocol: bearer, <token>`` (security
+round 1 — off the URL), i.e. ``aconnect_ws(url, client=…, subprotocols=["bearer",
+token])``; the server echoes ``bearer`` on accept.
+
 httpx-ws surfaces a close code two ways: a **pre-accept** reject raises
 ``WebSocketDisconnect`` from ``aconnect_ws.__aenter__``; an **accept-then-close**
 (or a mid-session server close) raises it from ``receive`` *inside* the ``async
@@ -17,6 +21,8 @@ INSIDE the context manager or anyio re-wraps them in an ``ExceptionGroup``.
 from __future__ import annotations
 
 import contextlib
+import io
+import logging
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -40,6 +46,7 @@ from msgd.core import ids
 from msgd.core.envelope import Body, Envelope, ServerMetadata
 from msgd.core.hashing import hash_event
 from msgd.db.models import Session, User
+from msgd.logging import RedactSecretsFilter
 from msgd.settings import Settings
 from msgd.ws.frames import WSCloseCode, event_frame
 from msgd.ws.hub import hub
@@ -51,17 +58,24 @@ from starlette.websockets import WebSocket
 # --- URL + socket helpers --------------------------------------------------------
 
 
-def _ws_url(token: str) -> str:
-    return f"http://test/v1/ws?token={token}"
+_WS_URL = "http://test/v1/ws"
+
+
+def _bearer(token: str) -> list[str]:
+    """The ``Sec-WebSocket-Protocol`` value list for a bearer ``token``."""
+    return ["bearer", token]
 
 
 def _aconnect(
-    url: str, *, client: AsyncClient
+    client: AsyncClient, *, subprotocols: list[str] | None
 ) -> AbstractAsyncContextManager[AsyncWebSocketSession]:
-    """Typed wrapper over ``aconnect_ws`` (its session typevar is otherwise unbound)."""
+    """Typed ``aconnect_ws`` wrapper — the token rides in ``subprotocols`` (off URL).
+
+    Its session typevar is otherwise unbound, hence the cast.
+    """
     return cast(
         "AbstractAsyncContextManager[AsyncWebSocketSession]",
-        aconnect_ws(url, client=client),
+        aconnect_ws(_WS_URL, client=client, subprotocols=subprotocols),
     )
 
 
@@ -90,10 +104,12 @@ async def _sync(ws: AsyncWebSocketSession) -> None:
     await _read_until(ws, "pong")
 
 
-async def _connect_expect_close(client: AsyncClient, url: str, *, timeout: float = 2.0) -> int:
+async def _connect_expect_close(
+    client: AsyncClient, subprotocols: list[str] | None, *, timeout: float = 2.0
+) -> int:
     """Connect and return the close code, whether rejected pre-accept or after accept."""
     try:
-        async with _aconnect(url, client=client) as ws:
+        async with _aconnect(client, subprotocols=subprotocols) as ws:
             try:
                 while True:
                     await ws.receive_json(timeout=timeout)
@@ -138,13 +154,13 @@ async def _member_event(
 
 async def test_ws_reject_missing_token(ws_app: FastAPI) -> None:
     async with make_ws_client(ws_app) as client:
-        code = await _connect_expect_close(client, "http://test/v1/ws")
+        code = await _connect_expect_close(client, None)
         assert code == WSCloseCode.UNAUTHENTICATED
 
 
 async def test_ws_reject_bad_token(ws_app: FastAPI) -> None:
     async with make_ws_client(ws_app) as client:
-        code = await _connect_expect_close(client, _ws_url("not-a-real-token"))
+        code = await _connect_expect_close(client, _bearer("not-a-real-token"))
         assert code == WSCloseCode.UNAUTHENTICATED
 
 
@@ -156,7 +172,7 @@ async def test_ws_reject_expired_session(ws_app: FastAPI, db_session: AsyncSessi
             .where(Session.token_hash == hash_token(owner["token"]))
             .values(expires_at=datetime.now(UTC) - timedelta(days=1))
         )
-        code = await _connect_expect_close(client, _ws_url(owner["token"]))
+        code = await _connect_expect_close(client, _bearer(owner["token"]))
         assert code == WSCloseCode.UNAUTHENTICATED
 
 
@@ -168,7 +184,7 @@ async def test_ws_reject_deactivated_user(ws_app: FastAPI, db_session: AsyncSess
             .where(User.user_id == owner["user_id"])
             .values(deactivated_at=datetime.now(UTC))
         )
-        code = await _connect_expect_close(client, _ws_url(owner["token"]))
+        code = await _connect_expect_close(client, _bearer(owner["token"]))
         assert code == WSCloseCode.UNAUTHENTICATED
 
 
@@ -180,7 +196,7 @@ async def test_ws_happy_path_fanout(ws_app: FastAPI, db_session: AsyncSession) -
         owner = await do_setup(client)
         channel = await bootstrap_channel(client, db_session, owner)
 
-        async with _aconnect(_ws_url(owner["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
             await _sync(ws)
             body = message_body(auth=owner, stream_id=channel, text="hi")
             resp = await post_batch(client, owner["token"], [wire_item(body)])
@@ -204,8 +220,8 @@ async def test_ws_adversary_receives_zero_frames(ws_app: FastAPI, db_session: As
         await _member_event(client, owner, private_stream=private, target=member, added=True)
 
         async with (
-            _aconnect(_ws_url(member["token"]), client=client) as ws_member,
-            _aconnect(_ws_url(adversary["token"]), client=client) as ws_adv,
+            _aconnect(client, subprotocols=_bearer(member["token"])) as ws_member,
+            _aconnect(client, subprotocols=_bearer(adversary["token"])) as ws_adv,
         ):
             await _sync(ws_member)
             await _sync(ws_adv)
@@ -233,7 +249,7 @@ async def test_ws_membership_removal_stops_fanout(
         private = await bootstrap_channel(client, db_session, owner, visibility="private")
         await _member_event(client, owner, private_stream=private, target=member, added=True)
 
-        async with _aconnect(_ws_url(member["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(member["token"])) as ws:
             await _sync(ws)
 
             first = message_body(auth=owner, stream_id=private, text="one")
@@ -264,14 +280,14 @@ async def test_ws_connection_cap(ws_app: FastAPI, db_session: AsyncSession) -> N
             sockets: list[AsyncWebSocketSession] = []
             for _ in range(10):
                 ws = await stack.enter_async_context(
-                    _aconnect(_ws_url(owner["token"]), client=client)
+                    _aconnect(client, subprotocols=_bearer(owner["token"]))
                 )
                 await _sync(ws)
                 sockets.append(ws)
             assert hub.connection_count() == 10
 
             # The 11th is accepted then closed 4029; the first 10 stay live.
-            code = await _connect_expect_close(client, _ws_url(owner["token"]))
+            code = await _connect_expect_close(client, _bearer(owner["token"]))
             assert code == WSCloseCode.TOO_MANY_CONNECTIONS
             assert hub.connection_count() == 10
 
@@ -289,7 +305,7 @@ async def test_ws_connection_cap(ws_app: FastAPI, db_session: AsyncSession) -> N
 async def test_ws_client_ping_gets_pong(ws_app: FastAPI) -> None:
     async with make_ws_client(ws_app) as client:
         owner = await do_setup(client)
-        async with _aconnect(_ws_url(owner["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
             await ws.send_json({"t": "ping"})
             assert await _read_until(ws, "pong") == {"t": "pong"}
 
@@ -304,7 +320,7 @@ async def test_ws_missed_heartbeat_closes_4408(
 
     async with make_ws_client(app) as client:
         owner = await do_setup(client)
-        async with _aconnect(_ws_url(owner["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
             # Never answer the server's ping → the next tick closes 4408.
             with pytest.raises(WebSocketDisconnect) as excinfo:
                 while True:
@@ -322,7 +338,7 @@ async def test_ws_rejected_event_produces_no_frame(
         owner = await do_setup(client)
         channel = await bootstrap_channel(client, db_session, owner)
 
-        async with _aconnect(_ws_url(owner["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
             await _sync(ws)
             good = message_body(auth=owner, stream_id=channel, text="ok")
             # A message to a non-existent stream is rejected (permission_denied) and
@@ -397,7 +413,7 @@ async def test_ws_idempotent_reaccept_no_double_push(
         owner = await do_setup(client)
         channel = await bootstrap_channel(client, db_session, owner)
 
-        async with _aconnect(_ws_url(owner["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
             await _sync(ws)
             item = wire_item(message_body(auth=owner, stream_id=channel))
             await post_batch(client, owner["token"], [item])
@@ -425,7 +441,7 @@ async def test_ws_dead_socket_isolated(ws_app: FastAPI, db_session: AsyncSession
         owner = await do_setup(client)
         channel = await bootstrap_channel(client, db_session, owner)
 
-        async with _aconnect(_ws_url(owner["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
             await _sync(ws)
             # Inject a failing connection for the same user directly into the registry.
             dead = Connection(
@@ -457,8 +473,8 @@ async def test_ws_multi_device_same_user(ws_app: FastAPI, db_session: AsyncSessi
         channel = await bootstrap_channel(client, db_session, owner)
 
         async with (
-            _aconnect(_ws_url(owner["token"]), client=client) as ws1,
-            _aconnect(_ws_url(owner["token"]), client=client) as ws2,
+            _aconnect(client, subprotocols=_bearer(owner["token"])) as ws1,
+            _aconnect(client, subprotocols=_bearer(owner["token"])) as ws2,
         ):
             await _sync(ws1)
             await _sync(ws2)
@@ -477,7 +493,7 @@ async def test_ws_multi_device_same_user(ws_app: FastAPI, db_session: AsyncSessi
 async def test_ws_unknown_inbound_frame_ignored(ws_app: FastAPI) -> None:
     async with make_ws_client(ws_app) as client:
         owner = await do_setup(client)
-        async with _aconnect(_ws_url(owner["token"]), client=client) as ws:
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
             await _sync(ws)
             await ws.send_json({"t": "typing", "stream_id": "s_x"})  # reserved M3 → ignored
             await ws.send_text("not-json{{{")  # garbage → ignored
@@ -485,3 +501,69 @@ async def test_ws_unknown_inbound_frame_ignored(ws_app: FastAPI) -> None:
             # Still open and responsive.
             await ws.send_json({"t": "ping"})
             assert await _read_until(ws, "pong") == {"t": "pong"}
+
+
+# --- T-SEC (security round 1): token off the URL + never logged ------------------
+
+
+async def test_ws_token_never_appears_in_logs(ws_app: FastAPI, db_session: AsyncSession) -> None:
+    """T-SEC-1 (regression for finding b): the raw token leaks into NO log record.
+
+    Captures ``root`` + the ``uvicorn*`` loggers (which carry the handshake line in
+    production) across a full authenticated connect + accept + fanout, and asserts
+    the raw session token appears nowhere — message or field. This is the guard that
+    was missing when the query-param form leaked the token into ``uvicorn.error``.
+    """
+    buffer = io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    handler.setLevel(logging.DEBUG)
+    handler.addFilter(RedactSecretsFilter())  # the same filter the app installs
+    names = ("", "uvicorn", "uvicorn.error", "uvicorn.access")
+    loggers = [logging.getLogger(name) for name in names]
+    previous = [(lg, lg.level) for lg in loggers]
+    for lg in loggers:
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+    try:
+        async with make_ws_client(ws_app) as client:
+            owner = await do_setup(client)
+            channel = await bootstrap_channel(client, db_session, owner)
+            async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
+                await _sync(ws)
+                body = message_body(auth=owner, stream_id=channel, text="hi")
+                await post_batch(client, owner["token"], [wire_item(body)])
+                frame = await _recv_event(ws)
+                assert frame["event"]["body"]["event_id"] == body["event_id"]
+                token = owner["token"]
+    finally:
+        for lg, level in previous:
+            lg.removeHandler(handler)
+            lg.setLevel(level)
+
+    assert token not in buffer.getvalue(), "the raw session token leaked into the logs"
+
+
+async def test_ws_subprotocol_echoed_on_accept(ws_app: FastAPI) -> None:
+    """T-SEC-2: a valid ``["bearer", token]`` connect succeeds and echoes ``bearer``.
+
+    A dropped echo breaks a real browser handshake, so assert the negotiated
+    response subprotocol explicitly.
+    """
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        async with _aconnect(client, subprotocols=_bearer(owner["token"])) as ws:
+            assert ws.subprotocol == "bearer"
+            await _sync(ws)
+
+
+async def test_ws_malformed_subprotocol_rejects_4401(ws_app: FastAPI) -> None:
+    """T-SEC-3: absent / token-less / non-bearer subprotocol → uniform 4401 pre-accept."""
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        for subprotocols in (
+            None,  # no Sec-WebSocket-Protocol at all
+            ["bearer"],  # the bearer marker with no token element
+            ["notbearer", owner["token"]],  # valid token but wrong marker
+        ):
+            code = await _connect_expect_close(client, subprotocols)
+            assert code == WSCloseCode.UNAUTHENTICATED, subprotocols

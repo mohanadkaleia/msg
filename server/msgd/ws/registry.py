@@ -25,6 +25,13 @@ class Connection:
 
     ``eq=False`` keeps identity-based hashing (each socket is a distinct object),
     so two connections for one user are two distinct set members.
+
+    Snapshot caveat (security round 1, hardening note 2): ``role``/``workspace_id``
+    are captured once at connect. **Stream membership is re-checked live per-send**
+    by the hub, so channel removal cuts fanout on the next event; but session
+    revocation and workspace-role changes are NOT re-evaluated mid-socket (that
+    needs a hub teardown signal — M2/M3). "Instant revocation" is therefore scoped
+    to stream membership, not session validity.
     """
 
     websocket: WebSocket

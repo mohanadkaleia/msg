@@ -69,3 +69,39 @@ def test_redact_filter_scrubs_sensitive_extra() -> None:
     assert RedactSecretsFilter().filter(record) is True
     assert record.token == "[REDACTED]"  # type: ignore[attr-defined]
     assert record.password == "[REDACTED]"  # type: ignore[attr-defined]
+
+
+def test_redact_filter_scrubs_token_in_message() -> None:
+    """T-SEC-4 (ENG-68 security round 1): a ``token=…`` in the RENDERED message is scrubbed.
+
+    Belt-and-braces backstop, independent of the WS path: even though ENG-68 moved
+    the WS token off the URL, no message text (e.g. a URL logged by uvicorn or a
+    debug line) may carry a raw token. Covers both a literal message and one built
+    from ``%``-args.
+    """
+    literal = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='connection open GET /v1/ws?token=tok_ABC-123_secret "accepted"',
+        args=None,
+        exc_info=None,
+    )
+    assert RedactSecretsFilter().filter(literal) is True
+    assert "token=[REDACTED]" in literal.getMessage()
+    assert "tok_ABC-123_secret" not in literal.getMessage()
+
+    # The token arriving via %-args must also be scrubbed (args are collapsed).
+    formatted = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="request %s",
+        args=("http://h/v1/ws?token=tok_DEF-456_secret&x=1",),
+        exc_info=None,
+    )
+    assert RedactSecretsFilter().filter(formatted) is True
+    assert "tok_DEF-456_secret" not in formatted.getMessage()
+    assert "token=[REDACTED]" in formatted.getMessage()
