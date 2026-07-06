@@ -5,10 +5,13 @@
 // engine (ENG-79) and projections (ENG-80), which register handlers here,
 // unit-testable in vitest against fake-indexeddb or MemoryDb, no browser.
 
+import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
+import { createHttpClient, type HttpClient } from './http'
 import {
   MAX_CACHED_EVENTS_PER_STREAM,
   topicKey,
+  type AuthResult,
   type MessageSink,
   type MsgDb,
   type NotImplementedResult,
@@ -30,6 +33,11 @@ export interface RpcResultMap {
   ping: { pong: true }
   query: NotImplementedResult
   mutate: NotImplementedResult
+  'auth.login': AuthResult
+  'auth.setup': AuthResult
+  'auth.acceptInvite': AuthResult
+  'auth.status': AuthResult
+  'auth.logout': { ok: true }
 }
 
 /** A handler typed to exactly one method's request variant and result. */
@@ -46,21 +54,62 @@ interface Subscription {
   topic: Topic
 }
 
+/**
+ * WorkerCore construction knobs. The HTTP client is injectable so tests pass a
+ * fake `fetch` with no network; the production default is real `fetch` over
+ * same-origin relative `/v1` paths (R-f). All three transports construct
+ * WorkerCore with no options, so the default path is zero-config.
+ */
+export interface WorkerCoreOptions {
+  /** A fully-formed HTTP client (tests). Wins over `fetchImpl`/`baseUrl`. */
+  http?: HttpClient
+  /** Inject a fake `fetch` (tests) while keeping the default token wiring. */
+  fetchImpl?: typeof fetch
+  /** Override the API base URL (default '' → relative same-origin paths). */
+  baseUrl?: string
+}
+
 export class WorkerCore {
   private readonly handlers = new Map<RpcMethod, AnyRpcHandler>()
   /** Keyed by the subscription's correlation id. */
   private readonly subs = new Map<string, Subscription>()
+  /** The session owner (ENG-78). Holds the token in-memory + persists to `meta`. */
+  private readonly auth: AuthManager
 
   constructor(
     private readonly db: MsgDb,
     private readonly sink: MessageSink,
+    options: WorkerCoreOptions = {},
   ) {
+    // The HTTP client reads the token from — and clears the session through —
+    // this same manager. `getToken`/`onUnauthorized` are invoked only at call
+    // time (well after construction), so referencing `this.auth` here is safe.
+    const http =
+      options.http ??
+      createHttpClient({
+        baseUrl: options.baseUrl ?? '',
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        getToken: () => this.auth.getToken(),
+        onUnauthorized: () => this.auth.clearSession(),
+      })
+    this.auth = new AuthManager(db, http)
     this.registerDefaults()
+    this.registerAuth()
   }
 
-  /** Run once after construction: reconcile PROJECTION_VERSION (D-4). */
+  /** Run once after construction: reconcile PROJECTION_VERSION (D-4) + restore session. */
   async init(): Promise<void> {
     await checkProjectionVersion(this.db)
+    await this.auth.restore()
+  }
+
+  /**
+   * Worker-internal token accessor for the ENG-79 WS connect path (R8). Lives on
+   * the core (which the transports own) and is NOT part of the tab-facing RPC
+   * surface — no tab can reach it.
+   */
+  getToken(): string | null {
+    return this.auth.getToken()
   }
 
   /**
@@ -161,6 +210,21 @@ export class WorkerCore {
 
     this.register('mutate', (req) =>
       Promise.resolve({ code: 'not_implemented', detail: req.params.m }),
+    )
+  }
+
+  // -- ENG-78 auth handlers ------------------------------------------------
+  // Real handlers delegating to the AuthManager (R5). Results are token-free
+  // application-level values — a wrong password is NOT an RPC rejection, so the
+  // RpcCallError reject path stays reserved for genuine transport/handler faults.
+
+  private registerAuth(): void {
+    this.register('auth.login', (req) => this.auth.login(req.params))
+    this.register('auth.setup', (req) => this.auth.setup(req.params))
+    this.register('auth.acceptInvite', (req) => this.auth.acceptInvite(req.params))
+    this.register('auth.logout', () => this.auth.logout())
+    this.register('auth.status', () =>
+      Promise.resolve({ ok: true, status: this.auth.status() } satisfies AuthResult),
     )
   }
 }

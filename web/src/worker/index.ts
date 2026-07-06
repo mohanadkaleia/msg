@@ -3,6 +3,7 @@
 
 export {
   createWorkerClient,
+  getWorkerClient,
   makeWorkerClient,
   detectTransportKind,
   type WorkerEnv,
@@ -21,4 +22,11 @@ export {
   type MutateParams,
   type MutateResult,
   type PushPayload,
+  type AuthStatus,
+  type AuthResult,
+  type LoginCredentials,
+  type SetupCredentials,
+  type AcceptInviteCredentials,
 } from './types'
+
+export type { ApiError, ApiResult } from './http'

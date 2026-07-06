@@ -10,13 +10,18 @@ import { openDb } from './db'
 import { createLeaderTransport } from './leader'
 import { createRpcCaller } from './rpc'
 import {
+  type AcceptInviteCredentials,
+  type AuthResult,
+  type AuthStatus,
   type FromWorker,
+  type LoginCredentials,
   type MsgDb,
   type MutateParams,
   type MutateResult,
   type PushPayload,
   type QueryParams,
   type QueryResult,
+  type SetupCredentials,
   type Topic,
   type ToWorker,
   type Transport,
@@ -83,6 +88,21 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
     },
     status: () => transport.status(),
     onStatus: (h) => transport.onStatus(h),
+    // The auth namespace keeps stores off the wire (R5). Every result is
+    // token-free; credentials cross tab→worker over structured-clone postMessage.
+    auth: {
+      login: (c: LoginCredentials) =>
+        caller.request({ method: 'auth.login', params: c }) as Promise<AuthResult>,
+      setup: (c: SetupCredentials) =>
+        caller.request({ method: 'auth.setup', params: c }) as Promise<AuthResult>,
+      acceptInvite: (c: AcceptInviteCredentials) =>
+        caller.request({ method: 'auth.acceptInvite', params: c }) as Promise<AuthResult>,
+      logout: () => caller.request({ method: 'auth.logout', params: {} }) as Promise<{ ok: true }>,
+      status: () =>
+        (caller.request({ method: 'auth.status', params: {} }) as Promise<AuthResult>).then((r) =>
+          r.ok ? r.status : ({ authenticated: false } satisfies AuthStatus),
+        ),
+    },
     dispose: () => {
       caller.dispose()
       transport.dispose()
@@ -209,4 +229,18 @@ export async function createWorkerClient(
   const client = makeWorkerClient(clientId, transport)
   await client.ready()
   return client
+}
+
+// ---------------------------------------------------------------------------
+// Module-level singleton (ENG-78). The tab creates exactly one WorkerClient for
+// the page; stores and the router guard consume it via `getWorkerClient()`. This
+// is the M2 seam intent — ENG-82 may swap it for provide/inject.
+// ---------------------------------------------------------------------------
+
+let clientPromise: Promise<WorkerClient> | undefined
+
+/** The one WorkerClient for this tab, created lazily on first use. */
+export function getWorkerClient(): Promise<WorkerClient> {
+  if (!clientPromise) clientPromise = createWorkerClient()
+  return clientPromise
 }

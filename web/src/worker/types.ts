@@ -5,6 +5,8 @@
 // (stores, ENG-82) and the worker side (SharedWorker / leader). Everything on
 // the wire is plain, structured-clone-safe data.
 
+import type { ApiError } from './http'
+
 // ---------------------------------------------------------------------------
 // Versioning + bounds
 // ---------------------------------------------------------------------------
@@ -19,6 +21,31 @@ export const PROJECTION_VERSION = 1
 
 /** `meta` key under which the current `PROJECTION_VERSION` is stored. */
 export const META_PROJECTION_VERSION = 'projection_version'
+
+// ---------------------------------------------------------------------------
+// Session meta keys (ENG-78, §7). The SharedWorker owns the token; these rows
+// persist the session across reloads (R1). `META_DEVICE_ID` survives logout —
+// it is browser-install identity, not session state (R3). No tab ever reads
+// `META_SESSION_TOKEN`; it is used only worker-side (Authorization / WS bearer).
+// ---------------------------------------------------------------------------
+
+/** Raw bearer token — worker-only; NEVER returned to a tab (R1). */
+export const META_SESSION_TOKEN = 'session_token'
+/** Per-browser-install device identity; reused on re-login, kept across logout. */
+export const META_DEVICE_ID = 'device_id'
+/** Cached identity of the signed-in user. */
+export const META_MY_USER_ID = 'my_user_id'
+/** Cached workspace of the signed-in user. */
+export const META_WORKSPACE_ID = 'workspace_id'
+/** Cached role of the signed-in user. */
+export const META_ROLE = 'role'
+/** Rolling session expiry (RFC 3339 string). */
+export const META_SESSION_EXPIRES_AT = 'session_expires_at'
+/**
+ * Optional multi-server base URL. Reserved for a future client; omitted in M2
+ * (the SPA is served same-origin, so relative `/v1` paths are used). Do not set.
+ */
+export const META_SERVER_URL = 'server_url'
 
 /** Bounded cache: newest ~N events kept per stream; older pages re-fetched. */
 export const MAX_CACHED_EVENTS_PER_STREAM = 2000
@@ -160,11 +187,53 @@ export interface RpcError {
   detail?: string
 }
 
+// ---------------------------------------------------------------------------
+// Auth taxonomy (ENG-78, R5). Credentials cross tab→worker over the in-process
+// postMessage RPC (never a tab network hop); the worker POSTs them and keeps the
+// resulting token worker-only. Every result below is TOKEN-FREE by construction.
+// ---------------------------------------------------------------------------
+
+export interface LoginCredentials {
+  email: string
+  password: string
+}
+
+export interface SetupCredentials {
+  workspace_name: string
+  email: string
+  password: string
+  display_name: string
+}
+
+export interface AcceptInviteCredentials {
+  token: string
+  email: string
+  display_name: string
+  password: string
+}
+
+/** Tab-facing identity — carries NO token (R1). */
+export interface AuthStatus {
+  authenticated: boolean
+  my_user_id?: string
+  workspace_id?: string
+  role?: string
+  expires_at?: string
+}
+
+/** Application-level auth outcome (token-free); a wrong password is not an RPC fault. */
+export type AuthResult = { ok: true; status: AuthStatus } | { ok: false; error: ApiError }
+
 export type RpcRequest =
   | { method: 'meta.get'; params: { key: string } }
   | { method: 'query'; params: QueryParams }
   | { method: 'mutate'; params: MutateParams }
   | { method: 'ping'; params: Record<string, never> }
+  | { method: 'auth.login'; params: LoginCredentials }
+  | { method: 'auth.setup'; params: SetupCredentials }
+  | { method: 'auth.acceptInvite'; params: AcceptInviteCredentials }
+  | { method: 'auth.logout'; params: Record<string, never> }
+  | { method: 'auth.status'; params: Record<string, never> }
 
 export type RpcMethod = RpcRequest['method']
 
@@ -243,6 +312,19 @@ export interface WorkerClient {
   /** Current transport/connection status. */
   status(): WorkerStatus
   onStatus(handler: (s: WorkerStatus) => void): Unsubscribe
+
+  /**
+   * Auth namespace (ENG-78). The tab issues intent; the worker owns the token.
+   * `login/setup/acceptInvite` return token-free application-level results;
+   * `status` returns identity only. No method ever exposes the raw token (R1).
+   */
+  auth: {
+    login(c: LoginCredentials): Promise<AuthResult>
+    setup(c: SetupCredentials): Promise<AuthResult>
+    acceptInvite(c: AcceptInviteCredentials): Promise<AuthResult>
+    logout(): Promise<{ ok: true }>
+    status(): Promise<AuthStatus>
+  }
 
   /** Detach this tab (close port / leave channel). Idempotent. */
   dispose(): void
