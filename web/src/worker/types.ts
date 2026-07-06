@@ -637,6 +637,18 @@ export interface WorkerClient {
     status(): Promise<AuthStatus>
   }
 
+  /**
+   * Sync namespace (ENG-79/82). Thin tab-facing accessors over the already-
+   * registered `sync.status` / `sync.backfill` RPC handlers — no new worker
+   * logic. The shell reads the initial status here (the live stream arrives on
+   * the `{kind:'sync'}` push) and drives scroll-top scrollback via `backfill`,
+   * which extends the stream's window backward one server page (§10).
+   */
+  sync: {
+    status(): Promise<SyncStatus>
+    backfill(streamId: string): Promise<BackfillResult>
+  }
+
   /** Detach this tab (close port / leave channel). Idempotent. */
   dispose(): void
 }

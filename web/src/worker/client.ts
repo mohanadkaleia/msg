@@ -13,6 +13,7 @@ import {
   type AcceptInviteCredentials,
   type AuthResult,
   type AuthStatus,
+  type BackfillResult,
   type FromWorker,
   type LoginCredentials,
   type MsgDb,
@@ -22,6 +23,7 @@ import {
   type QueryParams,
   type QueryResult,
   type SetupCredentials,
+  type SyncStatus,
   type Topic,
   type ToWorker,
   type Transport,
@@ -102,6 +104,17 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
         (caller.request({ method: 'auth.status', params: {} }) as Promise<AuthResult>).then((r) =>
           r.ok ? r.status : ({ authenticated: false } satisfies AuthStatus),
         ),
+    },
+    // Thin accessors over the existing sync.* RPC handlers (ENG-79). The shell
+    // reads the initial status + drives scrollback backfill through these; the
+    // live status stream still arrives on the `{kind:'sync'}` push subscription.
+    sync: {
+      status: () => caller.request({ method: 'sync.status', params: {} }) as Promise<SyncStatus>,
+      backfill: (streamId: string) =>
+        caller.request({
+          method: 'sync.backfill',
+          params: { stream_id: streamId },
+        }) as Promise<BackfillResult>,
     },
     dispose: () => {
       caller.dispose()
