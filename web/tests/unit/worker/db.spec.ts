@@ -102,7 +102,17 @@ async function seedAllTables(db: MsgDb): Promise<void> {
   await db.putEvents([
     { stream_id: 's1', server_sequence: 1, event_id: 'e1', type: 'msg', envelope: stubEnvelope(1) },
   ])
-  await db.putOutbox([{ event_id: 'o1', created_at: 1, body: { text: 'hi' }, state: 'queued' }])
+  await db.putOutbox([
+    {
+      event_id: 'o1',
+      created_at: 1,
+      body: { text: 'hi' },
+      event_hash: 'sha256:o1',
+      message_id: 'm_o1',
+      stream_id: 's1',
+      state: 'queued',
+    },
+  ])
   await db.putMessages([
     {
       message_id: 'm1',

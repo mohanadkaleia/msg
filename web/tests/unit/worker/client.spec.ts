@@ -69,9 +69,10 @@ describe('makeWorkerClient surface (identical across transports)', () => {
     await expect(client.query({ q: 'message.get', message_id: 'm_missing' })).resolves.toEqual({
       message: null,
     })
-    await expect(client.mutate({ m: 'send' })).resolves.toEqual({
-      code: 'not_implemented',
-      detail: 'send',
+    // The `mutate` verb now carries real outbox mutations (ENG-81); an
+    // `outbox.retry` on an unknown id is a coded-error-free no-op → { ok: true }.
+    await expect(client.mutate({ m: 'outbox.retry', event_id: 'e_missing' })).resolves.toEqual({
+      ok: true,
     })
   })
 

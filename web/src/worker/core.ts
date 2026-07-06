@@ -8,19 +8,26 @@
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
 import { createHttpClient, type HttpClient } from './http'
-import { getMessage, listMessages, listStreamsForSidebar } from './projection'
+import { Outbox } from './outbox'
+import {
+  applyEventsToProjection,
+  getMessage,
+  listMessages,
+  listStreamsForSidebar,
+} from './projection'
 import { SyncEngine } from './sync'
 import { browserWsFactory, type WsFactory } from './ws'
 import {
   MAX_CACHED_EVENTS_PER_STREAM,
-  noopApplyToProjection,
+  RpcCodedError,
   topicKey,
   type ApplyEventsToProjection,
   type AuthResult,
   type BackfillResult,
   type MessageSink,
   type MsgDb,
-  type NotImplementedResult,
+  type MutateParams,
+  type MutateResultUnion,
   type PushPayload,
   type QueryParams,
   type QueryResultUnion,
@@ -41,7 +48,7 @@ export interface RpcResultMap {
   'meta.get': { key: string; value: unknown }
   ping: { pong: true }
   query: QueryResultUnion
-  mutate: NotImplementedResult
+  mutate: MutateResultUnion
   'auth.login': AuthResult
   'auth.setup': AuthResult
   'auth.acceptInvite': AuthResult
@@ -81,9 +88,10 @@ export interface WorkerCoreOptions {
   /** Override the API base URL (default '' → relative same-origin paths). */
   baseUrl?: string
   /**
-   * ENG-80's projection build, injected into the sync engine (§3). Default:
-   * {@link noopApplyToProjection} — so `new WorkerCore(db, sink)` (the three
-   * transport entry points) is fully functional with no projection yet.
+   * ENG-80's projection build, injected into the sync engine (§3). Default
+   * (ENG-81 FOLD-IN): the REAL `applyEventsToProjection` bound to this core's db,
+   * so `new WorkerCore(db, sink)` (all three transport entry points) lands live
+   * WS events in `messages`. Tests wanting the inert seam inject the no-op.
    */
   applyToProjection?: ApplyEventsToProjection
   /**
@@ -101,6 +109,10 @@ export class WorkerCore {
   private readonly auth: AuthManager
   /** The replication loop (ENG-79). Started after auth, stopped on logout. */
   private readonly sync: SyncEngine
+  /** The optimistic send + drain loop (ENG-81). */
+  private readonly outbox: Outbox
+  /** Latest sync state — gates the outbox drain to `live` + detects the rising edge. */
+  private syncLive = false
 
   constructor(
     private readonly db: MsgDb,
@@ -128,14 +140,42 @@ export class WorkerCore {
       wsFactory: options.wsFactory ?? browserWsFactory,
       db,
       getToken: () => this.auth.getToken(),
-      applyToProjection: options.applyToProjection ?? noopApplyToProjection,
-      emitStatus: (status) => this.publish({ kind: 'sync' }, status),
+      // FOLD-IN (ENG-79/80 wiring gap, §7): default the seam to the REAL
+      // projection so live WS events land in `messages`, not just `events`. One
+      // constructor change fixes all three transport entry points (they share
+      // this constructor). Tests that want the inert seam inject it explicitly.
+      applyToProjection:
+        options.applyToProjection ??
+        ((streamId, events) => applyEventsToProjection(this.db, streamId, events)),
+      emitStatus: (status) => this.onSyncStatus(status),
       publishStream: (streamId) =>
         this.publish({ kind: 'stream', stream_id: streamId }, { stream_id: streamId }),
+    })
+    this.outbox = new Outbox({
+      db,
+      http,
+      authStatus: () => this.auth.status(),
+      publishStream: (streamId) =>
+        this.publish({ kind: 'stream', stream_id: streamId }, { stream_id: streamId }),
+      // Only drain when the sync engine is live (§4): an offline/degraded compose
+      // sits `queued`; the rising-edge-into-`live` kick (onSyncStatus) sends it.
+      canDrain: () => this.syncLive,
     })
     this.registerDefaults()
     this.registerAuth()
     this.registerSync()
+  }
+
+  /**
+   * Fan a sync status to `{kind:'sync'}` subscribers AND drive the outbox: track
+   * `live` for the drain gate, and on the rising edge into `live` (reconnect /
+   * first connect) kick the drain so queued offline sends flush themselves (§4).
+   */
+  private onSyncStatus(status: SyncStatus): void {
+    const wasLive = this.syncLive
+    this.syncLive = status.state === 'live'
+    this.publish({ kind: 'sync' }, status)
+    if (!wasLive && this.syncLive) this.outbox.drain()
   }
 
   /**
@@ -251,9 +291,27 @@ export class WorkerCore {
 
     this.register('query', (req) => this.handleQuery(req.params))
 
-    this.register('mutate', (req) =>
-      Promise.resolve({ code: 'not_implemented', detail: req.params.m }),
-    )
+    this.register('mutate', (req) => this.handleMutate(req.params))
+  }
+
+  /**
+   * Mutation dispatcher (ENG-81). Discriminated on `params.m` (exhaustive
+   * `switch`, mirroring `handleQuery`), each arm delegating to the `Outbox`. All
+   * identity is read worker-side inside the outbox — never from the tab.
+   */
+  private handleMutate(params: MutateParams): Promise<MutateResultUnion> {
+    switch (params.m) {
+      case 'outbox.send':
+        return this.outbox.send(params)
+      case 'outbox.retry':
+        return this.outbox.retry(params.event_id)
+      case 'outbox.delete':
+        return this.outbox.delete(params.event_id)
+      default:
+        // Exhaustive: a new MutateParams member without a case is a COMPILE error
+        // (params narrows to `never`); an out-of-contract `m` throws a coded error.
+        return assertNeverMutate(params)
+    }
   }
 
   /**
@@ -336,17 +394,6 @@ export class WorkerCore {
   }
 }
 
-/** A handler error carrying an explicit RPC `code` (vs. the generic fallback). */
-class RpcCodedError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'RpcCodedError'
-  }
-}
-
 /**
  * Exhaustiveness guard for the query dispatcher: unreachable for an in-contract
  * `q`, so `params` narrows to `never` (a missing case is a compile error). At
@@ -355,6 +402,11 @@ class RpcCodedError extends Error {
  */
 function assertNeverQuery(params: never): never {
   throw new RpcCodedError('unknown-query', `unhandled query: ${JSON.stringify(params)}`)
+}
+
+/** Exhaustiveness guard for the mutation dispatcher (mirror of `assertNeverQuery`). */
+function assertNeverMutate(params: never): never {
+  throw new RpcCodedError('unknown-mutation', `unhandled mutation: ${JSON.stringify(params)}`)
 }
 
 function toRpcError(err: unknown): RpcError {

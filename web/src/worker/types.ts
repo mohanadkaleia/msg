@@ -17,7 +17,10 @@ import type { ApiError } from './http'
  * from the raw `events` cache; it does NOT touch the IndexedDB index layout
  * (that is the Dexie `version()` number in `db.ts`). See TDD §5.2, D-4.
  */
-export const PROJECTION_VERSION = 1
+// ENG-81 bumped 1 → 2: `MessageRow` gained the `state`/`error_code` lifecycle
+// fields and rebuild now re-derives pending rows from `outbox`, so shape-change
+// clients rebuild the derived tables on boot.
+export const PROJECTION_VERSION = 2
 
 /** `meta` key under which the current `PROJECTION_VERSION` is stored. */
 export const META_PROJECTION_VERSION = 'projection_version'
@@ -137,6 +140,16 @@ export interface MessageRow {
   format: 'markdown' | 'plain'
   thread_root_id?: string
   mention_user_ids: string[]
+  /**
+   * Optimistic-send lifecycle marker (ENG-81). ABSENT = settled/normal (the
+   * steady state). `'pending'` = local send not yet acked (`created_seq` is the
+   * `created_at` sentinel, greyed/provisional tab-side). `'failed'` = the server
+   * rejected it (`error_code` set). Never serialized by `dumpMessages` (§5) — it
+   * is a re-derivable function of the `outbox` row, so rebuild ≡ incremental.
+   */
+  state?: 'pending' | 'failed'
+  /** Rejection code (ENG-66) when `state === 'failed'`. */
+  error_code?: string
 }
 
 /** Projected stream row (derived). */
@@ -156,12 +169,30 @@ export interface CursorRow {
   oldest_loaded_seq: number
 }
 
-/** Pending local send. Source-of-truth-ish: never derived, never evicted. */
+/**
+ * Pending local send (ENG-81). Source-of-truth-ish: never derived, never
+ * evicted, never touched by `clearDerivedTables`/`evictStream`. Minted in the
+ * worker at send with the event's hashed `body` + `event_hash`, so the drain
+ * re-POSTs `{body, event_hash}` with zero rework and the row re-derives the
+ * pending projection row on rebuild.
+ */
 export interface OutboxRow {
+  /** Bare ULID (`body.event_id`) — PK here, UNIQUE server-side (dumb-retry key). */
   event_id: string
+  /** ms epoch minted at send: oldest-first drain key AND the pending `created_seq`. */
   created_at: number
+  /** The §2.1 hashed body, verbatim — the exact bytes `event_hash` was computed over. */
   body: Record<string, unknown>
+  /** `sha256:…` over JCS(`body`), computed once at send. */
+  event_hash: string
+  /** Denormalized `body.payload.message_id` — links this row to its projection row. */
+  message_id: string
+  /** Denormalized `body.stream_id` — publish + settle target. */
+  stream_id: string
+  /** queued=to send; sending=in-flight (crash-recover as queued); rejected=parked. */
   state: 'queued' | 'sending' | 'rejected'
+  /** Rejection code (ENG-66) when `state === 'rejected'` (surfaced as `failed`). */
+  error_code?: string
 }
 
 /** Local echo of the server read-state KV (derived). */
@@ -215,9 +246,17 @@ export interface MsgDb {
   // outbox (source; never evicted, never dropped)
   putOutbox(rows: readonly OutboxRow[]): Promise<void>
   listOutbox(): Promise<OutboxRow[]>
+  /** A single outbox row by `event_id` (retry/delete/settle lookup). */
+  getOutbox(eventId: string): Promise<OutboxRow | undefined>
+  /** Remove a settled/deleted outbox row by `event_id`. */
+  deleteOutbox(eventId: string): Promise<void>
+  /** Whether an event with this `event_id` is already stored (rebuild settle guard). */
+  hasEvent(eventId: string): Promise<boolean>
 
   // derived tables (seeding here doubles as the ENG-80 rebuild write surface)
   putMessages(rows: readonly MessageRow[]): Promise<void>
+  /** Remove a projected message by id (outbox.delete of an unsettled row). */
+  deleteMessage(messageId: string): Promise<void>
   putStreams(rows: readonly StreamRow[]): Promise<void>
   putCursors(rows: readonly CursorRow[]): Promise<void>
   putReadState(rows: readonly ReadStateRow[]): Promise<void>
@@ -277,8 +316,43 @@ export type QueryParams =
   | { q: 'streams.list' }
   | { q: 'message.get'; message_id: string }
 
-/** Mutation taxonomy — ENG-81 replaces the stub member with real mutations. */
-export type MutateParams = { m: string }
+/**
+ * Mutation taxonomy (ENG-81) — durable mutations carried on the existing
+ * `mutate` verb (D-7), discriminated on `m`. No new RPC methods / transport
+ * surface: tabs call `client.mutate({ m: 'outbox.send', … })`.
+ *   • `outbox.send`   — build + hash a `message.created` v1 event in the worker,
+ *     insert a pending `messages` row (renders instantly) + an `outbox` row,
+ *     kick the drain. Returns {@link SendResult}.
+ *   • `outbox.retry`  — re-queue a `rejected` send (clear the failed marker).
+ *   • `outbox.delete` — drop a queued/failed send + its unsettled projection row.
+ */
+export type MutateParams =
+  | {
+      m: 'outbox.send'
+      stream_id: string
+      text: string
+      format?: 'markdown' | 'plain'
+      thread_root_id?: string
+      mentions?: string[]
+      file_ids?: string[]
+    }
+  | { m: 'outbox.retry'; event_id: string }
+  | { m: 'outbox.delete'; event_id: string }
+
+/** `outbox.send` result — enough for the tab to locate its optimistic row. */
+export interface SendResult {
+  message_id: string
+  event_id: string
+  created_seq: number
+}
+
+/** `outbox.retry` / `outbox.delete` result. */
+export interface OutboxActionResult {
+  ok: true
+}
+
+/** The union of every mutation result (RpcResultMap['mutate']). */
+export type MutateResultUnion = SendResult | OutboxActionResult
 
 /** A stream's unread count + mention badge (§3.5), derived at query time. */
 export interface StreamBadge {
@@ -306,12 +380,6 @@ export interface MessageGetResult {
 /** The union of every projection-query result (RpcResultMap['query']). */
 export type QueryResultUnion = MessagesListResult | StreamsListResult | MessageGetResult
 
-/** Stub result shape; ENG-81 specialises `MutateResult` conditionally. */
-export interface NotImplementedResult {
-  code: 'not_implemented'
-  detail?: string
-}
-
 /** Result keyed to the query's `q` discriminant (WorkerClient.query<Q>). */
 export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' }
   ? MessagesListResult
@@ -320,13 +388,32 @@ export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' 
     : Q extends { q: 'message.get' }
       ? MessageGetResult
       : never
-export type MutateResult<M extends MutateParams> = M extends MutateParams
-  ? NotImplementedResult
-  : never
+export type MutateResult<M extends MutateParams> = M extends { m: 'outbox.send' }
+  ? SendResult
+  : M extends { m: 'outbox.retry' | 'outbox.delete' }
+    ? OutboxActionResult
+    : never
 
 export interface RpcError {
   code: string
   detail?: string
+}
+
+/**
+ * A handler error carrying an explicit RPC `code` (vs. the generic fallback).
+ * Shared by `WorkerCore` (query dispatch) and the `Outbox` (e.g. an
+ * unauthenticated `outbox.send` → `not_authenticated`) so both surface through
+ * the same `toRpcError` mapping. Lives here (pure, no runtime deps) to avoid a
+ * core↔outbox import cycle.
+ */
+export class RpcCodedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'RpcCodedError'
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 
 import Dexie, { type DexieOptions, type Table } from 'dexie'
 
+import { applyOutboxToProjection } from './outbox'
 import { rebuildMessagesProjection } from './projection'
 import {
   DERIVED_TABLES,
@@ -124,8 +125,24 @@ export class DexieDb implements MsgDb {
     return this.db.outbox.toArray()
   }
 
+  async getOutbox(eventId: string): Promise<OutboxRow | undefined> {
+    return this.db.outbox.get(eventId)
+  }
+
+  async deleteOutbox(eventId: string): Promise<void> {
+    await this.db.outbox.delete(eventId)
+  }
+
+  async hasEvent(eventId: string): Promise<boolean> {
+    return (await this.db.events.where('event_id').equals(eventId).count()) > 0
+  }
+
   async putMessages(rows: readonly MessageRow[]): Promise<void> {
     await this.db.messages.bulkPut([...rows])
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    await this.db.messages.delete(messageId)
   }
 
   async putStreams(rows: readonly StreamRow[]): Promise<void> {
@@ -325,8 +342,29 @@ export class MemoryDb implements MsgDb {
     return Promise.resolve([...this.outboxMap.values()])
   }
 
+  getOutbox(eventId: string): Promise<OutboxRow | undefined> {
+    return Promise.resolve(this.outboxMap.get(eventId))
+  }
+
+  deleteOutbox(eventId: string): Promise<void> {
+    this.outboxMap.delete(eventId)
+    return Promise.resolve()
+  }
+
+  hasEvent(eventId: string): Promise<boolean> {
+    for (const row of this.eventsMap.values()) {
+      if (row.event_id === eventId) return Promise.resolve(true)
+    }
+    return Promise.resolve(false)
+  }
+
   putMessages(rows: readonly MessageRow[]): Promise<void> {
     for (const row of rows) this.messagesMap.set(row.message_id, row)
+    return Promise.resolve()
+  }
+
+  deleteMessage(messageId: string): Promise<void> {
+    this.messagesMap.delete(messageId)
     return Promise.resolve()
   }
 
@@ -494,7 +532,14 @@ export async function rebuildProjections(db: MsgDb): Promise<void> {
   if (remaining !== 0) {
     throw new Error('rebuildProjections: derived tables must be cleared before rebuild')
   }
+  // 1. Replay settled rows from the `events` cache (ENG-80).
   await rebuildMessagesProjection(db)
+  // 2. Re-derive still-pending/failed rows from `outbox` (ENG-81 §8) via the SAME
+  //    `buildPendingMessageRow` the incremental send path uses — an outbox row whose
+  //    `event_id` is already in `events` (crash between putEvents + deleteOutbox) is
+  //    skipped, so the settled row from step 1 wins, exactly as incrementally. This
+  //    keeps rebuild ≡ incremental true by construction, pending rows included.
+  await applyOutboxToProjection(db)
 }
 
 /**

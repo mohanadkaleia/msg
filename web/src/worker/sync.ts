@@ -20,6 +20,7 @@
 
 import { hashEvent, JCSError, type JSONValue } from '../core'
 
+import { backoffDelay } from './backoff'
 import type { HttpClient } from './http'
 import {
   noopApplyToProjection,
@@ -319,9 +320,9 @@ export class SyncEngine {
   }
 
   private backoffDelay(attempt: number): number {
-    const base = Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * 2 ** attempt)
-    // Full-ish jitter in [base/2, base] to de-correlate reconnect storms.
-    return Math.round(base / 2 + Math.random() * (base / 2))
+    // The ONE shared backoff (backoff.ts) — same 1s→30s+jitter formula the
+    // outbox drain uses; no divergent local copy.
+    return backoffDelay(attempt, { baseMs: RECONNECT_BASE_MS, capMs: RECONNECT_CAP_MS })
   }
 
   private resetWatchdog(): void {

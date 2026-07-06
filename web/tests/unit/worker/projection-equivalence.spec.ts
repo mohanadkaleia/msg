@@ -12,16 +12,56 @@ import {
   openDb,
   rebuildProjections,
 } from '../../../src/worker/db'
+import { buildPendingMessageRow } from '../../../src/worker/outbox'
 import {
   applyEventsToProjection,
   applyMessageCreatedV1,
   dumpMessages,
   HANDLERS,
 } from '../../../src/worker/projection'
-import type { EventRow, MsgDb } from '../../../src/worker/types'
+import type { EventRow, MsgDb, OutboxRow } from '../../../src/worker/types'
 
 import { fakeIdbOptions } from './helpers'
 import { messageCreatedEvent, metaEvent, unknownTypeEvent } from './projfixtures'
+
+/** A well-formed `message.created` outbox row (the shape the send path mints). */
+function outboxRow(opts: {
+  eventId: string
+  messageId: string
+  streamId: string
+  createdAt: number
+  text: string
+  state: OutboxRow['state']
+  errorCode?: string
+}): OutboxRow {
+  return {
+    event_id: opts.eventId,
+    created_at: opts.createdAt,
+    body: {
+      event_id: opts.eventId,
+      workspace_id: 'w_test',
+      stream_id: opts.streamId,
+      type: 'message.created',
+      type_version: 1,
+      author_user_id: 'u_author',
+      author_device_id: 'd_test',
+      client_created_at: '2026-01-01T00:00:00.000Z',
+      payload: {
+        message_id: opts.messageId,
+        text: opts.text,
+        format: 'markdown',
+        thread_root_id: null,
+        file_ids: [],
+        mentions: [],
+      },
+    },
+    event_hash: `sha256:${opts.eventId}`,
+    message_id: opts.messageId,
+    stream_id: opts.streamId,
+    state: opts.state,
+    ...(opts.errorCode !== undefined ? { error_code: opts.errorCode } : {}),
+  }
+}
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -148,13 +188,92 @@ describe.each([
 describe.each([
   { name: 'MemoryDb', make: (): Promise<MsgDb> => Promise.resolve(new MemoryDb()) },
   { name: 'DexieDb', make: (): Promise<MsgDb> => openDb(fakeIdbOptions()) },
+])('rebuild reproduces settled + pending/failed state (ENG-81 §8) [$name]', ({ make }) => {
+  it('re-derives pending + failed rows from outbox → byte-identical dump', async () => {
+    const db = await make()
+
+    // Settled rows (from cached events).
+    const settled = [
+      messageCreatedEvent({ streamId: 's_a', seq: 1, messageId: 'm_a1', text: 'hello' }),
+      messageCreatedEvent({ streamId: 's_a', seq: 2, messageId: 'm_a2', text: 'world' }),
+    ]
+    await db.putEvents(settled)
+    await applyEventsToProjection(db, 's_a', settled)
+
+    // A pending send (queued) + a failed send (rejected) — the incremental state.
+    const pending = outboxRow({
+      eventId: 'e_pend',
+      messageId: 'm_pend',
+      streamId: 's_a',
+      createdAt: 1_750_000_000_000,
+      text: 'still sending',
+      state: 'queued',
+    })
+    const failed = outboxRow({
+      eventId: 'e_fail',
+      messageId: 'm_fail',
+      streamId: 's_b',
+      createdAt: 1_750_000_000_001,
+      text: 'was rejected',
+      state: 'rejected',
+      errorCode: 'permission_denied',
+    })
+    await db.putOutbox([pending, failed])
+    await db.putMessages([buildPendingMessageRow(pending)!, buildPendingMessageRow(failed)!])
+
+    // TEETH: a settled event_id still lingering in `outbox` (crash between
+    // putEvents + deleteOutbox) must re-derive to the SETTLED row (skip guard),
+    // never a duplicate pending row.
+    const settledEventId = settled[0]!.event_id
+    await db.putOutbox([
+      outboxRow({
+        eventId: settledEventId,
+        messageId: 'm_a1',
+        streamId: 's_a',
+        createdAt: 999,
+        text: 'stale',
+        state: 'sending',
+      }),
+    ])
+
+    const dumpIncremental = await dumpMessages(db)
+
+    // Rebuild: replay events (settled) + re-derive outbox (pending/failed, skip settled).
+    await db.clearDerivedTables()
+    await rebuildProjections(db)
+    const dumpRebuilt = await dumpMessages(db)
+
+    expect(dumpRebuilt).toBe(dumpIncremental)
+    // The lingering settled event kept its settled row (seq 1), not a stale pending overwrite.
+    const a1 = await db.getMessage('m_a1')
+    expect(a1?.created_seq).toBe(1)
+    expect(a1?.state).toBeUndefined()
+    // Pending/failed rows survived the rebuild.
+    expect((await db.getMessage('m_pend'))?.state).toBe('pending')
+    expect((await db.getMessage('m_fail'))?.state).toBe('failed')
+    expect((await db.getMessage('m_fail'))?.error_code).toBe('permission_denied')
+    await db.close()
+  })
+})
+
+describe.each([
+  { name: 'MemoryDb', make: (): Promise<MsgDb> => Promise.resolve(new MemoryDb()) },
+  { name: 'DexieDb', make: (): Promise<MsgDb> => openDb(fakeIdbOptions()) },
 ])('checkProjectionVersion drives a real replay [$name]', ({ make }) => {
   it('rebuilds messages from cached events on a stale projection_version', async () => {
     const db = await make()
     const { byStream, v1Count } = syntheticPlan()
     await buildIncremental(db, byStream)
     await db.putOutbox([
-      { event_id: 'o1', created_at: 1, body: { text: 'pending' }, state: 'queued' },
+      {
+        event_id: 'o1',
+        created_at: 1,
+        body: { text: 'pending' }, // no valid payload.message_id → rebuild derives no row
+        event_hash: 'sha256:o1',
+        message_id: 'm_o1',
+        stream_id: 's_a',
+        state: 'queued',
+      },
     ])
     await db.metaPut('projection_version', 0) // stale ⇒ mismatch
 

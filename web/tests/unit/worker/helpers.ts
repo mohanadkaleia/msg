@@ -244,12 +244,42 @@ interface FakeStream {
  * it (add streams, append events, corrupt a hash) and assert the engine
  * converges the local cache to this truth.
  */
+/** A `POST /v1/events/batch` upload item (ENG-66 wire shape). */
+export interface BatchUploadEvent {
+  body: EventBody
+  event_hash: string
+}
+
+/** One accepted event in the batch 200 (ENG-66). */
+export interface AcceptedBatchEvent {
+  event_id: string
+  stream_id: string
+  server_sequence: number
+  server_received_at: string
+}
+
+/** One rejected event in the batch 200 (ENG-66). */
+export interface RejectedBatchEvent {
+  event_id: string
+  code: string
+  detail?: string
+}
+
 export class FakeSyncServer {
   private readonly streams = new Map<string, FakeStream>()
   private gate: Promise<void> | undefined
   private releaseGate: (() => void) | undefined
+  /** Gate for `POST /v1/events/batch` (drain-ordering control, mirrors {@link pauseEvents}). */
+  private batchGate: Promise<void> | undefined
+  private releaseBatchGate: (() => void) | undefined
+  /** `event_id` → its original accepted record (UNIQUE-per-workspace idempotency). */
+  private readonly acceptedById = new Map<string, AcceptedBatchEvent>()
+  /** `event_id` → rejection code, configured by {@link rejectEvent}. */
+  private readonly rejects = new Map<string, string>()
   syncError: ApiError | undefined
   eventsError: ApiError | undefined
+  /** When set, every `POST /v1/events/batch` fails transiently with this error. */
+  batchError: ApiError | undefined
 
   addStream(meta: Partial<SyncStreamMeta> & { stream_id: string; kind?: string }): void {
     this.streams.set(meta.stream_id, {
@@ -309,6 +339,98 @@ export class FakeSyncServer {
     this.releaseGate?.()
     this.gate = undefined
     this.releaseGate = undefined
+  }
+
+  /** Hold every subsequent `POST /v1/events/batch` until {@link resumeBatch}. */
+  pauseBatch(): void {
+    this.batchGate = new Promise<void>((resolve) => {
+      this.releaseBatchGate = resolve
+    })
+  }
+
+  resumeBatch(): void {
+    this.releaseBatchGate?.()
+    this.batchGate = undefined
+    this.releaseBatchGate = undefined
+  }
+
+  /** Configure a per-event rejection (drain reject test). */
+  rejectEvent(eventId: string, code: string): void {
+    this.rejects.set(eventId, code)
+  }
+
+  /** Clear a configured rejection so a retried event is accepted next time. */
+  allowEvent(eventId: string): void {
+    this.rejects.delete(eventId)
+  }
+
+  /**
+   * The `POST /v1/events/batch` core (ENG-66): assign a per-stream sequence to
+   * each new event, enforce `event_id` UNIQUE (a re-POST returns the ORIGINAL
+   * accepted record — same sequence — never a duplicate), honor configured
+   * rejects, and store accepted events so a WS frame / pull can also serve them.
+   * Ungated — tests call it directly to pre-register an event (simulate the
+   * server having processed it before the client's batch POST completes).
+   */
+  processBatch(events: readonly BatchUploadEvent[]): {
+    accepted: AcceptedBatchEvent[]
+    rejected: RejectedBatchEvent[]
+  } {
+    const accepted: AcceptedBatchEvent[] = []
+    const rejected: RejectedBatchEvent[] = []
+    for (const ev of events) {
+      const eventId = ev.body.event_id as string
+      const streamId = ev.body.stream_id as string
+      const rejectCode = this.rejects.get(eventId)
+      if (rejectCode !== undefined) {
+        rejected.push({ event_id: eventId, code: rejectCode })
+        continue
+      }
+      const existing = this.acceptedById.get(eventId)
+      if (existing) {
+        accepted.push(existing) // idempotent: original sequence, never a dup
+        continue
+      }
+      if (!this.streams.has(streamId)) this.addStream({ stream_id: streamId })
+      const s = this.get(streamId)
+      const seq = this.head(streamId) + 1
+      const receivedAt = new Date(1_700_000_000_000 + seq).toISOString()
+      const wire: WireEvent = {
+        body: ev.body,
+        event_hash: ev.event_hash,
+        signature: null,
+        server: { server_sequence: seq, server_received_at: receivedAt, payload_redacted: false },
+      }
+      s.events.push(wire)
+      s.events.sort((a, b) => wireSeq(a) - wireSeq(b))
+      const acc: AcceptedBatchEvent = {
+        event_id: eventId,
+        stream_id: streamId,
+        server_sequence: seq,
+        server_received_at: receivedAt,
+      }
+      this.acceptedById.set(eventId, acc)
+      accepted.push(acc)
+    }
+    return { accepted, rejected }
+  }
+
+  /** Gated batch responder (the drain's `POST /v1/events/batch` path). */
+  async respondBatch(
+    events: readonly BatchUploadEvent[],
+  ): Promise<ApiResult<{ accepted: AcceptedBatchEvent[]; rejected: RejectedBatchEvent[] }>> {
+    if (this.batchGate) await this.batchGate
+    if (this.batchError) return { ok: false, error: this.batchError }
+    return { ok: true, value: this.processBatch(events) }
+  }
+
+  /** The stored wire event for an `event_id` (to emit as a WS frame in a test). */
+  wireFor(eventId: string): WireEvent | undefined {
+    for (const s of this.streams.values()) {
+      const found = s.events.find((e) => e.body.event_id === eventId)
+      if (found) return found
+    }
+    return undefined
   }
 
   private get(streamId: string): FakeStream {
@@ -376,9 +498,19 @@ export class FakeHttpClient implements HttpClient {
     }
   }
 
-  post<T>(path: string, body: unknown): Promise<ApiResult<T>> {
+  async post<T>(path: string, body: unknown): Promise<ApiResult<T>> {
     this.postCalls.push({ path, body })
-    return Promise.resolve({ ok: true, value: undefined as T })
+    if (path.startsWith('/v1/events/batch')) {
+      this.inFlight++
+      this.maxInFlight = Math.max(this.maxInFlight, this.inFlight)
+      try {
+        const events = (body as { events: BatchUploadEvent[] }).events
+        return (await this.server.respondBatch(events)) as ApiResult<T>
+      } finally {
+        this.inFlight--
+      }
+    }
+    return { ok: true, value: undefined as T }
   }
 
   del(): Promise<ApiResult<void>> {
