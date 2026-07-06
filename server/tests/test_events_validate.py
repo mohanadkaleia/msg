@@ -274,6 +274,36 @@ async def test_known_type_invalid_payload(db_session: AsyncSession) -> None:
         )
 
 
+# --- F5: multi-fault order pins (the locked §3.2 order at every adjacent pair) ---
+
+
+async def test_permission_precedes_schema_for_stream_access(
+    db_session: AsyncSession,
+) -> None:
+    """iii before iv: non-member target AND schema-invalid payload → permission_denied."""
+    w = await _seed(db_session)
+    # owner is NOT a member of the private stream; payload is also broken.
+    body = message_body(auth=w.auth(w.owner), stream_id=w.priv)
+    body["payload"]["message_id"] = "not-an-id"
+    _expect_rejected(
+        await validate_event(db_session, ctx=w.owner, item=wire_item(body)), "permission_denied"
+    )
+
+
+async def test_identity_precedes_schema(db_session: AsyncSession) -> None:
+    """ii before iv: author-binding mismatch AND schema-invalid body → permission_denied."""
+    w = await _seed(db_session)
+    body = message_body(
+        auth=w.auth(w.member),
+        stream_id=w.pub,
+        author_user_id=w.owner.user_id,  # not the session's user
+        event_id="not-a-ulid",  # also envelope-invalid
+    )
+    _expect_rejected(
+        await validate_event(db_session, ctx=w.member, item=wire_item(body)), "permission_denied"
+    )
+
+
 # --- step v: hash over the RAW dict ---------------------------------------------
 
 

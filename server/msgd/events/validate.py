@@ -131,9 +131,41 @@ async def _workspace_meta_stream_id(db: AsyncSession, workspace_id: str) -> str 
 
 
 async def _stream_exists(db: AsyncSession, stream_id: str) -> bool:
-    """True iff a ``streams`` row with ``stream_id`` exists (any workspace)."""
+    """True iff a ``streams`` row with ``stream_id`` exists (ANY workspace).
+
+    Deliberately GLOBAL, and only used by the genesis-collision check — see the
+    load-bearing comment pair in :func:`_check_referential`. A workspace-scoped
+    variant here would let a genesis event adopt an id that already exists in
+    another tenant. Lifecycle resolution is workspace-scoped instead, via
+    :func:`_resolve_channel_in_workspace`.
+    """
     found = await db.scalar(select(Stream.stream_id).where(Stream.stream_id == stream_id))
     return found is not None
+
+
+async def _resolve_channel_in_workspace(
+    db: AsyncSession, *, stream_id: str, workspace_id: str
+) -> tuple[str, str | None] | None:
+    """Resolve a lifecycle target stream WITHIN ``workspace_id`` (F1, cross-tenant).
+
+    Returns ``(kind, visibility)`` for a row whose ``stream_id`` AND
+    ``workspace_id`` match, else ``None``. Scoping to ``workspace_id`` makes the
+    lifecycle referential check tenant-isolating and non-disclosing: a stream id
+    from another workspace resolves to ``None`` exactly like a never-existed id,
+    so it produces the identical ``unknown_stream`` outcome (no cross-tenant
+    existence oracle).
+    """
+    row = (
+        await db.execute(
+            select(Stream.kind, Stream.visibility).where(
+                Stream.stream_id == stream_id,
+                Stream.workspace_id == workspace_id,
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    return row[0], row[1]
 
 
 async def validate_event(db: AsyncSession, *, ctx: AuthContext, item: Any) -> Accepted | Rejected:
@@ -338,6 +370,16 @@ async def _check_referential(
             # Genesis collision (obligation a): a genesis event may not adopt an
             # already-existing stream (would be a cross-stream read grant — the
             # reducer's created-flag guard is the defense-in-depth backstop).
+            #
+            # LOAD-BEARING (F1): this existence check is GLOBAL (all workspaces),
+            # NOT scoped to ctx.workspace_id — and that asymmetry vs. the
+            # workspace-scoped LIFECYCLE resolution below is intentional. Genesis
+            # is protective: scoping it to the caller's workspace would let a
+            # genesis event adopt a stream id that already exists in workspace B,
+            # and for a private/self-homed genesis that re-opens cross-tenant home
+            # injection (the event would home in — and mutate the log of — B's id).
+            # Lifecycle is resolving: it must find the caller's own channel, so it
+            # scopes to ctx.workspace_id (tenant isolation + non-disclosure).
             if await _stream_exists(db, channel_stream_id):
                 return Rejected(
                     event_id="",
@@ -369,12 +411,52 @@ async def _check_referential(
 
     if event_type in _LIFECYCLE_TYPES:
         channel_stream_id = payload.get("channel_stream_id")
-        if isinstance(channel_stream_id, str) and not await _stream_exists(db, channel_stream_id):
+        if not isinstance(channel_stream_id, str):
+            # Unknown-version lifecycle without a resolvable target field — nothing
+            # to check referentially (payload was not schema-validated, D9).
+            return None
+
+        # F1 step 1 — workspace-scoped target resolution (D13 non-disclosing): a
+        # stream id from ANOTHER tenant resolves to None exactly like a
+        # never-existed id, so both yield the identical unknown_stream below.
+        resolved = await _resolve_channel_in_workspace(
+            db, stream_id=channel_stream_id, workspace_id=ctx.workspace_id
+        )
+        # F1 step 2 — kind gate: the target must be a channel. Aiming e.g.
+        # channel.member_added at a DM or workspace-meta stream id in one's OWN
+        # workspace (a membership graft / intra-tenant privacy breach) collapses to
+        # the SAME unknown_stream — never a distinct code, so admins get no DM
+        # existence oracle.
+        if resolved is None or resolved[0] != "channel":
             return Rejected(
                 event_id="",
                 code="unknown_stream",
-                detail="referenced channel_stream_id does not exist",
+                detail="no such channel in this workspace",
             )
+
+        # F1 step 3 — strict §2.2 lifecycle homing (mirrors the genesis rule):
+        # private target -> body.stream_id must be the channel's own stream
+        # (self-homed); public target -> the caller workspace's workspace-meta.
+        # Both legal homes are inside ctx.workspace_id by construction, so
+        # cross-tenant home/log injection is dead without an insert_event guard.
+        # A violation is a protocol-placement fault (invalid_schema), not a
+        # permission fault — same code as a genesis homing violation.
+        visibility = resolved[1]
+        if visibility == "private":
+            if body_model.stream_id != channel_stream_id:
+                return Rejected(
+                    event_id="",
+                    code="invalid_schema",
+                    detail="private channel lifecycle event must be self-homed",
+                )
+        else:  # a channel is 'public' or 'private'; public homes in workspace-meta
+            meta_id = await _workspace_meta_stream_id(db, ctx.workspace_id)
+            if body_model.stream_id != meta_id:
+                return Rejected(
+                    event_id="",
+                    code="invalid_schema",
+                    detail="public channel lifecycle event must be homed in workspace-meta",
+                )
         return None
 
     return None

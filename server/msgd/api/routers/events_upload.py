@@ -55,9 +55,43 @@ __all__ = ["router"]
 MAX_BATCH_BODY_BYTES = 1024 * 1024  # 1 MB whole-request body cap
 MAX_BATCH_EVENTS = 100  # events-per-batch count cap
 
+#: The ``UNIQUE(workspace_id, event_id)`` constraint name (naming convention,
+#: migration 0001) — the ONE integrity violation the idempotent re-accept path
+#: recognizes. Any other constraint is a schema-impossible state and surfaces as
+#: a 500, never a per-event reject (F4).
+_IDEMPOTENCY_CONSTRAINT = "uq_events_workspace_id"
+
+#: Postgres SQLSTATE class 22 = "data exception" (e.g. 22P05, a NUL in text). The
+#: ONE transient-vs-permanent discriminator for the storability backstop (F2).
+_DATA_EXCEPTION_SQLSTATE_CLASS = "22"
+
 router = APIRouter(prefix="/v1", tags=["events"])
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+
+def _pg_sqlstate(exc: DBAPIError) -> str | None:
+    """The Postgres SQLSTATE of a wrapped driver error, if present.
+
+    SQLAlchemy's asyncpg dialect copies the code onto the translated DBAPI error
+    (``exc.orig``) as ``sqlstate``/``pgcode`` — the raw asyncpg exception is only
+    reachable via ``__cause__``, so read the code off ``exc.orig`` directly.
+    """
+    code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    return code if isinstance(code, str) else None
+
+
+def _pg_constraint_name(exc: DBAPIError) -> str | None:
+    """The violated constraint name, dug out of the driver-error cause chain.
+
+    ``exc.orig`` is SQLAlchemy's DBAPI wrapper; the asyncpg ``UniqueViolationError``
+    that actually carries ``constraint_name`` is its ``__cause__``.
+    """
+    for obj in (exc.orig, getattr(exc.orig, "__cause__", None)):
+        name = getattr(obj, "constraint_name", None)
+        if isinstance(name, str):
+            return name
+    return None
 
 
 def _validation_error(detail: str) -> ProblemException:
@@ -76,6 +110,23 @@ def _validation_error(detail: str) -> ProblemException:
     )
 
 
+async def _read_body_capped(request: Request) -> bytes:
+    """Read the request body, 413ing the moment it exceeds the 1 MB batch cap (F3).
+
+    Streams chunks and aborts on the running total rather than buffering the whole
+    body and measuring after — so an oversized (possibly Content-Length-less)
+    chunked upload cannot force unbounded buffering.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_BATCH_BODY_BYTES:
+            raise problems.payload_too_large()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post(
     "/events/batch",
     response_model=BatchUploadResponse,
@@ -88,17 +139,21 @@ async def upload_batch(request: Request, ctx: CurrentAuth, db: DbSession) -> Bat
     request; only batch-level violations (D3) short-circuit to problem+json.
     """
     # --- D2/D3: raw-body capture + batch-level caps ---------------------------
-    # Cheap Content-Length guard first, then the authoritative byte length.
+    # F3: cap-and-abort streaming read. Content-Length is only a cheap fast-reject
+    # (advisory — a chunked body omits or lies about it); the authoritative guard
+    # is the running total below, which 413s the instant it crosses 1 MB WITHOUT
+    # buffering the whole (potentially unbounded) body first. A missing
+    # Content-Length is NOT rejected — legitimate chunked clients exist. Safe here
+    # because nothing else on this route reads the body stream (no body-reading
+    # dependency is mounted; ``event_rate_limit`` reads none).
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
             if int(content_length) > MAX_BATCH_BODY_BYTES:
                 raise problems.payload_too_large()
         except ValueError:
-            pass  # unparseable header — fall through to the real measure below
-    raw = await request.body()
-    if len(raw) > MAX_BATCH_BODY_BYTES:
-        raise problems.payload_too_large()
+            pass  # unparseable header — fall through to the streaming guard below
+    raw = await _read_body_capped(request)
 
     try:
         data = json.loads(raw)
@@ -136,12 +191,22 @@ async def upload_batch(request: Request, ctx: CurrentAuth, db: DbSession) -> Bat
                     db, home_stream_id=outcome.home_stream_id, body=raw_body
                 )
             await db.commit()
-        except IntegrityError:
-            # UNIQUE(workspace_id, event_id) -> idempotent re-accept: the savepoint
-            # rolled back its head_seq bump + failed insert, so no sequence is
-            # consumed. Clear the aborted txn, return the ORIGINAL record (D7).
+        except IntegrityError as exc:
+            # F4: only the idempotency UNIQUE(workspace_id, event_id) constraint is
+            # recoverable. Any OTHER integrity violation is a schema-impossible
+            # state and must surface loudly (500), never be shaped into a reject.
+            if _pg_constraint_name(exc) != _IDEMPOTENCY_CONSTRAINT:
+                raise
+            # Idempotent re-accept: the savepoint rolled back its head_seq bump +
+            # failed insert, so no sequence is consumed. Clear the aborted txn,
+            # return the ORIGINAL record (D7).
             await db.rollback()
-            accepted.append(await _fetch_original(db, workspace_id=workspace_id, event_id=event_id))
+            original = await _fetch_original(db, workspace_id=workspace_id, event_id=event_id)
+            if original is None:
+                # The UNIQUE violation proved a row exists; a fetch-miss is an
+                # impossible state after per-event commits — re-raise, don't reject.
+                raise
+            accepted.append(original)
             continue
         except UnknownStreamError:
             # Defensive: only reachable for an owner/admin LIFECYCLE event whose
@@ -159,11 +224,24 @@ async def upload_batch(request: Request, ctx: CurrentAuth, db: DbSession) -> Bat
                 )
             )
             continue
-        except DBAPIError:
-            # Backstop: a validated, correctly-hashed body the DATABASE still
-            # cannot store (e.g. Postgres JSONB rejects NUL (U+0000) in strings) must
-            # reject the one event, not 500 the batch. The savepoint isolated the
-            # failure; per-event isolation (point 5) holds for neighbors.
+        except DBAPIError as exc:
+            # F2: narrow storability backstop. ONLY a Postgres data-domain error
+            # (SQLSTATE class 22 — e.g. 22P05 for a NUL U+0000 inside a JSONB
+            # string) is a permanent per-event fault the client must not retry, so
+            # reject it as invalid_schema. Every OTHER DBAPIError (deadlock,
+            # disconnect, timeout) is TRANSIENT and re-raised -> 500, so the client
+            # retries the batch and idempotency makes the retry safe.
+            #
+            # We discriminate on the Postgres SQLSTATE *class* 22 rather than
+            # ``sqlalchemy.exc.DataError``: SQLAlchemy's asyncpg dialect maps only
+            # integrity violations specially and funnels every other PostgresError
+            # to the base ``DBAPIError``, so a NUL never surfaces as
+            # ``sqlalchemy.exc.DataError`` — but the dialect does copy the SQLSTATE
+            # onto ``exc.orig``. The savepoint isolated the failure; per-event
+            # isolation (point 5) holds for neighbors.
+            sqlstate = _pg_sqlstate(exc)
+            if sqlstate is None or not sqlstate.startswith(_DATA_EXCEPTION_SQLSTATE_CLASS):
+                raise
             await db.rollback()
             rejected.append(
                 RejectedEvent(
@@ -190,12 +268,17 @@ async def upload_batch(request: Request, ctx: CurrentAuth, db: DbSession) -> Bat
     return BatchUploadResponse(accepted=accepted, rejected=rejected)
 
 
-async def _fetch_original(db: AsyncSession, *, workspace_id: str, event_id: str) -> AcceptedEvent:
+async def _fetch_original(
+    db: AsyncSession, *, workspace_id: str, event_id: str
+) -> AcceptedEvent | None:
     """Return the ORIGINAL acceptance's four ``accepted[]`` fields (D7 idempotency).
 
     ``server_received_at`` is re-rendered from the stored TIMESTAMPTZ with the
     **same** ``_format_rfc3339`` (millisecond-``Z`` truncation) ``insert_event``
     used, so the idempotent response string is byte-identical to the first one.
+
+    Returns ``None`` if no row is found — a state the caller treats as
+    schema-impossible and re-raises on (F4), never shaping it into a reject.
     """
     row = (
         await db.execute(
@@ -205,7 +288,8 @@ async def _fetch_original(db: AsyncSession, *, workspace_id: str, event_id: str)
             )
         )
     ).first()
-    assert row is not None  # the UNIQUE violation proves the original row exists
+    if row is None:
+        return None
     stream_id, server_sequence, server_received_at = row
     return AcceptedEvent(
         event_id=event_id,

@@ -38,7 +38,7 @@ from msgd.auth.ratelimit import RateLimiter
 from msgd.core import ids
 from msgd.core.envelope import Envelope
 from msgd.core.hashing import hash_event
-from msgd.db.models import Event, Stream, StreamMember
+from msgd.db.models import Event, Stream, StreamMember, User, Workspace
 from msgd.settings import Settings
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -432,6 +432,271 @@ async def test_lifecycle_unknown_stream(client: AsyncClient, db_session: AsyncSe
     resp = await post_batch(client, owner["token"], [wire_item(body)])
     (entry,) = resp.json()["rejected"]
     assert entry["code"] == "unknown_stream"
+
+
+# --- F1: cross-tenant lifecycle isolation + strict lifecycle homing -------------------
+
+
+class _ForeignTenant:
+    """Workspace B seeded via DIRECT DB rows (a stand-in for another tenant)."""
+
+    def __init__(self) -> None:
+        self.ws = ids.new_workspace_id()
+        self.user = ids.new_user_id()
+        self.meta = ids.new_stream_id()
+        self.pub = ids.new_stream_id()
+        self.priv = ids.new_stream_id()
+        self.dm = ids.new_stream_id()
+
+
+async def _seed_foreign_tenant(db: AsyncSession) -> _ForeignTenant:
+    """Seed tenant B directly.
+
+    Single-workspace ``/v1/setup`` runs exactly once and cannot mint a SECOND
+    workspace, so B's rows are inserted straight into the DB. B's public channel
+    carries a non-trivial ``head_seq`` + name + member so the isolation asserts
+    can prove nothing changed.
+    """
+    b = _ForeignTenant()
+    db.add(Workspace(workspace_id=b.ws, name="Bravo"))
+    await db.flush()
+    db.add(
+        User(
+            user_id=b.user,
+            workspace_id=b.ws,
+            email="b@example.com",
+            password_hash="x",
+            display_name="B",
+            role="owner",
+        )
+    )
+    db.add(Stream(stream_id=b.meta, workspace_id=b.ws, kind="workspace-meta", head_seq=3))
+    db.add(
+        Stream(
+            stream_id=b.pub,
+            workspace_id=b.ws,
+            kind="channel",
+            name="bee-public",
+            visibility="public",
+            head_seq=5,
+        )
+    )
+    db.add(
+        Stream(
+            stream_id=b.priv,
+            workspace_id=b.ws,
+            kind="channel",
+            name="bee-private",
+            visibility="private",
+            head_seq=2,
+        )
+    )
+    db.add(Stream(stream_id=b.dm, workspace_id=b.ws, kind="dm", head_seq=1))
+    await db.flush()
+    db.add(StreamMember(stream_id=b.pub, user_id=b.user))
+    db.add(StreamMember(stream_id=b.priv, user_id=b.user))
+    await db.flush()
+    return b
+
+
+async def _stream_snapshot(db: AsyncSession, stream_id: str) -> tuple[Any, ...]:
+    row = await fetch_stream(db, stream_id)
+    assert row is not None
+    member_count = await db.scalar(
+        select(func.count()).select_from(StreamMember).where(StreamMember.stream_id == stream_id)
+    )
+    return (row.name, row.visibility, row.head_seq, row.archived_at, member_count)
+
+
+async def test_cross_tenant_lifecycle_is_inert_and_nondisclosing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """F1: A's admin cannot rename/archive/mutate a workspace-B stream, and B's id
+    is indistinguishable from a never-existed id (unknown_stream, same detail)."""
+    owner = await do_setup(client)  # A's owner (owner ∈ admin-ish → may fire lifecycle)
+    a_meta = await fetch_meta_stream_id(db_session, owner["workspace_id"])
+    assert a_meta is not None
+    b = await _seed_foreign_tenant(db_session)
+    before = await _stream_snapshot(db_session, b.pub)
+
+    # A-admin aims every lifecycle type at B's channel id (homed at A's meta so the
+    # only failing gate is the workspace-scoped target resolution).
+    attacks = [
+        ("channel.renamed", {"channel_stream_id": b.pub, "name": "PWNED"}),
+        ("channel.archived", {"channel_stream_id": b.pub}),
+        ("channel.member_added", {"channel_stream_id": b.pub, "user_id": owner["user_id"]}),
+        ("channel.member_removed", {"channel_stream_id": b.pub, "user_id": b.user}),
+    ]
+    for type_, payload in attacks:
+        body = lifecycle_body(auth=owner, home_stream_id=a_meta, type=type_, payload=payload)
+        resp = await post_batch(client, owner["token"], [wire_item(body)])
+        (entry,) = resp.json()["rejected"]
+        assert entry["code"] == "unknown_stream", (type_, resp.text)
+
+    # Mutation AND injection both dead: B's stream is byte-for-byte unchanged.
+    assert await _stream_snapshot(db_session, b.pub) == before
+
+    # Non-disclosure pin: B's stream id and a random nonexistent id → identical
+    # code AND detail (no cross-tenant existence oracle).
+    b_target = lifecycle_body(
+        auth=owner,
+        home_stream_id=a_meta,
+        type="channel.renamed",
+        payload={"channel_stream_id": b.pub, "name": "x"},
+    )
+    ghost_target = lifecycle_body(
+        auth=owner,
+        home_stream_id=a_meta,
+        type="channel.renamed",
+        payload={"channel_stream_id": ids.new_stream_id(), "name": "x"},
+    )
+    resp = await post_batch(client, owner["token"], [wire_item(b_target), wire_item(ghost_target)])
+    b_rej, ghost_rej = resp.json()["rejected"]
+    assert b_rej["code"] == "unknown_stream"
+    assert (b_rej["code"], b_rej["detail"]) == (ghost_rej["code"], ghost_rej["detail"])
+
+
+async def test_lifecycle_homed_at_foreign_stream_is_invalid_schema(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """F1: a valid A target but the event HOMED at a B stream id → invalid_schema.
+
+    The target resolves (A's own public channel), so the failing gate is strict
+    §2.2 homing: a public target must home at A's workspace-meta, not B's stream.
+    B's log is never touched (head_seq unchanged) — no cross-tenant injection.
+    """
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner, visibility="public")
+    b = await _seed_foreign_tenant(db_session)
+    b_head_before = (await fetch_stream(db_session, b.meta)).head_seq  # type: ignore[union-attr]
+
+    body = lifecycle_body(
+        auth=owner,
+        home_stream_id=b.meta,  # inject into B's meta log
+        type="channel.renamed",
+        payload={"channel_stream_id": channel, "name": "new"},
+    )
+    resp = await post_batch(client, owner["token"], [wire_item(body)])
+    (entry,) = resp.json()["rejected"]
+    assert entry["code"] == "invalid_schema"
+    b_meta = await fetch_stream(db_session, b.meta)
+    assert b_meta is not None and b_meta.head_seq == b_head_before
+
+
+async def test_lifecycle_kind_gate_blocks_dm_and_meta_graft(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """F1: channel.member_added aimed at one's OWN dm/meta stream id → unknown_stream.
+
+    Closes the intra-tenant membership-graft hole without a DM existence oracle
+    (same code as a nonexistent channel); no stream_members row is created.
+    """
+    owner = await do_setup(client)
+    a_meta = await fetch_meta_stream_id(db_session, owner["workspace_id"])
+    assert a_meta is not None
+    # An A-owned DM stream (direct row — no DM endpoint in M1).
+    a_dm = ids.new_stream_id()
+    db_session.add(Stream(stream_id=a_dm, workspace_id=owner["workspace_id"], kind="dm"))
+    await db_session.flush()
+
+    for target in (a_dm, a_meta):
+        body = lifecycle_body(
+            auth=owner,
+            home_stream_id=a_meta,
+            type="channel.member_added",
+            payload={"channel_stream_id": target, "user_id": owner["user_id"]},
+        )
+        resp = await post_batch(client, owner["token"], [wire_item(body)])
+        (entry,) = resp.json()["rejected"]
+        assert entry["code"] == "unknown_stream", target
+        grant = await db_session.scalar(
+            select(StreamMember).where(
+                StreamMember.stream_id == target, StreamMember.user_id == owner["user_id"]
+            )
+        )
+        assert grant is None
+
+
+async def test_lifecycle_correct_homing_accepted(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """F1 positive controls: correctly-homed rename of A's public (meta) + private (self)."""
+    owner = await do_setup(client)
+    a_meta = await fetch_meta_stream_id(db_session, owner["workspace_id"])
+    assert a_meta is not None
+    public = await bootstrap_channel(client, db_session, owner, visibility="public")
+    private = await bootstrap_channel(client, db_session, owner, visibility="private")
+
+    # public target → homed in workspace-meta.
+    pub_rename = lifecycle_body(
+        auth=owner,
+        home_stream_id=a_meta,
+        type="channel.renamed",
+        payload={"channel_stream_id": public, "name": "renamed-public"},
+    )
+    resp = await post_batch(client, owner["token"], [wire_item(pub_rename)])
+    assert len(resp.json()["accepted"]) == 1, resp.text
+
+    # private target → self-homed in the channel's own stream.
+    priv_rename = lifecycle_body(
+        auth=owner,
+        home_stream_id=private,
+        type="channel.renamed",
+        payload={"channel_stream_id": private, "name": "renamed-private"},
+    )
+    resp = await post_batch(client, owner["token"], [wire_item(priv_rename)])
+    assert len(resp.json()["accepted"]) == 1, resp.text
+    row = await fetch_stream(db_session, private)
+    assert row is not None and row.name == "renamed-private"
+
+
+# --- F2: narrow storability backstop (DataError only) ---------------------------------
+
+
+async def test_nul_in_payload_is_per_event_invalid_schema(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A JSON-valid, JCS-hashable, JSONB-fatal NUL in a payload string → invalid_schema.
+
+    The first real exercise of the storability backstop: neighbors in the batch
+    are unaffected (per-event isolation via the savepoint)."""
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+
+    good_before = message_body(auth=owner, stream_id=channel, text="before")
+    nul = custom_body(auth=owner, stream_id=channel, payload={"note": "bad\x00nul"})
+    good_after = message_body(auth=owner, stream_id=channel, text="after")
+    resp = await post_batch(
+        client,
+        owner["token"],
+        [wire_item(good_before), wire_item(nul), wire_item(good_after)],
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert [e["code"] for e in payload["rejected"]] == ["invalid_schema"]
+    assert payload["rejected"][0]["event_id"] == nul["event_id"]
+    # Neighbors persisted with consecutive sequences (the NUL burned none).
+    assert [e["server_sequence"] for e in payload["accepted"]] == [1, 2]
+    rows = await _event_rows(db_session, nul["event_id"])
+    assert rows == []  # the fatal event stored nothing
+
+
+# --- F3: chunked-body DoS — streaming cap-and-abort -----------------------------------
+
+
+async def test_oversize_chunked_body_without_content_length_413(client: AsyncClient) -> None:
+    """A >1 MB body sent WITHOUT Content-Length (chunked) is 413'd mid-stream."""
+    owner = await do_setup(client)
+
+    async def _oversize() -> Any:
+        chunk = b"a" * 100_000
+        for _ in range(12):  # 1.2 MB, no Content-Length (async generator → chunked)
+            yield chunk
+
+    headers = {**auth_header(owner["token"]), "content-type": "application/json"}
+    resp = await client.post(BATCH_URL, content=_oversize(), headers=headers)
+    assert resp.status_code == 413
+    assert resp.json()["type"] == "/problems/payload-too-large"
 
 
 # --- unknown types (D9) ---------------------------------------------------------------
