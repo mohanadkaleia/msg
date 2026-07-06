@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from msgd.api.problems import register_problem_handlers
-from msgd.api.routers import admin, auth, events_upload, health
+from msgd.api.routers import admin, auth, events_read, events_upload, health, sync
 from msgd.auth.ratelimit import RateLimiter
 from msgd.db.engine import create_engine, create_sessionmaker, set_sessionmaker
 from msgd.logging import configure_logging
@@ -70,4 +70,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(admin.router)
     app.include_router(events_upload.router)
+    app.include_router(events_read.router)
+    app.include_router(sync.router)
     return app

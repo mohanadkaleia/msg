@@ -270,3 +270,53 @@ async def upload_batch(request: Request, ctx: CurrentAuth, db: DbSession) -> Bat
 - **Archived-write gate duplication:** a local `archived_at` query in `validate.py` rather than editing `can_write`. Flagged to consolidate into `can_write` later.
 - **Rate-limit granularity:** batch-request, not per-event (RateLimiter has no weight). Documented; revisit if a client can abuse 100-event batches.
 - **`messages_proj` not populated:** M1 convergence is via the event log only; the message projection / search arrives in a later ticket that adds a `message.created` reducer. Confirmed out of ENG-66 scope.
+
+---
+
+## Review Round 1 — Triage & Fix Plan
+
+**Verdict:** REQUEST_CHANGES (1 HIGH, 2 MEDIUM, 2 nits; Deviation 1 ACCEPTED with two asks). Triage: **all five findings ADDRESSED** (none pushed back); Deviation ask (a) **deferred to ENG-73 with a flag**, ask (b) confirmed no-op. All fixes are `python-engineer`, confined to ENG-66-owned files (`validate.py`, `events_upload.py`, tests) — `insert.py`/`reducers.py`/`permissions.py` stay untouched per the partition; their missing workspace filters are flagged as an ENG-65 defense-in-depth follow-up, not fixed here.
+
+### F1 [HIGH] Cross-tenant lifecycle mutation/injection — ADDRESS, FIX NOW
+
+**Triage:** Valid and blocking. The reviewer is right on every link in the chain: `can_write` is role-only for lifecycle types, `_stream_exists` is global, the home `stream_id` is never resolved, and reducers/`insert_event` UPDATE by bare `stream_id`. Although M1 deployments are single-workspace in practice (`/v1/setup` runs once), the multi-tenant columns are real, the threat is one leaked ULID away, and the fix is ~15 lines of read-only checks in a file we own. **Ruling: fix now** — tenant isolation must never rest on ULID unguessability. The fix lives entirely in `validate.py` (the primary gate per the ENG-65 Security-Round-1 division); **no `insert_event` workspace guard is needed** once the home stream is validated to resolve within `ctx.workspace_id`, because `home_stream_id` is the only stream `insert_event` touches (and it is off-limits to edit anyway).
+
+**Fix (validate.py, step vi, lifecycle branch — replaces the global `_stream_exists` call):**
+1. **Workspace-scoped target resolution:** `SELECT workspace_id, kind, visibility FROM streams WHERE stream_id = :channel_stream_id AND workspace_id = :ctx_workspace_id`. No row → **`unknown_stream`** ("no such channel in this workspace"). D13-consistent and cross-tenant non-disclosing: a workspace-B stream id produces the *identical* code+detail as a never-existed id.
+2. **Kind gate:** the resolved row must have `kind == 'channel'` → else the same **`unknown_stream`** reject (uniform). This closes a sibling hole the reviewer's chain implies: without it, an admin could aim `channel.member_added` at a **DM or workspace-meta** stream id in their own workspace (a DM membership graft — intra-tenant privacy breach). Using `unknown_stream` (not a distinct error) avoids becoming a DM-existence oracle for admins.
+3. **Home-stream homing (subsumes "home resolves in ctx.workspace"):** enforce §2.2 lifecycle placement strictly, mirroring the genesis rule — target `visibility == 'private'` → `body.stream_id` must equal `payload.channel_stream_id` (self-homed); target public → `body.stream_id` must equal the caller workspace's workspace-meta stream id. Violation → **`invalid_schema`** (same code as genesis homing violations — a protocol-placement fault, not a permission fault). Both legal homes are by construction inside `ctx.workspace_id`, so cross-tenant home/log injection is dead without touching `insert_event`.
+4. **Genesis-collision `_stream_exists` stays GLOBAL** — the reviewer's subtlety is correct and becomes a load-bearing comment pair: *genesis: global, protective* (a workspace-scoped check would let a genesis event adopt a workspace-B stream id and, for private/self-homed genesis, re-open cross-tenant home injection) vs. *lifecycle: workspace-scoped, resolving*.
+
+**Code-map amendment (rulings summary §3):** `unknown_stream` = lifecycle target absent-in-caller's-workspace **or not a channel** (uniform; cross-tenant + DM non-disclosing). `invalid_schema` gains: lifecycle homing violation.
+
+**Tests (new, `test_events_batch.py`):** seed a second workspace + public/private channel + DM **via direct DB rows** (single-workspace `/v1/setup` cannot mint tenant B — document this in the test):
+- A-admin `channel.renamed` targeting B's channel id → `unknown_stream`; assert B's `streams.name`/`archived_at`/members **and B's `head_seq` unchanged** (mutation *and* injection both dead).
+- A-admin lifecycle event *homed* at a B stream id (target valid in A) → `invalid_schema`; B's `head_seq` unchanged.
+- A-admin `channel.member_added` targeting A's own DM / workspace-meta stream id → `unknown_stream`, no member row.
+- Non-disclosure pin: identical code+detail for target = B's stream id vs. a random nonexistent id.
+- Positive controls: correctly-homed rename of A's public channel (meta-homed) and private channel (self-homed) still accepted.
+
+### F2 [MEDIUM] `except DBAPIError` too broad — ADDRESS
+
+**Triage:** Correct — deadlock/disconnect/timeout must not be reported as a permanent `invalid_schema` (the client outbox would never retry). **Ruling:** narrow the storability backstop to `sqlalchemy.exc.DataError` only (the asyncpg data-domain mapping — e.g. a NUL `\u0000` inside a JSONB string); every other `DBAPIError` propagates → 500 (transient; the client retries the batch, and idempotency makes the retry safe — that is the design's whole point). **Test:** a payload string containing `\u0000` (JSON-valid, JCS-hashable, Postgres-JSONB-fatal) → per-event `invalid_schema` reject with the rest of the batch unaffected — the first real exercise of this backstop.
+
+### F3 [MEDIUM] Chunked-body DoS — ADDRESS
+
+**Triage:** Correct — the Content-Length fast-path is advisory; chunked bodies bypass it and `request.body()` buffers unbounded. **Ruling:** replace `await request.body()` with a **streaming read with cap**: `async for chunk in request.stream()`, accumulating and aborting with 413 `/problems/payload-too-large` the moment the running total exceeds 1 MB (cap-and-abort, not read-then-check). Keep the Content-Length pre-check as the cheap fast-reject. Do **not** reject missing Content-Length (legitimate chunked clients exist). Safe here because nothing else on this route reads the body stream (no `auth_rate_limit`/`request.json()` dependency mounted; `event_rate_limit` reads no body). **Tests:** oversize body sent **without** Content-Length (httpx async byte-generator content) → 413; the Content-Length fast-path 413 test is retained.
+
+### F4 [nit] `_fetch_original` bare assert — ADDRESS
+
+**Triage:** Cheap robustness. **Ruling:** before entering the idempotent path, verify the `IntegrityError` is actually the idempotency constraint (asyncpg `UniqueViolationError` whose constraint name is the `(workspace_id, event_id)` unique); anything else **re-raises** (loud 500 — a schema-impossible state must never be shaped into a per-event reject). If the follow-up fetch finds no row (theoretically unreachable after per-event commits), also re-raise the original error instead of `assert`. No dedicated test (state unreachable by construction); mypy/lint plus the F2 test cover the neighboring path.
+
+### F5 [nit] permission→schema order unpinned — ADDRESS
+
+**Triage:** Right — the locked §3.2 order deserves a multi-fault pin at every adjacent pair. **Ruling:** two parametrized cases in `test_events_validate.py`: (a) non-member target stream **and** schema-invalid payload → `permission_denied` (iii before iv); (b) author-binding mismatch **and** schema-invalid body → `permission_denied` (ii before iv). Completes the order-pin set alongside the existing schema→hash and hash→storability pins.
+
+### Deviation 1 asks (storability gate ACCEPTED by reviewer)
+
+- **(a) TDD §3.2 note — DEFER to ENG-73, flagged.** The write-back is real but belongs in ENG-73's docs/vectors sweep with the other M1 clarification amendments (the §15 "additive amendments" pattern), not in this PR. Note text to carry: *"§3.2 upload strictness: envelope scalars are strictly typed at accept — `type_version` must be a JSON integer within INT4, `client_created_at` a parseable RFC 3339 timestamp; honestly-hashed nonconforming forms (e.g. string `type_version`) are rejected `invalid_schema` after the hash check. Supersedes the ENG-66 plan's 'stored verbatim' companion ruling."* The plan's test-plan line above ("Companion: honestly-hashed string form → accepted and stored verbatim") is hereby **superseded** — the implemented companion test asserts the reject, which is correct.
+- **(b) No new hash vector — CONFIRMED**, no action. Endpoint accept/reject conformance vectors noted as an ENG-73 nice-to-have.
+
+### Fix order & ownership
+
+All `python-engineer`, one commit series on the PR branch: **F1** (blocker: `validate.py` + cross-tenant tests) → **F3** (body streaming cap) → **F2** (exception narrowing + NUL test) → **F4/F5** (nits). Files touched: `server/msgd/events/validate.py`, `server/msgd/api/routers/events_upload.py`, `server/tests/test_events_batch.py`, `server/tests/test_events_validate.py`. Nothing outside ENG-66's partition. Recorded follow-ups: ENG-65 defense-in-depth hardening (workspace filters in reducers / `can_write` signature) for a later ticket; ENG-73 carries the §3.2 TDD note + conformance-vector nice-to-have.
