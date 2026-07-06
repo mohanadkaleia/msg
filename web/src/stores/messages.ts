@@ -85,7 +85,8 @@ export const useMessagesStore = defineStore('messages', () => {
     try {
       const client = await resolveWorkerClient()
       const res = await client.query({ q: 'messages.list', stream_id: streamId, limit: PAGE })
-      rows.value = [...res.messages].reverse()
+      // Defensive: never trust a page longer than we asked for (no-infallibility).
+      rows.value = res.messages.slice(0, PAGE).reverse()
       hasMore.value = res.has_more
     } finally {
       loading.value = false
@@ -103,7 +104,8 @@ export const useMessagesStore = defineStore('messages', () => {
     const client = await resolveWorkerClient()
     const limit = Math.min(Math.max(rows.value.length, PAGE), MAX_WINDOW)
     const res = await client.query({ q: 'messages.list', stream_id: streamId, limit })
-    rows.value = [...res.messages].reverse()
+    // Defensive: clamp to the requested window (no-infallibility).
+    rows.value = res.messages.slice(0, limit).reverse()
     hasMore.value = res.has_more
   }
 
@@ -127,7 +129,7 @@ export const useMessagesStore = defineStore('messages', () => {
         ...(oldest !== undefined ? { before_seq: oldest } : {}),
         limit: PAGE,
       })
-      const older = [...res.messages].reverse()
+      const older = res.messages.slice(0, PAGE).reverse()
       if (older.length > 0) rows.value = [...older, ...rows.value]
       hasMore.value = res.has_more || backfilled.has_more
       return older.length

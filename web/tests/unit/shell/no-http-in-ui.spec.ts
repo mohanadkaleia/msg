@@ -5,14 +5,16 @@ import { describe, expect, it } from 'vitest'
 // The shell is a DUMB view over the worker RPC (ENG-82 constraint): it reads only
 // through the WorkerClient and NEVER the HTTP API for message data; the session
 // token lives worker-side and is unreachable from a tab. This test gives that
-// invariant teeth — it greps every UI source file (components, shell views,
-// stores, composables) for any HTTP-client import, raw fetch, or token reference.
+// invariant teeth — it greps every UI source file (components, views, stores,
+// composables) for any HTTP-client import, raw fetch, or token reference.
 
 // Vitest runs with the `web/` package root as cwd (single vite.config.ts).
 const SRC = resolve(process.cwd(), 'src')
 
-const UI_DIRS = ['components', 'stores', 'composables']
-const UI_FILES = [`${SRC}/views/ShellView.vue`]
+// Walk each dir RECURSIVELY — including `views/`, so any current OR future view
+// is covered (this guard enforces the token boundary; a new views/ file must not
+// be able to escape it).
+const UI_DIRS = ['components', 'stores', 'composables', 'views']
 
 /** Recursively collect .ts/.vue files under a directory. */
 function walk(dir: string): string[] {
@@ -26,7 +28,7 @@ function walk(dir: string): string[] {
 }
 
 function uiSourceFiles(): string[] {
-  const files = [...UI_FILES]
+  const files: string[] = []
   for (const d of UI_DIRS) files.push(...walk(`${SRC}/${d}`))
   return files
 }
@@ -51,5 +53,18 @@ describe('shell UI never touches HTTP or the token', () => {
       }
     }
     expect(violations).toEqual([])
+  })
+
+  it('covers every views/ file (recursively), so a new view cannot escape the guard', () => {
+    const scanned = uiSourceFiles()
+    const viewFiles = scanned.filter((f) => f.includes(`${SRC}/views/`))
+    // Every existing view is in the scanned set (LoginView, SetupView, etc.).
+    expect(viewFiles.length).toBeGreaterThan(0)
+    expect(scanned).toContain(`${SRC}/views/ShellView.vue`)
+    expect(scanned).toContain(`${SRC}/views/LoginView.vue`)
+
+    // And an http-client import in a views/ file WOULD be flagged.
+    const sample = `import { createHttpClient } from '../worker/http'`
+    expect(FORBIDDEN.some(({ pattern }) => pattern.test(sample))).toBe(true)
   })
 })
