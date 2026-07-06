@@ -162,7 +162,12 @@ async def fetch_stream(db: AsyncSession, stream_id: str) -> Stream | None:
 
 # ENG-65: events/streams/stream_members carry the committed rows the concurrency
 # test writes; they MUST be truncated too or committed rows leak across tests.
-AUTH_TABLES = "sessions, devices, invites, events, stream_members, streams, users, workspaces"
+# ENG-69: messages_proj joins the list — insert_event now materializes a
+# projection row per committed message.created, which would otherwise leak into
+# sibling tests' rolled-back sessions (committed rows are visible across txns).
+AUTH_TABLES = (
+    "sessions, devices, invites, events, messages_proj, stream_members, streams, users, workspaces"
+)
 
 
 def committing_app(settings: Settings) -> tuple[AsyncClient, AsyncEngine]:
