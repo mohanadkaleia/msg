@@ -101,7 +101,17 @@ describe('openDb (D-5 graceful degradation)', () => {
 async function seedAllTables(db: MsgDb): Promise<void> {
   await db.putEvents([{ stream_id: 's1', server_sequence: 1, event_id: 'e1', type: 'msg' }])
   await db.putOutbox([{ event_id: 'o1', created_at: 1, body: { text: 'hi' }, state: 'queued' }])
-  await db.putMessages([{ message_id: 'm1', stream_id: 's1', created_seq: 1 }])
+  await db.putMessages([
+    {
+      message_id: 'm1',
+      stream_id: 's1',
+      created_seq: 1,
+      author_user_id: 'u1',
+      text: '',
+      format: 'plain',
+      mention_user_ids: [],
+    },
+  ])
   await db.putStreams([{ stream_id: 's1', kind: 'channel', head_seq: 1, member: true }])
   await db.putCursors([{ stream_id: 's1', last_contiguous_seq: 1, oldest_loaded_seq: 1 }])
   await db.putReadState([{ stream_id: 's1', last_read_seq: 1 }])
@@ -149,7 +159,17 @@ describe.each([
 describe('rebuildProjections stub', () => {
   it('requires the derived tables to be cleared first', async () => {
     const db = new MemoryDb()
-    await db.putMessages([{ message_id: 'm1', stream_id: 's1', created_seq: 1 }])
+    await db.putMessages([
+      {
+        message_id: 'm1',
+        stream_id: 's1',
+        created_seq: 1,
+        author_user_id: 'u1',
+        text: '',
+        format: 'plain',
+        mention_user_ids: [],
+      },
+    ])
     await expect(rebuildProjections(db)).rejects.toThrow(/must be cleared/)
   })
 })

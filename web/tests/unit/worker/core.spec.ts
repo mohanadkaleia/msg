@@ -61,7 +61,29 @@ describe.each([
     await db.close()
   })
 
-  it('returns not_implemented for stub query/mutate', async () => {
+  it('returns not_implemented for the stub mutate', async () => {
+    const db = await make()
+    const { sink, frames } = collectingSink()
+    const core = new WorkerCore(db, sink)
+    await core.init()
+
+    await core.handle('c1', {
+      t: 'req',
+      id: 'm1',
+      clientId: 'c1',
+      req: { method: 'mutate', params: { m: 'message.send' } },
+    })
+
+    expect(lastRes(frames, 'm1')).toEqual({
+      t: 'res',
+      id: 'm1',
+      ok: true,
+      result: { code: 'not_implemented', detail: 'message.send' },
+    })
+    await db.close()
+  })
+
+  it('serves a real projection query (message.get miss → null)', async () => {
     const db = await make()
     const { sink, frames } = collectingSink()
     const core = new WorkerCore(db, sink)
@@ -71,14 +93,14 @@ describe.each([
       t: 'req',
       id: 'q1',
       clientId: 'c1',
-      req: { method: 'query', params: { q: 'messages' } },
+      req: { method: 'query', params: { q: 'message.get', message_id: 'm_missing' } },
     })
 
     expect(lastRes(frames, 'q1')).toEqual({
       t: 'res',
       id: 'q1',
       ok: true,
-      result: { code: 'not_implemented', detail: 'messages' },
+      result: { message: null },
     })
     await db.close()
   })
@@ -180,7 +202,17 @@ describe('WorkerCore.init reconciles PROJECTION_VERSION', () => {
     await db.metaPut('projection_version', 0)
     await db.putEvents([{ stream_id: 's1', server_sequence: 1, event_id: 'e1', type: 'msg' }])
     await db.putOutbox([{ event_id: 'o1', created_at: 1, body: {}, state: 'queued' }])
-    await db.putMessages([{ message_id: 'm1', stream_id: 's1', created_seq: 1 }])
+    await db.putMessages([
+      {
+        message_id: 'm1',
+        stream_id: 's1',
+        created_seq: 1,
+        author_user_id: 'u1',
+        text: '',
+        format: 'plain',
+        mention_user_ids: [],
+      },
+    ])
 
     const core = new WorkerCore(db, () => {
       /* no sink output */

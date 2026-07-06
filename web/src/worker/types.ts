@@ -55,24 +55,68 @@ export const MAX_CACHED_EVENTS_PER_STREAM = 2000
 // `.stores()` strings in db.ts); the rest are enforced by strict typing here.
 // ---------------------------------------------------------------------------
 
-/** Raw event envelope — the evictable source cache. ENG-79 fills the envelope. */
+/**
+ * The §2.1 hashed body inside a stored envelope. ENG-80's projection apply
+ * reads `type_version`, `author_user_id` and `payload` from here (the rest is
+ * opaque to the projection). Kept structurally loose (`unknown` payload) so the
+ * apply validates it defensively at runtime rather than trusting the shape.
+ */
+export interface EventBody {
+  type: string
+  type_version: number
+  author_user_id: string
+  payload: unknown
+  [key: string]: unknown
+}
+
+/**
+ * The full stored envelope ENG-79 caches under each `EventRow` — the §3.2 wire
+ * form (`body`, `event_hash`) plus the server-added `signature`/`server`
+ * metadata. ENG-80 reads ONLY `body`; `event_hash`/`signature`/`server` are
+ * opaque here. The cross-ticket contract is: ENG-79 populates `envelope.body`
+ * (`{ type_version, author_user_id, payload }`) for every cached event.
+ */
+export interface StoredEnvelope {
+  body: EventBody
+  event_hash?: string
+  signature?: string
+  server?: Record<string, unknown>
+}
+
+/**
+ * Raw event envelope — the evictable source cache. ENG-79 writes these rows
+ * (envelope populated) before calling `applyEventsToProjection`; ENG-80 reads
+ * `type`/`server_sequence`/`stream_id` from the top level and
+ * `type_version`/`author_user_id`/`payload` from `envelope.body`.
+ *
+ * `envelope` is optional so ENG-77's skeleton test rows still type-check and so
+ * the apply degrades to a skip (never a crash) if a batch is missing its body.
+ */
 export interface EventRow {
   stream_id: string
   server_sequence: number
   event_id: string
   type: string
-  /** Full envelope payload lands with ENG-79; opaque plain data until then. */
-  envelope?: Record<string, unknown>
+  envelope?: StoredEnvelope
 }
 
-/** Projected message row (derived). ENG-80 fills the render fields. */
+/**
+ * Projected message row (derived) — explicit typed columns (never an opaque
+ * blob) so the deterministic dump has a fixed field order and badges can read
+ * `mention_user_ids`. `mention_user_ids` is stored VERBATIM from
+ * `payload.mentions` (user-independent); the red/no-red badge is a query-time
+ * derivation in `badges.ts`, not stored here. Only `message_id`, `stream_id`,
+ * `[stream_id+created_seq]` and `thread_root_id` are indexed (db.ts `.stores()`).
+ */
 export interface MessageRow {
   message_id: string
   stream_id: string
   created_seq: number
+  author_user_id: string
+  text: string
+  format: 'markdown' | 'plain'
   thread_root_id?: string
-  /** Body / render fields land with ENG-80. */
-  body?: Record<string, unknown>
+  mention_user_ids: string[]
 }
 
 /** Projected stream row (derived). */
@@ -151,6 +195,34 @@ export interface MsgDb {
   putReadState(rows: readonly ReadStateRow[]): Promise<void>
   clearDerivedTables(): Promise<void>
 
+  // -- ENG-80 projection reads (additive; no schema change) ----------------
+  // Rebuild inputs (from the `events` source cache):
+  /** Distinct `stream_id`s present in `events` — the rebuild's stream set. */
+  listStreamIds(): Promise<string[]>
+  /** Full event rows for a stream, ascending `server_sequence` (rebuild replay). */
+  getEventsForStream(streamId: string): Promise<EventRow[]>
+  // Projection queries (from `messages`):
+  /** A single projected message by id (`message.get`). */
+  getMessage(messageId: string): Promise<MessageRow | undefined>
+  /** A stream's messages, DESC `created_seq`, older than `beforeSeq`, capped. */
+  listMessagesByStream(
+    streamId: string,
+    opts: { beforeSeq?: number; limit: number },
+  ): Promise<MessageRow[]>
+  /** Every projected message — the `dumpMessages` source (sorted in JS). */
+  getAllMessages(): Promise<MessageRow[]>
+  // Sidebar + badges (from `streams`/`read_state`/`messages`):
+  /** All stream rows (sidebar). */
+  listStreams(): Promise<StreamRow[]>
+  /** A single stream row (single-badge). */
+  getStream(streamId: string): Promise<StreamRow | undefined>
+  /** All read-state rows. */
+  listReadState(): Promise<ReadStateRow[]>
+  /** A single read-state row (single-badge). */
+  getReadState(streamId: string): Promise<ReadStateRow | undefined>
+  /** A stream's messages with `created_seq > afterSeq`, ASC (mention scan). */
+  listStreamMessagesAfter(streamId: string, afterSeq: number): Promise<MessageRow[]>
+
   /** Row count for any table — used by plumbing + assertions. */
   count(table: TableName): Promise<number>
 
@@ -164,20 +236,62 @@ export interface MsgDb {
 // handler on WorkerCore; the transports never change.
 // ---------------------------------------------------------------------------
 
-/** Read taxonomy — ENG-80 replaces the stub member with real projection reads. */
-export type QueryParams = { q: string }
+/**
+ * Read taxonomy (ENG-80) — the projection query surface tabs/ENG-82 read
+ * (never the HTTP API for message data). Discriminated on `q`:
+ *   • `messages.list` — a stream's messages, newest-first, paginated by
+ *     `created_seq` (older pages via `before_seq`).
+ *   • `streams.list`  — the sidebar: streams joined with unread/mention badges.
+ *   • `message.get`   — a single message by id.
+ */
+export type QueryParams =
+  | { q: 'messages.list'; stream_id: string; before_seq?: number; limit?: number }
+  | { q: 'streams.list' }
+  | { q: 'message.get'; message_id: string }
 
 /** Mutation taxonomy — ENG-81 replaces the stub member with real mutations. */
 export type MutateParams = { m: string }
 
-/** Stub result shapes; ENG-80/81 specialise these conditionally on the input. */
+/** A stream's unread count + mention badge (§3.5), derived at query time. */
+export interface StreamBadge {
+  stream_id: string
+  unread: number
+  mention: boolean
+}
+
+/** `messages.list` result — a page of messages + whether older ones remain. */
+export interface MessagesListResult {
+  messages: MessageRow[]
+  has_more: boolean
+}
+
+/** `streams.list` result — sidebar streams, each merged with its badge. */
+export interface StreamsListResult {
+  streams: Array<StreamRow & StreamBadge>
+}
+
+/** `message.get` result — the message, or `null` on a miss. */
+export interface MessageGetResult {
+  message: MessageRow | null
+}
+
+/** The union of every projection-query result (RpcResultMap['query']). */
+export type QueryResultUnion = MessagesListResult | StreamsListResult | MessageGetResult
+
+/** Stub result shape; ENG-81 specialises `MutateResult` conditionally. */
 export interface NotImplementedResult {
   code: 'not_implemented'
   detail?: string
 }
-export type QueryResult<Q extends QueryParams> = Q extends QueryParams
-  ? NotImplementedResult
-  : never
+
+/** Result keyed to the query's `q` discriminant (WorkerClient.query<Q>). */
+export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' }
+  ? MessagesListResult
+  : Q extends { q: 'streams.list' }
+    ? StreamsListResult
+    : Q extends { q: 'message.get' }
+      ? MessageGetResult
+      : never
 export type MutateResult<M extends MutateParams> = M extends MutateParams
   ? NotImplementedResult
   : never

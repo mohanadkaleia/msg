@@ -261,7 +261,17 @@ describe('AuthManager session lifecycle', () => {
     const { fetchImpl } = makeFetch(() => loginResponse())
     const { manager } = makeManager(db, fetchImpl)
     await manager.login({ email: 'a@b.co', password: 'password1234' })
-    await db.putMessages([{ message_id: 'm1', stream_id: 's1', created_seq: 1 }])
+    await db.putMessages([
+      {
+        message_id: 'm1',
+        stream_id: 's1',
+        created_seq: 1,
+        author_user_id: 'u1',
+        text: '',
+        format: 'plain',
+        mention_user_ids: [],
+      },
+    ])
 
     await manager.logout()
 
