@@ -211,6 +211,48 @@ export function canonicalize(value: JSONValue): Uint8Array {
 }
 
 /**
+ * Enforce the ±(2^53−1) integer interop cap for one parsed number, given the
+ * raw source literal that produced it (`undefined` when the runtime does not
+ * expose JSON.parse source-text access).
+ *
+ * Fails CLOSED: if `value` is a number but no `source` is available, the cap
+ * cannot be enforced (we can neither tell an over-cap integer literal from an
+ * accepted float, nor recover the pre-truncation digits that `JSON.parse` loses
+ * for magnitudes ≥2^53), so we throw rather than silently accept a value that
+ * would hash differently from the Python reference. The accept/reject boundary
+ * must not depend on the engine — the same engine-independence discipline as
+ * {@link MAX_DEPTH}. Target runtimes (Node 22 CI, evergreen browsers) all have
+ * source access; a runtime that lacks it cannot safely participate in the
+ * byte-for-byte hash contract, so refusing is the correct posture.
+ *
+ * Exported for the fail-closed unit test; NOT part of the module's public API
+ * (not re-exported from the barrel).
+ *
+ * @internal
+ * @throws {JCSError} if `value` is a number with no source (unsupported runtime)
+ *   or an integer-form literal outside `[-(2^53)+1, 2^53-1]`.
+ */
+export function enforceIntegerCap(value: unknown, source: string | undefined): void {
+  if (typeof value !== 'number') {
+    return
+  }
+  if (source === undefined) {
+    throw new JCSError(
+      'unsupported runtime: JSON.parse source-text access is required to enforce the integer interop cap',
+    )
+  }
+  // Integer-form literals (`/^-?\d+$/`, no `.`/`e`/`E`) are capped on the
+  // pre-truncation source via BigInt; exponential/fractional forms pass
+  // uncapped, exactly matching Python's int-vs-float split.
+  if (/^-?\d+$/.test(source)) {
+    const literal = BigInt(source)
+    if (literal > INT_INTEROP_MAX || literal < INT_INTEROP_MIN) {
+      throw new JCSError('integer outside the ±(2^53−1) interop range')
+    }
+  }
+}
+
+/**
  * Parse JSON source text into a {@link JSONValue}, enforcing the ±(2^53−1)
  * integer interop cap on the *source literal* — the TS equivalent of the wire
  * path's `json.loads`.
@@ -224,32 +266,23 @@ export function canonicalize(value: JSONValue): Uint8Array {
  * capped). `JSON.parse` erases that distinction *and* truncates ≥2^53
  * (`JSON.parse("9007199254740993")` → `9007199254740992`), so the cap cannot be
  * enforced on the parsed `number`. Instead we read `context.source` — the
- * pre-truncation literal — and cap it via `BigInt`. Integer-form literals
- * (`/^-?\d+$/`, no `.`/`e`/`E`) are capped; exponential/fractional forms pass
- * uncapped, exactly matching Python's int-vs-float split.
+ * pre-truncation literal (Stage-4 JSON.parse source access; Node 21+, evergreen
+ * browsers) — and cap it via {@link enforceIntegerCap}, which fails CLOSED on
+ * any runtime that does not expose it.
  *
  * NaN/Infinity reject at `JSON.parse` (`SyntaxError`), before this reviver runs.
  *
- * @throws {JCSError} an integer-form literal outside `[-(2^53)+1, 2^53-1]`.
+ * @throws {JCSError} an integer-form literal outside `[-(2^53)+1, 2^53-1]`, or
+ *   an unsupported runtime lacking JSON source-text access.
  */
 export function parseJcsJson(text: string): JSONValue {
   const parsed: unknown = JSON.parse(
     text,
-    // The `context` (3rd) arg carries the raw source text (Stage-4 JSON.parse
-    // source access; Node 21+, evergreen browsers). Typed locally as optional
-    // so it stays assignable under the project's ES2022 lib.
+    // The `context` (3rd) arg carries the raw source text. Typed locally as
+    // optional so it stays assignable under the project's ES2022 lib; when the
+    // runtime omits it, enforceIntegerCap fails closed for any number.
     function reviver(_key: string, value: unknown, context?: { source?: string }): unknown {
-      if (
-        typeof value === 'number' &&
-        context !== undefined &&
-        typeof context.source === 'string' &&
-        /^-?\d+$/.test(context.source)
-      ) {
-        const literal = BigInt(context.source)
-        if (literal > INT_INTEROP_MAX || literal < INT_INTEROP_MIN) {
-          throw new JCSError('integer outside the ±(2^53−1) interop range')
-        }
-      }
+      enforceIntegerCap(value, context?.source)
       return value
     },
   )

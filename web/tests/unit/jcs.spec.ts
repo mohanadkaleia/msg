@@ -8,7 +8,14 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { canonicalize, JCSError, MAX_DEPTH, parseJcsJson, type JSONValue } from '../../src/core/jcs'
+import {
+  canonicalize,
+  enforceIntegerCap,
+  JCSError,
+  MAX_DEPTH,
+  parseJcsJson,
+  type JSONValue,
+} from '../../src/core/jcs'
 
 /** Canonicalize a value and decode the resulting UTF-8 bytes back to a string. */
 function canon(value: JSONValue): string {
@@ -116,6 +123,34 @@ describe('JCS integer interop cap (parse-time, on the source literal)', () => {
     expect(parseJcsJson('1e21')).toBe(1e21)
     expect(parseJcsJson('1e30')).toBe(1e30)
     expect(parseJcsJson('9.999e22')).toBe(9.999e22)
+  })
+
+  // Forces the no-source-access branch that a runtime without JSON.parse
+  // source-text access would take. The cap MUST fail closed there (throw), not
+  // fail open (silently skip the check and accept an over-cap integer that would
+  // hash differently from the Python reference).
+  describe('fail-closed on a runtime without JSON source-text access', () => {
+    it('rejects an over-cap integer when no source is available', () => {
+      // 2**53 and 2**54 are exactly representable and over the ±(2^53−1) cap.
+      expect(() => enforceIntegerCap(2 ** 53, undefined)).toThrow(JCSError)
+      expect(() => enforceIntegerCap(2 ** 54, undefined)).toThrow(JCSError)
+    })
+
+    it('rejects any number when no source is available (cannot verify → refuse)', () => {
+      expect(() => enforceIntegerCap(42, undefined)).toThrow(JCSError)
+      expect(() => enforceIntegerCap(1e21, undefined)).toThrow(JCSError)
+    })
+
+    it('does not reject non-numbers (nothing to cap)', () => {
+      expect(() => enforceIntegerCap('42', undefined)).not.toThrow()
+      expect(() => enforceIntegerCap(null, undefined)).not.toThrow()
+    })
+
+    it('still enforces the cap normally when the source literal is present', () => {
+      expect(() => enforceIntegerCap(9007199254740991, '9007199254740991')).not.toThrow()
+      expect(() => enforceIntegerCap(1e21, '1e21')).not.toThrow()
+      expect(() => enforceIntegerCap(9007199254740992, '9007199254740992')).toThrow(JCSError)
+    })
   })
 })
 
