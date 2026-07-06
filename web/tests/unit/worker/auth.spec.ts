@@ -15,7 +15,7 @@ import {
   type MsgDb,
 } from '../../../src/worker/types'
 
-import { collectingSink, fakeIdbOptions } from './helpers'
+import { collectingSink, fakeIdbOptions, inertWsFactory } from './helpers'
 
 const TOKEN = 'sess-tok-SECRET-do-not-leak-42'
 
@@ -310,7 +310,8 @@ describe('token-owned-by-worker boundary (KEY guardrail, R1/R7)', () => {
     const db = new MemoryDb()
     const { fetchImpl } = makeFetch(() => loginResponse())
     const { sink, frames } = collectingSink()
-    const core = new WorkerCore(db, sink, { fetchImpl })
+    // Inject an inert WS factory so the post-login sync auto-start opens no socket.
+    const core = new WorkerCore(db, sink, { fetchImpl, wsFactory: inertWsFactory })
     await core.init()
 
     // Drive login + status through the real RPC entry point.

@@ -9,10 +9,15 @@ import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
 import { createHttpClient, type HttpClient } from './http'
 import { getMessage, listMessages, listStreamsForSidebar } from './projection'
+import { SyncEngine } from './sync'
+import { browserWsFactory, type WsFactory } from './ws'
 import {
   MAX_CACHED_EVENTS_PER_STREAM,
+  noopApplyToProjection,
   topicKey,
+  type ApplyEventsToProjection,
   type AuthResult,
+  type BackfillResult,
   type MessageSink,
   type MsgDb,
   type NotImplementedResult,
@@ -22,6 +27,7 @@ import {
   type RpcError,
   type RpcMethod,
   type RpcRequest,
+  type SyncStatus,
   type ToWorker,
   type Topic,
 } from './types'
@@ -41,6 +47,10 @@ export interface RpcResultMap {
   'auth.acceptInvite': AuthResult
   'auth.status': AuthResult
   'auth.logout': { ok: true }
+  'sync.status': SyncStatus
+  'sync.backfill': BackfillResult
+  'sync.start': { ok: true }
+  'sync.stop': { ok: true }
 }
 
 /** A handler typed to exactly one method's request variant and result. */
@@ -70,6 +80,17 @@ export interface WorkerCoreOptions {
   fetchImpl?: typeof fetch
   /** Override the API base URL (default '' → relative same-origin paths). */
   baseUrl?: string
+  /**
+   * ENG-80's projection build, injected into the sync engine (§3). Default:
+   * {@link noopApplyToProjection} — so `new WorkerCore(db, sink)` (the three
+   * transport entry points) is fully functional with no projection yet.
+   */
+  applyToProjection?: ApplyEventsToProjection
+  /**
+   * WS transport factory for the sync engine. Default {@link browserWsFactory}
+   * (real `WebSocket`); tests inject a fake so no socket is opened.
+   */
+  wsFactory?: WsFactory
 }
 
 export class WorkerCore {
@@ -78,6 +99,8 @@ export class WorkerCore {
   private readonly subs = new Map<string, Subscription>()
   /** The session owner (ENG-78). Holds the token in-memory + persists to `meta`. */
   private readonly auth: AuthManager
+  /** The replication loop (ENG-79). Started after auth, stopped on logout. */
+  private readonly sync: SyncEngine
 
   constructor(
     private readonly db: MsgDb,
@@ -93,17 +116,36 @@ export class WorkerCore {
         baseUrl: options.baseUrl ?? '',
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
         getToken: () => this.auth.getToken(),
-        onUnauthorized: () => this.auth.clearSession(),
+        onUnauthorized: () => {
+          // An expired/revoked session clears app-wide AND stops replication.
+          this.sync.stop()
+          return this.auth.clearSession()
+        },
       })
     this.auth = new AuthManager(db, http)
+    this.sync = new SyncEngine({
+      http,
+      wsFactory: options.wsFactory ?? browserWsFactory,
+      db,
+      getToken: () => this.auth.getToken(),
+      applyToProjection: options.applyToProjection ?? noopApplyToProjection,
+      emitStatus: (status) => this.publish({ kind: 'sync' }, status),
+      publishStream: (streamId) =>
+        this.publish({ kind: 'stream', stream_id: streamId }, { stream_id: streamId }),
+    })
     this.registerDefaults()
     this.registerAuth()
+    this.registerSync()
   }
 
-  /** Run once after construction: reconcile PROJECTION_VERSION (D-4) + restore session. */
+  /**
+   * Run once after construction: reconcile PROJECTION_VERSION (D-4), restore the
+   * session, and — if authenticated — start the sync engine (§12 lifecycle).
+   */
   async init(): Promise<void> {
     await checkProjectionVersion(this.db)
     await this.auth.restore()
+    if (this.auth.getToken()) this.sync.start()
   }
 
   /**
@@ -251,13 +293,46 @@ export class WorkerCore {
   // RpcCallError reject path stays reserved for genuine transport/handler faults.
 
   private registerAuth(): void {
-    this.register('auth.login', (req) => this.auth.login(req.params))
-    this.register('auth.setup', (req) => this.auth.setup(req.params))
-    this.register('auth.acceptInvite', (req) => this.auth.acceptInvite(req.params))
-    this.register('auth.logout', () => this.auth.logout())
+    this.register('auth.login', async (req) => {
+      const result = await this.auth.login(req.params)
+      if (result.ok) this.sync.start()
+      return result
+    })
+    this.register('auth.setup', async (req) => {
+      const result = await this.auth.setup(req.params)
+      if (result.ok) this.sync.start()
+      return result
+    })
+    this.register('auth.acceptInvite', async (req) => {
+      const result = await this.auth.acceptInvite(req.params)
+      if (result.ok) this.sync.start()
+      return result
+    })
+    this.register('auth.logout', async () => {
+      this.sync.stop()
+      return this.auth.logout()
+    })
     this.register('auth.status', () =>
       Promise.resolve({ ok: true, status: this.auth.status() } satisfies AuthResult),
     )
+  }
+
+  // -- ENG-79 sync handlers ------------------------------------------------
+  // Delegate the four sync.* RPCs to the SyncEngine. `start`/`stop` are
+  // idempotent; the engine also auto-starts in `init()`/login and stops on
+  // logout, so these are mostly for diagnostics + explicit control.
+
+  private registerSync(): void {
+    this.register('sync.status', () => Promise.resolve(this.sync.status()))
+    this.register('sync.backfill', (req) => this.sync.backfill(req.params.stream_id))
+    this.register('sync.start', () => {
+      this.sync.start()
+      return Promise.resolve({ ok: true as const })
+    })
+    this.register('sync.stop', () => {
+      this.sync.stop()
+      return Promise.resolve({ ok: true as const })
+    })
   }
 }
 

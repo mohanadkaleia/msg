@@ -9,7 +9,7 @@ import {
   type MsgDb,
 } from '../../../src/worker/types'
 
-import { collectingSink, fakeIdbOptions } from './helpers'
+import { collectingSink, fakeIdbOptions, stubEnvelope } from './helpers'
 
 function lastRes(frames: Array<{ clientId: string; msg: FromWorker }>, id: string): FromWorker {
   const found = frames.find((f) => f.msg.t === 'res' && f.msg.id === id)?.msg
@@ -163,6 +163,7 @@ describe.each([
       server_sequence: i,
       event_id: `e${i}`,
       type: 'msg',
+      envelope: stubEnvelope(i),
     }))
     await db.putEvents(events)
     await db.putOutbox([
@@ -187,7 +188,15 @@ describe.each([
 
   it('is a no-op below the cap', async () => {
     const db = new MemoryDb()
-    await db.putEvents([{ stream_id: 's1', server_sequence: 0, event_id: 'e0', type: 'msg' }])
+    await db.putEvents([
+      {
+        stream_id: 's1',
+        server_sequence: 0,
+        event_id: 'e0',
+        type: 'msg',
+        envelope: stubEnvelope(0),
+      },
+    ])
     const core = new WorkerCore(db, () => {
       /* no sink output */
     })
@@ -200,7 +209,15 @@ describe('WorkerCore.init reconciles PROJECTION_VERSION', () => {
   it('clears only derived tables when the stored version is stale', async () => {
     const db = new MemoryDb()
     await db.metaPut('projection_version', 0)
-    await db.putEvents([{ stream_id: 's1', server_sequence: 1, event_id: 'e1', type: 'msg' }])
+    await db.putEvents([
+      {
+        stream_id: 's1',
+        server_sequence: 1,
+        event_id: 'e1',
+        type: 'msg',
+        envelope: stubEnvelope(1),
+      },
+    ])
     await db.putOutbox([{ event_id: 'o1', created_at: 1, body: {}, state: 'queued' }])
     await db.putMessages([
       {

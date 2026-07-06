@@ -10,7 +10,7 @@ import {
 } from '../../../src/worker/db'
 import { PROJECTION_VERSION, type MsgDb } from '../../../src/worker/types'
 
-import { fakeIdbOptions, makeFakeMsgDB } from './helpers'
+import { fakeIdbOptions, makeFakeMsgDB, stubEnvelope } from './helpers'
 
 describe('MsgDB schema (§5.2, verbatim)', () => {
   it('declares the seven tables with the load-bearing indexes', async () => {
@@ -99,7 +99,9 @@ describe('openDb (D-5 graceful degradation)', () => {
 })
 
 async function seedAllTables(db: MsgDb): Promise<void> {
-  await db.putEvents([{ stream_id: 's1', server_sequence: 1, event_id: 'e1', type: 'msg' }])
+  await db.putEvents([
+    { stream_id: 's1', server_sequence: 1, event_id: 'e1', type: 'msg', envelope: stubEnvelope(1) },
+  ])
   await db.putOutbox([{ event_id: 'o1', created_at: 1, body: { text: 'hi' }, state: 'queued' }])
   await db.putMessages([
     {

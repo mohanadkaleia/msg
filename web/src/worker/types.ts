@@ -56,10 +56,11 @@ export const MAX_CACHED_EVENTS_PER_STREAM = 2000
 // ---------------------------------------------------------------------------
 
 /**
- * The §2.1 hashed body inside a stored envelope. ENG-80's projection apply
- * reads `type_version`, `author_user_id` and `payload` from here (the rest is
- * opaque to the projection). Kept structurally loose (`unknown` payload) so the
- * apply validates it defensively at runtime rather than trusting the shape.
+ * The §2.1 hashed body inside a stored envelope. ENG-80's projection apply reads
+ * `type_version`, `author_user_id` and `payload` from here (the rest is opaque to
+ * the projection). Kept structurally loose (`unknown` payload, open index) so the
+ * apply validates it defensively at runtime rather than trusting the shape, and
+ * so ENG-79 can read `stream_id`/`event_id` off the same body.
  */
 export interface EventBody {
   type: string
@@ -70,33 +71,52 @@ export interface EventBody {
 }
 
 /**
- * The full stored envelope ENG-79 caches under each `EventRow` — the §3.2 wire
- * form (`body`, `event_hash`) plus the server-added `signature`/`server`
+ * Unhashed server metadata carried alongside each event (ENG-79 delivery path).
+ * Inner fields are optional + open so ENG-80's fixtures (which omit
+ * `payload_redacted`) and ENG-79's full wire events both satisfy it.
+ */
+export interface EventServerMeta {
+  server_sequence: number
+  server_received_at?: string
+  payload_redacted?: boolean
+  [key: string]: unknown
+}
+
+/**
+ * The full stored envelope ENG-79 caches under each {@link EventRow} — the §3.2
+ * wire form (`body`, `event_hash`) plus server-added `signature`/`server`
  * metadata. ENG-80 reads ONLY `body`; `event_hash`/`signature`/`server` are
- * opaque here. The cross-ticket contract is: ENG-79 populates `envelope.body`
- * (`{ type_version, author_user_id, payload }`) for every cached event.
+ * opaque to the projection. Wire == stored (raw-hash discipline), so
+ * {@link StoredEvent} and {@link WireEvent} are aliases of this.
  */
 export interface StoredEnvelope {
   body: EventBody
   event_hash?: string
-  signature?: string
-  server?: Record<string, unknown>
+  signature?: string | null
+  server?: EventServerMeta
 }
+export type StoredEvent = StoredEnvelope
+export type WireEvent = StoredEnvelope
 
 /**
- * Raw event envelope — the evictable source cache. ENG-79 writes these rows
- * (envelope populated) before calling `applyEventsToProjection`; ENG-80 reads
- * `type`/`server_sequence`/`stream_id` from the top level and
- * `type_version`/`author_user_id`/`payload` from `envelope.body`.
- *
- * `envelope` is optional so ENG-77's skeleton test rows still type-check and so
- * the apply degrades to a skip (never a crash) if a batch is missing its body.
+ * Raw event envelope — the evictable source cache. ENG-79 writes these rows with
+ * the envelope populated (verbatim, hash-verified) before calling
+ * `applyEventsToProjection`. Top-level `stream_id`/`server_sequence`/`event_id`/
+ * `type` are DENORMALIZED off the envelope purely so the Dexie index
+ * (`[stream_id+server_sequence]`, `event_id`, `type`) can key + range-scan; ENG-80
+ * reads `type_version`/`author_user_id`/`payload` from `envelope.body`.
  */
 export interface EventRow {
   stream_id: string
   server_sequence: number
   event_id: string
   type: string
+  /**
+   * The full verified wire envelope, stored byte-for-byte (raw-hash discipline).
+   * ENG-79's write path always populates it; kept optional so ENG-77 skeleton
+   * rows type-check and ENG-80's projection degrades to a skip (never a crash) on
+   * a body-less row.
+   */
   envelope?: StoredEnvelope
 }
 
@@ -183,6 +203,14 @@ export interface MsgDb {
   /** Server sequences for a stream, ascending. */
   listEventSequences(streamId: string): Promise<number[]>
   deleteEventsBySequence(streamId: string, sequences: readonly number[]): Promise<void>
+  /** Smallest server_sequence stored for a stream (backfill floor), or undefined. */
+  minStoredSeq(streamId: string): Promise<number | undefined>
+
+  // derived reads (ENG-79 bootstrap diff + cursor re-derivation).
+  // NOTE: `listStreams`/`getStream` are declared once in the ENG-80 block below.
+  getCursor(streamId: string): Promise<CursorRow | undefined>
+  /** All cursor rows — boot-time re-derivation / diff. */
+  listCursors(): Promise<CursorRow[]>
 
   // outbox (source; never evicted, never dropped)
   putOutbox(rows: readonly OutboxRow[]): Promise<void>
@@ -302,6 +330,82 @@ export interface RpcError {
 }
 
 // ---------------------------------------------------------------------------
+// Sync engine (ENG-79) — wire shapes, stored-event shape, state machine, and
+// the projection-apply seam shared with ENG-80. All plain, clone-safe data.
+// ---------------------------------------------------------------------------
+
+// `WireEvent` / `StoredEvent` / `EventServerMeta` are defined above with the
+// Dexie row shapes (they double as `EventRow.envelope`). The pull/WS wire event
+// is identical to the stored envelope (raw-hash discipline): `body` is the
+// verbatim raw JSONB the `event_hash` was computed over — NEVER re-serialize it.
+
+/** One page of `GET /v1/events` (ascending within the page). */
+export interface EventsPageResponse {
+  events: WireEvent[]
+  has_more: boolean
+}
+
+/** One readable stream in a `GET /v1/sync` snapshot (server `SyncStream`). */
+export interface SyncStreamMeta {
+  stream_id: string
+  kind: string
+  name: string | null
+  visibility: string | null
+  head_seq: number
+  member: boolean
+}
+
+/** The full `GET /v1/sync` snapshot (server `SyncResponse`). */
+export interface SyncResponse {
+  streams: SyncStreamMeta[]
+}
+
+/** Sync engine lifecycle states (§5.3 / §6). */
+export type SyncState = 'idle' | 'connecting' | 'syncing' | 'live' | 'degraded'
+
+/**
+ * Tab-facing sync status — distinct from {@link WorkerStatus} (transport/db/role).
+ * Emitted on every transition via the `{kind:'sync'}` push topic + the
+ * `sync.status` RPC.
+ */
+export interface SyncStatus {
+  state: SyncState
+  online: boolean
+  streamsTotal?: number
+  streamsSynced?: number
+  lastError?: string
+}
+
+/** Result of a `sync.backfill` RPC (§10). */
+export interface BackfillResult {
+  events: number
+  has_more: boolean
+  oldest_loaded_seq: number
+}
+
+/**
+ * The coordination seam with ENG-80 (LOCKED signature). Called by the sync
+ * engine AFTER a contiguous run of verified events has been persisted to
+ * `events` and the stream cursor advanced. `events` is ascending, gapless,
+ * hash-verified and already stored — ENG-80 projects them into `messages`.
+ * Default: {@link noopApplyToProjection} (ENG-79 ships + tests standalone).
+ *
+ * Contract:
+ *  - called once per applied batch per stream (a bootstrap/catch-up page or a
+ *    single live frame), NOT once per event;
+ *  - only ever receives events the cursor now covers (never a gap/duplicate);
+ *  - awaited so a projection read after `sync.status == live` is consistent;
+ *  - must not be used for control flow — a throw is logged and swallowed by the
+ *    engine (the cursor is already committed truth; recovery is a rebuild).
+ */
+export type ApplyEventsToProjection = (
+  streamId: string,
+  events: readonly EventRow[],
+) => Promise<void>
+
+export const noopApplyToProjection: ApplyEventsToProjection = () => Promise.resolve()
+
+// ---------------------------------------------------------------------------
 // Auth taxonomy (ENG-78, R5). Credentials cross tab→worker over the in-process
 // postMessage RPC (never a tab network hop); the worker POSTs them and keeps the
 // resulting token worker-only. Every result below is TOKEN-FREE by construction.
@@ -348,11 +452,15 @@ export type RpcRequest =
   | { method: 'auth.acceptInvite'; params: AcceptInviteCredentials }
   | { method: 'auth.logout'; params: Record<string, never> }
   | { method: 'auth.status'; params: Record<string, never> }
+  | { method: 'sync.status'; params: Record<string, never> }
+  | { method: 'sync.backfill'; params: { stream_id: string } }
+  | { method: 'sync.start'; params: Record<string, never> }
+  | { method: 'sync.stop'; params: Record<string, never> }
 
 export type RpcMethod = RpcRequest['method']
 
 /** Push topics — ENG-79/80 add topics without touching the transport. */
-export type Topic = { kind: 'stream'; stream_id: string } | { kind: 'status' }
+export type Topic = { kind: 'stream'; stream_id: string } | { kind: 'status' } | { kind: 'sync' }
 
 /** Payload delivered on a push, keyed to the topic. */
 export interface StreamPush {
@@ -360,9 +468,11 @@ export interface StreamPush {
 }
 export type PushPayload<T extends Topic> = T extends { kind: 'status' }
   ? WorkerStatus
-  : T extends { kind: 'stream' }
-    ? StreamPush
-    : never
+  : T extends { kind: 'sync' }
+    ? SyncStatus
+    : T extends { kind: 'stream' }
+      ? StreamPush
+      : never
 
 // Tab → Worker frames. Every frame carries `clientId` so the leader's
 // BroadcastChannel can fan responses to the right follower.
@@ -453,6 +563,8 @@ export function topicKey(topic: Topic): string {
   switch (topic.kind) {
     case 'status':
       return 'status'
+    case 'sync':
+      return 'sync'
     case 'stream':
       return `stream:${topic.stream_id}`
   }
