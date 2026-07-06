@@ -230,6 +230,13 @@ export class WorkerCore {
         return this.listStreams()
       case 'message.get':
         return getMessage(this.db, params.message_id).then((message) => ({ message }))
+      default:
+        // Exhaustive: a new QueryParams member without a case is a COMPILE error
+        // here (params narrows to `never`). At runtime an out-of-contract `q`
+        // (e.g. a version-skewed tab) throws → `handle` frames a typed
+        // `{ ok: false, error: { code: 'unknown-query' } }`, never a silent
+        // `{ ok: true, result: undefined }` the shell would mis-render.
+        return assertNeverQuery(params)
     }
   }
 
@@ -254,7 +261,31 @@ export class WorkerCore {
   }
 }
 
+/** A handler error carrying an explicit RPC `code` (vs. the generic fallback). */
+class RpcCodedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'RpcCodedError'
+  }
+}
+
+/**
+ * Exhaustiveness guard for the query dispatcher: unreachable for an in-contract
+ * `q`, so `params` narrows to `never` (a missing case is a compile error). At
+ * runtime it throws a coded error `handle` turns into a clean `unknown-query`
+ * frame rather than resolving `undefined`.
+ */
+function assertNeverQuery(params: never): never {
+  throw new RpcCodedError('unknown-query', `unhandled query: ${JSON.stringify(params)}`)
+}
+
 function toRpcError(err: unknown): RpcError {
+  if (err instanceof RpcCodedError) {
+    return { code: err.code, detail: err.message }
+  }
   return {
     code: 'handler_error',
     detail: err instanceof Error ? err.message : String(err),

@@ -110,4 +110,26 @@ describe.each([
     expect(byId.s2).toMatchObject({ stream_id: 's2', name: 'random', unread: 0, mention: false })
     await db.close()
   })
+
+  it('an out-of-contract query resolves a typed error frame (not ok/undefined)', async () => {
+    const db = await make()
+    const { sink, frames } = collectingSink()
+    const core = new WorkerCore(db, sink)
+    await core.init()
+
+    await core.handle('c1', {
+      t: 'req',
+      id: 'bad',
+      clientId: 'c1',
+      // A version-skewed tab could send a `q` outside the contract.
+      req: { method: 'query', params: { q: 'widgets.list' } as unknown as QueryParams },
+    })
+
+    const msg = frames.find((f) => f.msg.t === 'res' && f.msg.id === 'bad')?.msg
+    if (!msg || msg.t !== 'res') throw new Error('no res frame')
+    expect(msg.ok).toBe(false)
+    if (msg.ok) throw new Error('expected an error frame')
+    expect(msg.error.code).toBe('unknown-query')
+    await db.close()
+  })
 })
