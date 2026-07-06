@@ -127,17 +127,37 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # Activate the pnpm pinned in web/package.json "packageManager" via Corepack
-      # (bundled with Node). Must run BEFORE setup-node so its `cache: 'pnpm'`
-      # can resolve pnpm on PATH to compute the cache key.
+      # (bundled with Node). Must run BEFORE the store-path step so `pnpm` is on
+      # PATH; also before setup-node is fine — Node itself ships Corepack.
       - name: Enable Corepack
         run: corepack enable
 
+      # No `cache: 'pnpm'` here on purpose. setup-node's built-in pnpm cache
+      # resolves the store path from the repo ROOT before `pnpm install` has ever
+      # run, so the cache-save post-step finds a nonexistent path and (in v6)
+      # FAILS the job: "Path Validation Error ... do(es) not exist". We drive the
+      # cache explicitly below instead (compute store path after pnpm is live,
+      # then actions/cache, which WARNS — not fails — on a missing path).
       - name: Set up Node 22
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
-          cache: "pnpm"
-          cache-dependency-path: web/pnpm-lock.yaml
+
+      # Resolve the real pnpm store path now that pnpm is on PATH (Corepack).
+      # `--silent` keeps the output to just the path so it is safe to capture.
+      - name: Locate pnpm store
+        working-directory: web
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      # Explicit dependency cache. actions/cache tolerates a missing path on save
+      # (warns, no failure), unlike setup-node's built-in pnpm cache.
+      - name: Cache pnpm store
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
 
       - name: Install (frozen)
         working-directory: web
