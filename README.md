@@ -13,12 +13,14 @@ msg is a local-first, file-based team messaging app for 5–50-person technical 
 
 **M1 — Sync server: complete** (tagged `m1`). msg is now a client-server system: token auth + sessions + single-use invites, streams + membership with a §3.6 read/write permission predicate, a `workspace-meta` stream, idempotent batch upload with gapless per-stream sequencing, pull/sync bootstrap, permission-scoped WebSocket fanout, Postgres + Alembic migrations, one-command compose self-host, and a simulation-suite skeleton (four of six §12 invariants) green in CI. The M1 exit gate proves two `msgctl` clients converge over the *real* server under interleaved bidirectional traffic.
 
+**M2 — Web client + sync proof: complete** (tagged `m2`). There is now a browser client: a Vue shell (sidebar, virtualized message list, plain-textarea composer, Cmd+K workspace switcher) backed by a SharedWorker that owns the session token, the authed HTTP client, the sync engine, the Dexie projection cache, and an optimistic-send outbox that drains on reconnect. Reads are instant and local (the projection); sends render optimistically and settle under their hash-bound `stream_id`. The Docker image now **bakes the built SPA** and serves it single-origin from the same origin as `/v1` — `docker compose up -d --build` yields a working web client at `http://localhost:8080`. The M2 exit gate is **all six §12 invariants green in CI** (Python sim owns 1–4 + server rebuild-equivalence; a TS `fast-check` suite owns pending-settling + client Dexie rebuild-equivalence, driving the real worker) plus a Playwright golden path — login → send → reload → history intact → a second browser sees the message live via WS fanout — on uvicorn's **default** WebSocket backend (ENG-92).
+
 | Milestone | Scope | Status |
 |---|---|---|
 | **M0 — Protocol spike** | `core/` envelope + JCS + hashing; `msgctl` append → project → rebuild → verify | ✅ Done |
 | **M1 — Sync server** | Auth, streams, batch upload, sync, WebSocket fanout, Postgres | ✅ Done |
-| M2 — Web client + sync proof | Vue shell, SharedWorker + Dexie, six invariants green in CI | Next |
-| M3 — Messaging core | Threads, reactions, mentions, files, search, presence | — |
+| **M2 — Web client + sync proof** | Vue shell, SharedWorker + Dexie, six invariants green in CI | ✅ Done |
+| M3 — Messaging core | Threads, reactions, mentions, files, search, presence | Next |
 | M4 — Portability | `export` / `import` / `verify` round-trip | — |
 | M5 — Plugins | Industry-standard incoming webhooks, bot tokens | — |
 | M6 — Desktop (Tauri) | True offline; "workspace is a folder" | — |
@@ -89,15 +91,17 @@ The client-server story — one operator self-hosts the sync server; each teamma
 ```bash
 cp .env.example .env          # fill in MSG_SECRET_KEY and the Postgres password
 docker compose up -d          # starts Postgres + runs migrations + serves the API
-curl -fsS http://localhost:8000/healthz   # -> {"status":"ok"}
+curl -fsS http://localhost:8080/healthz   # -> {"status":"ok"}
 ```
+
+Compose binds the API to **`127.0.0.1:8080`** (loopback only, deliberately — Docker port-publishing bypasses host firewalls, so a `0.0.0.0` bind would expose the plain-HTTP API on every interface; front it with the TLS reverse proxy in [`docs/deploy.md`](docs/deploy.md)).
 
 **2. The owner sets up the workspace** and mints an invite for a teammate:
 
 ```bash
 # First run: create the workspace + owner account (also creates the public `general`)
 uv run msgctl login ./acme --setup \
-  --server-url http://localhost:8000 \
+  --server-url http://localhost:8080 \
   --email owner@example.com --password '…' \
   --workspace-name Acme --display-name Owner
 
@@ -111,7 +115,7 @@ uv run msgctl invite ./acme --role member       # prints a single-use join URL
 
 ```bash
 uv run msgctl login ./bob --invite-token <token-from-the-join-url> \
-  --server-url http://localhost:8000 \
+  --server-url http://localhost:8080 \
   --email bob@example.com --password '…' --display-name Bob
 
 uv run msgctl pull ./bob                          # mirror the server's streams locally
@@ -121,6 +125,42 @@ uv run msgctl pull ./acme                          # owner sees Bob's message
 ```
 
 `push` is only a hint that new events are queued; **cursors are the truth** — `pull` is idempotent and drives every client to the same gapless per-stream sequence the server assigned. Run `verify` on any synced workspace to re-derive every `event_hash` from the stored bytes, exactly as in M0. These are the same commands the M1 exit-gate E2E drives to prove two clients converge over the real server.
+
+## Quickstart (M2: the web client, single-origin)
+
+The browser story — the same self-hosted server now **serves the web client from its own origin**. The Docker image bakes the built SPA into the runtime, so no separate web host, CDN, or CORS config is needed: the API and the client share `http://localhost:8080`.
+
+**1. Bring up the server *with the SPA baked in*.** The `--build` is what compiles the client into the image (a fresh multi-stage Node build → `/app/web/dist`, served at `/`):
+
+```bash
+cp .env.example .env               # fill in MSG_SECRET_KEY + POSTGRES_PASSWORD (as in M1)
+docker compose up -d --build       # builds the SPA into the image, migrates, serves
+curl -fsS http://localhost:8080/healthz   # -> {"status":"ok"}
+curl -fsS http://localhost:8080/           # -> the SPA index.html (single-origin)
+```
+
+**2. Bootstrap the owner + workspace** with the M1 `msgctl … --setup` flow (the server has no self-serve signup — the owner is minted from the CLI):
+
+```bash
+uv run msgctl login ./acme --setup \
+  --server-url http://localhost:8080 \
+  --email owner@example.com --password '…' \
+  --workspace-name Acme --display-name Owner
+```
+
+**3. Open the client** at **http://localhost:8080** and log in as `owner@example.com`. You land in `#general`; send a message — it renders **optimistically** the instant you hit send (the outbox holds it as *pending*), then settles to *acked* once the server sequences it. Reads are instant because they come from the local Dexie projection, not a round-trip.
+
+**4. Prove live sync across two browsers.** Mint an invite, join as a second user, and watch the message arrive live:
+
+```bash
+uv run msgctl invite ./acme --role member    # prints a single-use join URL; note the token
+```
+
+Open a second browser (or an incognito window) at http://localhost:8080, register/log in as the invited teammate, and post from either side — the other browser receives it **live via WebSocket fanout** (no reload), on uvicorn's default WS backend. Kill the network mid-send and the outbox holds your message as pending; restore it and the drain loop flushes it — reads stay instant and local throughout.
+
+**The Cmd+K switcher.** Press <kbd>Cmd</kbd>+<kbd>K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd>) to fuzzy-jump between channels/workspaces without leaving the keyboard.
+
+> The M2 build is an **online-first** web client (full browser NDJSON/offline is desktop M6, D4). "Offline-ish" means the outbox survives a transient disconnect and drains on reconnect, and every read is served from the local projection — not that the app runs fully offline.
 
 ## Development
 

@@ -37,6 +37,32 @@ COPY cli/ cli/
 # --locked  fails if uv.lock is stale (reproducible builds).
 RUN uv sync --locked --no-dev --no-editable
 
+# ── web build ────────────────────────────────────────────────────────────────
+# Builds the Vue SPA (web/) to web/dist so the runtime image can serve it
+# single-origin (ENG-84, TDD §5.1 D4). Its own stage so the Node/pnpm toolchain
+# never lands in the final runtime image — only the built dist is copied out.
+# Node 22 + pnpm 9.15.0 match web/package.json ("engines".node / "packageManager")
+# and the CI `web` job (Corepack-activated pnpm on Node 22).
+FROM node:22-slim AS web-builder
+# node:22-slim @sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4
+
+WORKDIR /web
+
+# Corepack ships with Node; activate the exact pnpm the repo pins so the build
+# is byte-reproducible with local + CI. Pin matches web/package.json
+# "packageManager": "pnpm@9.15.0".
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+# Manifest + lockfile first so the dependency layer caches independently of a
+# source-only edit. --frozen-lockfile fails on a stale lockfile (reproducible).
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+# Now the source; `pnpm build` runs vue-tsc typecheck + `vite build`, emitting
+# /web/dist. The typecheck needs only the web tree (no server/ files).
+COPY web/ ./
+RUN pnpm build
+
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 # python:3.12-slim @sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
@@ -56,6 +82,12 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # migrate.py builds Config(None) with the packaged msgd/db/migrations
 # script_location, verified in-image under --no-editable (R2).
 COPY server/docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# Baked SPA (ENG-84). settings.py resolves web_dist_dir=web/dist relative to the
+# WORKDIR (/app), so the built dist must land at /app/web/dist for create_app()'s
+# `web_dist_dir.is_dir()` mount to fire and serve the client single-origin. Only
+# the static dist crosses the stage boundary — the Node toolchain stays behind.
+COPY --from=web-builder /web/dist /app/web/dist
 
 # Data root (blobs live at /data/blobs per §6); owned by the runtime user.
 RUN mkdir -p /data/blobs \
