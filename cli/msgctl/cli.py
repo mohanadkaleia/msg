@@ -110,6 +110,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.set_defaults(handler=cmd_verify)
 
+    # ENG-69: `rebuild-projections` — append-only per the §6 cli.py collision
+    # protocol (a self-contained block at the end of build_parser, dispatched via
+    # set_defaults). This is the SERVER/Postgres projection rebuild — distinct
+    # from the M0 SQLite `rebuild` above (different name, no collision).
+    rebuild_projections_parser = subparsers.add_parser(
+        "rebuild-projections",
+        help="server-side: TRUNCATE messages_proj and replay the events log (MSG_DATABASE_URL)",
+    )
+    rebuild_projections_parser.set_defaults(handler=cmd_rebuild_projections)
+
     return parser
 
 
@@ -216,6 +226,65 @@ def cmd_verify(args: argparse.Namespace) -> int:
     else:
         print(verify.format_human(report, verbose=args.verbose))
     return report.exit_code
+
+
+def cmd_rebuild_projections(args: argparse.Namespace) -> int:
+    """Thin adapter for the server-side ``messages_proj`` rebuild (ENG-69 Ruling 5).
+
+    All DB-touching logic lives in ``msgd.projections.rebuild``; this only wires
+    the ``MSG_DATABASE_URL`` env var to an async engine and prints a summary.
+    The async-DB imports (SQLAlchemy async engine + the projection module) are
+    **lazy** — inside the handler, not at module top — so the M0 commands
+    (``init``/``send``/``project``/``rebuild``/``verify``) keep their light,
+    async-DB-free import cost.
+
+    SECURITY (review round 1): every DB failure mode — URL parse, connect, and
+    replay — is funnelled into a :class:`MsgctlError` whose message names only the
+    exception *class*, never the exception text. SQLAlchemy's URL-parse and
+    connection errors embed the full DSN (``Could not parse SQLAlchemy URL from
+    string '<dsn-with-credentials>'``); ``main`` prints an uncaught non-MsgctlError
+    as a raw traceback, which would leak ``MSG_DATABASE_URL`` (password included)
+    to stderr / CI logs. Catching here keeps the operator-facing failure clean
+    and credential-free.
+    """
+    import asyncio
+    import os
+
+    from msgd.db.engine import create_engine, create_sessionmaker
+    from msgd.projections.rebuild import rebuild_projections
+
+    database_url = os.environ.get("MSG_DATABASE_URL")
+    if not database_url:
+        raise MsgctlError("MSG_DATABASE_URL is not set")
+
+    async def _run() -> tuple[int, int]:
+        engine = create_engine(database_url)
+        try:
+            maker = create_sessionmaker(engine)
+            async with maker() as session:
+                result = await rebuild_projections(session)
+            return result.applied, result.skipped
+        finally:
+            await engine.dispose()
+
+    try:
+        applied, skipped = asyncio.run(_run())
+    except Exception as exc:
+        # Sanitized: name the error class only — never ``str(exc)``, which can
+        # embed the DSN (and its credentials). No re-raise ``from exc`` either,
+        # so the DSN-bearing traceback is not chained onto the MsgctlError.
+        raise MsgctlError(
+            f"rebuild-projections failed: {type(exc).__name__} "
+            "(check MSG_DATABASE_URL and database connectivity)"
+        ) from None
+
+    print(
+        json.dumps(
+            {"rebuilt": True, "applied": applied, "skipped": skipped},
+            ensure_ascii=False,
+        )
+    )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
