@@ -119,7 +119,10 @@ describe('assertCloneable (dev guard)', () => {
       },
       { assertCloneablePayloads: true },
     )
-    const bad = { method: 'query', params: { q: (() => 1) as unknown as string } } as const
+    const bad = {
+      method: 'query',
+      params: { q: 'message.get', message_id: (() => 1) as unknown as string },
+    } as const
     expect(() => caller.request(bad)).toThrow(/structured-clone/)
   })
 })

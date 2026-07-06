@@ -66,9 +66,8 @@ describe('makeWorkerClient surface (identical across transports)', () => {
     await client.ready()
 
     expect(client.status()).toEqual({ transport: 'solo', db: 'memory', role: 'n/a' })
-    await expect(client.query({ q: 'messages' })).resolves.toEqual({
-      code: 'not_implemented',
-      detail: 'messages',
+    await expect(client.query({ q: 'message.get', message_id: 'm_missing' })).resolves.toEqual({
+      message: null,
     })
     await expect(client.mutate({ m: 'send' })).resolves.toEqual({
       code: 'not_implemented',
@@ -107,7 +106,7 @@ describe('createSoloTransport', () => {
     await client.ready()
 
     expect(client.status()).toEqual({ transport: 'solo', db: 'memory', role: 'n/a' })
-    await expect(client.query({ q: 'x' })).resolves.toMatchObject({ code: 'not_implemented' })
+    await expect(client.query({ q: 'streams.list' })).resolves.toEqual({ streams: [] })
     client.dispose()
   })
 })

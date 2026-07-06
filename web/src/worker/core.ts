@@ -8,6 +8,7 @@
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
 import { createHttpClient, type HttpClient } from './http'
+import { getMessage, listMessages, listStreamsForSidebar } from './projection'
 import {
   MAX_CACHED_EVENTS_PER_STREAM,
   topicKey,
@@ -16,6 +17,8 @@ import {
   type MsgDb,
   type NotImplementedResult,
   type PushPayload,
+  type QueryParams,
+  type QueryResultUnion,
   type RpcError,
   type RpcMethod,
   type RpcRequest,
@@ -31,7 +34,7 @@ import {
 export interface RpcResultMap {
   'meta.get': { key: string; value: unknown }
   ping: { pong: true }
-  query: NotImplementedResult
+  query: QueryResultUnion
   mutate: NotImplementedResult
   'auth.login': AuthResult
   'auth.setup': AuthResult
@@ -192,9 +195,9 @@ export class WorkerCore {
     }
   }
 
-  // -- ENG-77 stub handlers ------------------------------------------------
-  // `ping` and `meta.get` are real (they prove the round trip end to end);
-  // `query`/`mutate` are registered but report not_implemented until ENG-80/81.
+  // -- Default handlers ----------------------------------------------------
+  // `ping`/`meta.get` prove the round trip; `query` is the real ENG-80
+  // projection dispatcher; `mutate` stays not_implemented until ENG-81.
 
   private registerDefaults(): void {
     this.register('ping', () => Promise.resolve({ pong: true }))
@@ -204,13 +207,42 @@ export class WorkerCore {
       return { key: req.params.key, value }
     })
 
-    this.register('query', (req) =>
-      Promise.resolve({ code: 'not_implemented', detail: req.params.q }),
-    )
+    this.register('query', (req) => this.handleQuery(req.params))
 
     this.register('mutate', (req) =>
       Promise.resolve({ code: 'not_implemented', detail: req.params.m }),
     )
+  }
+
+  /**
+   * Projection query dispatcher (ENG-80). Reads from the local `messages`
+   * projection via projection.ts/badges.ts — never the HTTP API for message
+   * data. `myUserId` (for mention badges) comes from the worker-owned session.
+   */
+  private handleQuery(params: QueryParams): Promise<QueryResultUnion> {
+    switch (params.q) {
+      case 'messages.list':
+        return listMessages(this.db, params.stream_id, {
+          ...(params.before_seq !== undefined ? { beforeSeq: params.before_seq } : {}),
+          ...(params.limit !== undefined ? { limit: params.limit } : {}),
+        })
+      case 'streams.list':
+        return this.listStreams()
+      case 'message.get':
+        return getMessage(this.db, params.message_id).then((message) => ({ message }))
+      default:
+        // Exhaustive: a new QueryParams member without a case is a COMPILE error
+        // here (params narrows to `never`). At runtime an out-of-contract `q`
+        // (e.g. a version-skewed tab) throws → `handle` frames a typed
+        // `{ ok: false, error: { code: 'unknown-query' } }`, never a silent
+        // `{ ok: true, result: undefined }` the shell would mis-render.
+        return assertNeverQuery(params)
+    }
+  }
+
+  private async listStreams(): Promise<QueryResultUnion> {
+    const myUserId = this.auth.status().my_user_id ?? ''
+    return { streams: await listStreamsForSidebar(this.db, myUserId) }
   }
 
   // -- ENG-78 auth handlers ------------------------------------------------
@@ -229,7 +261,31 @@ export class WorkerCore {
   }
 }
 
+/** A handler error carrying an explicit RPC `code` (vs. the generic fallback). */
+class RpcCodedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'RpcCodedError'
+  }
+}
+
+/**
+ * Exhaustiveness guard for the query dispatcher: unreachable for an in-contract
+ * `q`, so `params` narrows to `never` (a missing case is a compile error). At
+ * runtime it throws a coded error `handle` turns into a clean `unknown-query`
+ * frame rather than resolving `undefined`.
+ */
+function assertNeverQuery(params: never): never {
+  throw new RpcCodedError('unknown-query', `unhandled query: ${JSON.stringify(params)}`)
+}
+
 function toRpcError(err: unknown): RpcError {
+  if (err instanceof RpcCodedError) {
+    return { code: err.code, detail: err.message }
+  }
   return {
     code: 'handler_error',
     detail: err instanceof Error ? err.message : String(err),

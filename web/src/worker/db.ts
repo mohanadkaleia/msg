@@ -8,6 +8,7 @@
 
 import Dexie, { type DexieOptions, type Table } from 'dexie'
 
+import { rebuildMessagesProjection } from './projection'
 import {
   DERIVED_TABLES,
   META_PROJECTION_VERSION,
@@ -130,6 +131,70 @@ export class DexieDb implements MsgDb {
     )
   }
 
+  // -- ENG-80 projection reads (fluent Dexie, index-bounded) ---------------
+
+  async listStreamIds(): Promise<string[]> {
+    // Read only the compound primary keys (never full rows), dedupe the stream id.
+    const pks = await this.db.events.toCollection().primaryKeys()
+    return [...new Set(pks.map((k) => k[0]))]
+  }
+
+  async getEventsForStream(streamId: string): Promise<EventRow[]> {
+    // The compound index yields rows ascending by server_sequence within a stream.
+    return this.db.events
+      .where('[stream_id+server_sequence]')
+      .between([streamId, Dexie.minKey], [streamId, Dexie.maxKey])
+      .toArray()
+  }
+
+  async getMessage(messageId: string): Promise<MessageRow | undefined> {
+    return this.db.messages.get(messageId)
+  }
+
+  async listMessagesByStream(
+    streamId: string,
+    opts: { beforeSeq?: number; limit: number },
+  ): Promise<MessageRow[]> {
+    const upper: [string, number | typeof Dexie.maxKey] =
+      opts.beforeSeq !== undefined ? [streamId, opts.beforeSeq] : [streamId, Dexie.maxKey]
+    // Upper bound is EXCLUSIVE when paginating by before_seq (created_seq < beforeSeq).
+    const includeUpper = opts.beforeSeq === undefined
+    return this.db.messages
+      .where('[stream_id+created_seq]')
+      .between([streamId, Dexie.minKey], upper, true, includeUpper)
+      .reverse() // DESC created_seq (newest first)
+      .limit(opts.limit)
+      .toArray()
+  }
+
+  async getAllMessages(): Promise<MessageRow[]> {
+    return this.db.messages.toArray()
+  }
+
+  async listStreams(): Promise<StreamRow[]> {
+    return this.db.streams.toArray()
+  }
+
+  async getStream(streamId: string): Promise<StreamRow | undefined> {
+    return this.db.streams.get(streamId)
+  }
+
+  async listReadState(): Promise<ReadStateRow[]> {
+    return this.db.read_state.toArray()
+  }
+
+  async getReadState(streamId: string): Promise<ReadStateRow | undefined> {
+    return this.db.read_state.get(streamId)
+  }
+
+  async listStreamMessagesAfter(streamId: string, afterSeq: number): Promise<MessageRow[]> {
+    // Lower bound EXCLUSIVE (created_seq > afterSeq); bounded by the compound index.
+    return this.db.messages
+      .where('[stream_id+created_seq]')
+      .between([streamId, afterSeq], [streamId, Dexie.maxKey], false, true)
+      .toArray()
+  }
+
   async count(table: TableName): Promise<number> {
     switch (table) {
       case 'events':
@@ -247,6 +312,67 @@ export class MemoryDb implements MsgDb {
     return Promise.resolve()
   }
 
+  // -- ENG-80 projection reads (Map filter/sort; same shapes as DexieDb) ----
+
+  listStreamIds(): Promise<string[]> {
+    const ids = new Set<string>()
+    for (const row of this.eventsMap.values()) ids.add(row.stream_id)
+    return Promise.resolve([...ids])
+  }
+
+  getEventsForStream(streamId: string): Promise<EventRow[]> {
+    const rows = [...this.eventsMap.values()]
+      .filter((r) => r.stream_id === streamId)
+      .sort((a, b) => a.server_sequence - b.server_sequence)
+    return Promise.resolve(rows)
+  }
+
+  getMessage(messageId: string): Promise<MessageRow | undefined> {
+    return Promise.resolve(this.messagesMap.get(messageId))
+  }
+
+  listMessagesByStream(
+    streamId: string,
+    opts: { beforeSeq?: number; limit: number },
+  ): Promise<MessageRow[]> {
+    const rows = [...this.messagesMap.values()]
+      .filter(
+        (m) =>
+          m.stream_id === streamId &&
+          (opts.beforeSeq === undefined || m.created_seq < opts.beforeSeq),
+      )
+      .sort((a, b) => b.created_seq - a.created_seq) // DESC created_seq
+      .slice(0, opts.limit)
+    return Promise.resolve(rows)
+  }
+
+  getAllMessages(): Promise<MessageRow[]> {
+    return Promise.resolve([...this.messagesMap.values()])
+  }
+
+  listStreams(): Promise<StreamRow[]> {
+    return Promise.resolve([...this.streamsMap.values()])
+  }
+
+  getStream(streamId: string): Promise<StreamRow | undefined> {
+    return Promise.resolve(this.streamsMap.get(streamId))
+  }
+
+  listReadState(): Promise<ReadStateRow[]> {
+    return Promise.resolve([...this.readStateMap.values()])
+  }
+
+  getReadState(streamId: string): Promise<ReadStateRow | undefined> {
+    return Promise.resolve(this.readStateMap.get(streamId))
+  }
+
+  listStreamMessagesAfter(streamId: string, afterSeq: number): Promise<MessageRow[]> {
+    const rows = [...this.messagesMap.values()]
+      .filter((m) => m.stream_id === streamId && m.created_seq > afterSeq)
+      .sort((a, b) => a.created_seq - b.created_seq) // ASC created_seq
+    return Promise.resolve(rows)
+  }
+
   count(table: TableName): Promise<number> {
     switch (table) {
       case 'events':
@@ -318,16 +444,24 @@ export async function openDb(options?: DexieOptions): Promise<MsgDb> {
 // ---------------------------------------------------------------------------
 
 /**
- * ENG-80 replays cached `events` into the derived tables here. At ENG-77 this
- * is a stub: the caller has already cleared the derived tables, so it asserts
- * that invariant and writes nothing.
+ * Rebuild the derived `messages` projection from the cached `events` (ENG-80,
+ * §12 invariant 6, client side). The caller (`checkProjectionVersion`) has
+ * already cleared the derived tables; this asserts that invariant, then replays
+ * `events → messages` via the SAME `applyEventsToProjection` the incremental
+ * path uses — which is what makes rebuild ≡ incremental true by construction.
+ *
+ * ONLY `messages` is rebuilt locally: `streams`/`cursors`/`read_state` are
+ * echoes of server-authoritative state, refilled by ENG-79's resumed pulls
+ * (§5.2 "then resume pulls"), not derivable from the message `events` alone.
+ * Replay logic lives in `projection.ts` (db.ts imports the one function) so
+ * there is no db.ts↔projection.ts cycle.
  */
 export async function rebuildProjections(db: MsgDb): Promise<void> {
   const remaining = await db.count('messages')
   if (remaining !== 0) {
     throw new Error('rebuildProjections: derived tables must be cleared before rebuild')
   }
-  // Real replay from `events` + resumed pulls is ENG-80.
+  await rebuildMessagesProjection(db)
 }
 
 /**
