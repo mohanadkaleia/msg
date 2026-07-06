@@ -47,6 +47,16 @@ jobs:
       - name: Pre-pull Postgres image
         run: docker pull postgres:17
 
+      # permanent M1 exit gate, never remove (TDD §5, §12 invariant 6, server side).
+      # Runs after the Postgres pre-pull so the session-scoped testcontainer starts
+      # warm. Sibling of the M0 CLI gate above (which is Docker-free) — kept a
+      # separate named step so "CLI gate red" vs "server gate red" are distinct
+      # diagnoses; the CLI gate step stays byte-for-byte untouched.
+      - name: Equivalence gate (server · rebuild ≡ incremental)
+        run: uv run pytest server/tests/test_equivalence_gate_server.py -q
+        env:
+          CI: "true"
+
       # Runs the full suite, including the server integration tests, which spin
       # an ephemeral Postgres via testcontainers (Docker present on the runner).
       - name: Pytest

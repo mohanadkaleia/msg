@@ -15,6 +15,13 @@ does the smallest correct thing and nothing more:
    into a gapless, monotonic sequence (D2).  A missing row raises
    :class:`UnknownStreamError` (the caller must bootstrap the row first — D4).
 3. **Insert the ``events`` row** verbatim (``body`` is the sole hash source).
+3b. **Apply to ``messages_proj``** (ENG-69) — ``apply_projection`` materializes the
+   incremental projection *in the same transaction* (§4.2 accept ordering: insert
+   into ``events`` → apply to ``messages_proj`` → commit).  It runs BEFORE the
+   ``Envelope`` is built and does not commit, so a projection failure rolls back
+   the ``events`` insert with it — the event is rejected, never stored without its
+   projection.  Only ``message.created`` v1 writes a row; every other type is a
+   D9 no-op.
 4. **Return** the stored :class:`~msgd.core.envelope.Envelope`.
 
 What it deliberately does **NOT** do (ENG-66 owns these): schema validation,
@@ -37,6 +44,7 @@ from msgd.core.envelope import Body, Envelope, ServerMetadata
 from msgd.core.hashing import hash_event
 from msgd.core.time import now_rfc3339
 from msgd.db.models import Event, Stream
+from msgd.projections.apply import apply_projection
 
 __all__ = ["UnknownStreamError", "insert_event"]
 
@@ -104,6 +112,17 @@ async def insert_event(db: AsyncSession, *, stream_id: str, body: dict[str, Any]
         )
     )
     await db.flush()
+
+    # 3b. Apply the incremental projection in this same transaction (ENG-69): only
+    #     message.created v1 writes a messages_proj row; every other type is a D9
+    #     no-op. A raise here propagates out of the caller's per-event SAVEPOINT →
+    #     the events insert + head_seq bump roll back together → the event is
+    #     rejected, never stored without its projection (accept-path ordering,
+    #     §4.2). Deliberately NOT wrapped in a catch: a projection failure on a
+    #     pre-validated payload is a bug that must be loud (500), not silently
+    #     shaped into a per-event reject that could let the log and projection
+    #     diverge (ENG-69 Pin 5, loud-is-preferable-to-silent-divergence).
+    await apply_projection(db, body=body, server_sequence=server_sequence)
 
     # 4. Return the stored envelope for the caller / ENG-66 response shaping.
     return Envelope(
