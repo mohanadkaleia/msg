@@ -11,5 +11,12 @@ test-results/
 playwright-report/
 .playwright/
 
+# ENG-83 e2e server-harness runtime artifacts (serverctl.py / global-setup)
+tests/e2e/.server-ready
+tests/e2e/.server-pgid
+tests/e2e/.server.log
+tests/e2e/.server-data/
+tests/e2e/.bootstrap-ws/
+
 # Editor / OS
 *.local

@@ -26,6 +26,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   /** Per-stream push unsubscribes, so we can diff + tear down cleanly. */
   const subs = new Map<string, Unsubscribe>()
+  /** One `{kind:'sync'}` subscription so the sidebar re-queries as sync progresses. */
+  let syncSub: Unsubscribe | undefined
   let refreshQueued = false
 
   const visibleStreams = computed(() =>
@@ -39,6 +41,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   /** Load the sidebar + wire per-stream badge subscriptions. */
   async function load(): Promise<void> {
+    const client = await resolveWorkerClient()
+    // On first login the projection is empty at mount; streams arrive only once
+    // the sync engine's catch-up pull lands. The per-stream `{kind:'stream'}`
+    // subscriptions in refresh() cannot cover a stream that does not exist yet,
+    // so also re-query on every sync push — that is exactly when a NEW stream
+    // (e.g. `general`) appears. Without this the sidebar stays empty until reload.
+    if (syncSub === undefined) {
+      syncSub = client.subscribe({ kind: 'sync' }, () => scheduleRefresh())
+    }
     await refresh()
     loaded.value = true
     // Default selection: first channel, else first DM (only on first load).
@@ -91,6 +102,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function dispose(): void {
     for (const unsub of subs.values()) unsub()
     subs.clear()
+    syncSub?.()
+    syncSub = undefined
   }
 
   return {
