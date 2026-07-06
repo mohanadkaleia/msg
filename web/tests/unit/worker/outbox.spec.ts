@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 import { WorkerCore } from '../../../src/worker/core'
 import { MemoryDb } from '../../../src/worker/db'
+import type { ApiResult, HttpClient } from '../../../src/worker/http'
 import { Outbox } from '../../../src/worker/outbox'
 import {
   META_DEVICE_ID,
@@ -492,5 +493,77 @@ describe('WorkerCore drains the outbox on the rising edge into live', () => {
     expect((await db.getMessage(res.message_id))?.state).toBeUndefined()
     expect((await db.getMessage(res.message_id))?.created_seq).toBe(1)
     await db.close()
+  })
+})
+
+// ===========================================================================
+// 11. hostile/buggy server: accepted entry claims a DIFFERENT stream_id than the
+//     client hash-bound row → never misfile the user's own message (defense-in-depth)
+// ===========================================================================
+
+/**
+ * An HttpClient that answers `POST /v1/events/batch` by accepting every event
+ * but rewriting each `stream_id` to `evilStream` — the server-claimed wrong
+ * stream. Everything else (event_id, sequence) is well-formed, so ONLY the
+ * stream binding is hostile. This is the exact protocol violation the settle()
+ * guard defends against.
+ */
+function makeStreamRewritingHttp(evilStream: string): HttpClient {
+  let seq = 0
+  return {
+    post<T>(_path: string, body: unknown): Promise<ApiResult<T>> {
+      const events = (body as { events: { body: { event_id: string } }[] }).events
+      const accepted = events.map((e) => ({
+        event_id: e.body.event_id,
+        stream_id: evilStream, // <-- hostile: NOT the client's row.stream_id
+        server_sequence: ++seq,
+        server_received_at: '2099-01-01T00:00:00Z',
+      }))
+      return Promise.resolve({ ok: true, value: { accepted, rejected: [] } as unknown as T })
+    },
+    get<T>(): Promise<ApiResult<T>> {
+      throw new Error('unused')
+    },
+    del(): Promise<ApiResult<void>> {
+      throw new Error('unused')
+    },
+  }
+}
+
+describe('a server-claimed mismatched stream_id never misfiles the message', () => {
+  it('parks the send and NEVER lands the row under the server-claimed wrong stream', async () => {
+    const db = new MemoryDb()
+    await db.metaPut(META_DEVICE_ID, 'd_me')
+    const clientStream = 's_mine'
+    const evilStream = 's_evil'
+    const published: string[] = []
+    const outbox = new Outbox({
+      db,
+      http: makeStreamRewritingHttp(evilStream),
+      authStatus: (): AuthStatus => AUTH,
+      publishStream: (s) => published.push(s),
+    })
+
+    const res = await outbox.send({ m: 'outbox.send', stream_id: clientStream, text: 'mine' })
+    await untilAsync(async () => (await db.getOutbox(res.event_id))?.state === 'rejected')
+
+    // The wrong (server-claimed) stream holds NOTHING — no projection row, no event.
+    expect(await db.listMessagesByStream(evilStream, { limit: 100 })).toEqual([])
+    expect(await db.getEventsForStream(evilStream)).toEqual([])
+
+    // The right (client/row) stream holds exactly the one parked message; the
+    // protocol violation is surfaced as `failed`, never blind-applied or settled.
+    const mine = await db.listMessagesByStream(clientStream, { limit: 100 })
+    expect(mine).toHaveLength(1)
+    expect(mine[0]?.message_id).toBe(res.message_id)
+    expect(mine[0]?.stream_id).toBe(clientStream)
+    expect(mine[0]?.state).toBe('failed')
+    expect(mine[0]?.error_code).toBe('stream_mismatch')
+
+    // Never settled: outbox row parked (not deleted), no event stored anywhere.
+    const parked = await db.getOutbox(res.event_id)
+    expect(parked?.state).toBe('rejected')
+    expect(parked?.stream_id).toBe(clientStream)
+    expect(await db.count('events')).toBe(0)
   })
 })

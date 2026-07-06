@@ -268,11 +268,23 @@ export class Outbox {
    * into `messages` via `applyEventsToProjection` (replaces the pending row IN
    * PLACE by `message_id`, `created_seq = server_sequence`, no `state`), then
    * drop the outbox row. Idempotent on every key, so re-running is a no-op.
+   *
+   * The stream binding is the CLIENT's `row.stream_id` — the value the client
+   * minted and hashed the body against — NOT the server's `acc.stream_id`. The
+   * server assigns `server_sequence` (its to assign); it does not get to move a
+   * message into a different stream. A server whose accepted entry disagrees on
+   * `stream_id` (or `event_id`) is a protocol violation: we never blind-apply it
+   * (same discipline as the WS delivery contract) — the row is parked instead of
+   * silently misfiling the user's own message into the server-claimed stream.
    */
   private async settle(acc: AcceptedEvent, row: OutboxRow): Promise<void> {
+    if (acc.event_id !== row.event_id || acc.stream_id !== row.stream_id) {
+      await this.reject({ event_id: row.event_id, code: 'stream_mismatch' }, row)
+      return
+    }
     const body = row.body as unknown as EventBody
     const eventRow: EventRow = {
-      stream_id: acc.stream_id,
+      stream_id: row.stream_id,
       server_sequence: acc.server_sequence,
       event_id: acc.event_id,
       type: typeof body.type === 'string' ? body.type : 'message.created',
@@ -286,9 +298,9 @@ export class Outbox {
       },
     }
     await this.db.putEvents([eventRow])
-    await applyEventsToProjection(this.db, acc.stream_id, [eventRow])
-    await this.db.deleteOutbox(acc.event_id)
-    this.publishStream(acc.stream_id)
+    await applyEventsToProjection(this.db, row.stream_id, [eventRow])
+    await this.db.deleteOutbox(row.event_id)
+    this.publishStream(row.stream_id)
   }
 
   /**
