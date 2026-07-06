@@ -21,6 +21,13 @@ postgres
 # the context so an edit to a test does not bust the build cache.
 server/tests
 cli/tests
+# Web build inputs the image needs (web/package.json, web/pnpm-lock.yaml, web/src,
+# etc.) stay IN the context — the web-builder stage compiles them. But a local
+# install/build must NOT leak in: node_modules would bloat the context + can
+# defeat --frozen-lockfile reproducibility, and a stale host web/dist could be
+# copied over the freshly-built one. The stage rebuilds both from source.
+web/node_modules
+web/dist
 Dockerfile
 docker-compose.yml
 .dockerignore
