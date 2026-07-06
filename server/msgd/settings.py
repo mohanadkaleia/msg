@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     ws_max_connections_per_user: int = 10
     ws_heartbeat_interval_seconds: float = 30.0
 
+    # --- Single-origin SPA (ENG-75, §5.1 D4) --------------------------------
+    # Serve the built web client (web/dist) from the FastAPI app at "/". Default
+    # ON (the image bakes the dist); the is_dir() guard in create_app() means a
+    # dev run without a build simply skips the mount and Vite serves the SPA.
+    # Set MSG_SERVE_SPA=false for an API-only deploy.
+    serve_spa: bool = True
+    # Location of the built SPA. Baked at /app/web/dist under the image WORKDIR.
+    web_dist_dir: Path = Path("web/dist")
+
 
 @lru_cache
 def get_settings() -> Settings:

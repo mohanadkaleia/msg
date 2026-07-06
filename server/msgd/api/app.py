@@ -21,6 +21,7 @@ from sqlalchemy import text
 from msgd import ws
 from msgd.api.problems import register_problem_handlers
 from msgd.api.routers import admin, auth, events_read, events_upload, health, sync
+from msgd.api.spa import SPAStaticFiles
 from msgd.auth.ratelimit import RateLimiter
 from msgd.db.engine import create_engine, create_sessionmaker, set_sessionmaker
 from msgd.logging import configure_logging
@@ -74,4 +75,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(events_read.router)
     app.include_router(sync.router)
     app.include_router(ws.router)  # ENG-68: GET /v1/ws (append-only)
+
+    # ENG-75: single-origin SPA (§5.1 D4). Mounted LAST so API routes win;
+    # SPAStaticFiles refuses index.html for reserved API prefixes (belt-and-
+    # suspenders). The is_dir() guard means dev (no web/dist) skips the mount.
+    if settings.serve_spa and settings.web_dist_dir.is_dir():
+        app.mount("/", SPAStaticFiles(directory=settings.web_dist_dir, html=True), name="spa")
     return app

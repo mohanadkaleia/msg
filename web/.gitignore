@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Build output (single-origin bake target — generated, never committed)
+dist/
+
+# Test / tooling artifacts
+coverage/
+.vite/
+test-results/
+playwright-report/
+.playwright/
+
+# Editor / OS
+*.local
