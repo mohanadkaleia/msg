@@ -194,6 +194,9 @@ export class LeaderNode {
 
   private dbCapability(): 'persistent' | 'memory' {
     if (this.db) return this.db.persistence
+    // Follower: the owning DB lives in the leader tab. Approximate from this
+    // tab's own IndexedDB availability at the shell stage — revisit if/when the
+    // UI shows a real persistence indicator (deferred review nit).
     return typeof indexedDB !== 'undefined' ? 'persistent' : 'memory'
   }
 

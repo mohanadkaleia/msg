@@ -11,6 +11,7 @@ import {
   topicKey,
   type MessageSink,
   type MsgDb,
+  type NotImplementedResult,
   type PushPayload,
   type RpcError,
   type RpcMethod,
@@ -19,8 +20,26 @@ import {
   type Topic,
 } from './types'
 
-/** A handler for one RPC method. ENG-79/80/81 register these via `register`. */
-export type RpcHandler = (req: RpcRequest, clientId: string) => Promise<unknown>
+/**
+ * The result each RPC method resolves to. ENG-79/80/81 refine `query`/`mutate`
+ * here as they add real reads/mutations; the entry keeps handler + call-site
+ * types precise with no re-narrowing.
+ */
+export interface RpcResultMap {
+  'meta.get': { key: string; value: unknown }
+  ping: { pong: true }
+  query: NotImplementedResult
+  mutate: NotImplementedResult
+}
+
+/** A handler typed to exactly one method's request variant and result. */
+export type RpcHandlerFor<M extends RpcMethod> = (
+  req: Extract<RpcRequest, { method: M }>,
+  clientId: string,
+) => Promise<RpcResultMap[M]>
+
+/** The loose internal shape stored in the registry (over the whole union). */
+type AnyRpcHandler = (req: RpcRequest, clientId: string) => Promise<unknown>
 
 interface Subscription {
   clientId: string
@@ -28,10 +47,9 @@ interface Subscription {
 }
 
 export class WorkerCore {
-  private readonly handlers = new Map<RpcMethod, RpcHandler>()
+  private readonly handlers = new Map<RpcMethod, AnyRpcHandler>()
   /** Keyed by the subscription's correlation id. */
   private readonly subs = new Map<string, Subscription>()
-  private readonly clients = new Set<string>()
 
   constructor(
     private readonly db: MsgDb,
@@ -45,19 +63,24 @@ export class WorkerCore {
     await checkProjectionVersion(this.db)
   }
 
-  /** Extension point for ENG-79/80/81. Later registration wins. */
-  register(method: RpcMethod, handler: RpcHandler): void {
-    this.handlers.set(method, handler)
+  /**
+   * Extension point for ENG-79/80/81. Per-method generic: `register('query', h)`
+   * types `h`'s request as exactly the query variant and its result as the query
+   * response — no defensive re-narrowing at the call site. Later registration wins.
+   */
+  register<M extends RpcMethod>(method: M, handler: RpcHandlerFor<M>): void {
+    this.handlers.set(method, handler as AnyRpcHandler)
   }
 
   /** Route an inbound frame to the right handler and reply via the sink. */
   async handle(clientId: string, msg: ToWorker): Promise<void> {
     switch (msg.t) {
       case 'hello':
-        this.clients.add(msg.clientId)
+        // Client identity/addressing lives in the transports (ports / channel),
+        // not in the core; nothing to track here at the shell stage.
         return
       case 'bye':
-        this.removeClient(msg.clientId)
+        this.removeClientSubscriptions(msg.clientId)
         return
       case 'sub':
         this.subs.set(msg.id, { clientId, topic: msg.topic })
@@ -113,9 +136,8 @@ export class WorkerCore {
     await this.db.deleteEventsBySequence(streamId, toDelete)
   }
 
-  /** Drop a disconnecting client and all its subscriptions. */
-  private removeClient(clientId: string): void {
-    this.clients.delete(clientId)
+  /** Drop all subscriptions held by a disconnecting client. */
+  private removeClientSubscriptions(clientId: string): void {
     for (const [id, sub] of this.subs) {
       if (sub.clientId === clientId) this.subs.delete(id)
     }
@@ -129,20 +151,17 @@ export class WorkerCore {
     this.register('ping', () => Promise.resolve({ pong: true }))
 
     this.register('meta.get', async (req) => {
-      if (req.method !== 'meta.get') throw new Error('meta.get handler misrouted')
       const value = await this.db.metaGet(req.params.key)
       return { key: req.params.key, value }
     })
 
-    this.register('query', (req) => {
-      const detail = req.method === 'query' ? req.params.q : undefined
-      return Promise.resolve({ code: 'not_implemented', detail })
-    })
+    this.register('query', (req) =>
+      Promise.resolve({ code: 'not_implemented', detail: req.params.q }),
+    )
 
-    this.register('mutate', (req) => {
-      const detail = req.method === 'mutate' ? req.params.m : undefined
-      return Promise.resolve({ code: 'not_implemented', detail })
-    })
+    this.register('mutate', (req) =>
+      Promise.resolve({ code: 'not_implemented', detail: req.params.m }),
+    )
   }
 }
 
