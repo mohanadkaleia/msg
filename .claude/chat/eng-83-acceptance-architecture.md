@@ -190,6 +190,49 @@ discipline: a deliberately-injected client bug must turn the suite RED.
   without shipping a red test. The exact commands + the observed failures are
   documented in the PR body.
 
+## Results — teeth proven, infra findings
+
+**Teeth (proven, both directions):**
+
+- `MSG_MUTATE=inv5-drop-ack pnpm test invariant5` → RED. The mutant db drops the
+  settled row on `putMessages`; the invariant catches it as a leftover `pending`
+  row: `AssertionError: expected 'pending' to be undefined`
+  (`Counterexample: [[{stream:0,reject:false,race:"none"}]]`).
+- `MSG_MUTATE=inv6-rebuild-skew pnpm test invariant6` → RED. The rebuild-only
+  HANDLER corruption makes one row's `text` differ, so `rebuild !== incremental`:
+  `AssertionError: expected '{"message_id":"m_1"…' to be '{"message_id":"m_1"…'`.
+- With `MSG_MUTATE` unset (CI default) both suites are GREEN (348 web tests pass).
+
+**Infra findings baked into the harness (Playwright):**
+
+1. **uvicorn WS subprotocol / `websockets` v16.** The server authenticates the WS
+   via `Sec-WebSocket-Protocol: bearer, <token>` read from
+   `scope["subprotocols"]`. uvicorn's default `websockets` (v16) backend does NOT
+   surface the offered subprotocols in the ASGI scope, so the token is invisible
+   and the server closes pre-accept (4401 → HTTP 403) even with a valid token
+   (confirmed: the same token authorizes `GET /v1/sync` 200 but the WS upgrade
+   403s). Forcing `--ws wsproto` populates the scope and the handshake succeeds.
+   This is a real server-side gap that only surfaces against a real uvicorn
+   subprocess — the ENG-68 WS tests all run in-process (ASGI transport), so they
+   never exercised it. **Flagged for the server owner**: uvicorn+websockets-v16
+   WS is broken for this app; either pin the ws backend or the websockets version
+   server-side. The e2e harness works around it with `--ws wsproto`.
+2. **Same-origin topology (no proxy).** vite's `preview` proxy does not forward
+   the WS subprotocol header either, so rather than proxy, the harness serves the
+   built SPA directly from msgd (`MSG_SERVE_SPA` + `MSG_WEB_DIST_DIR`) — the
+   production topology (one origin for HTML + API + WS). More faithful and
+   proxy-free.
+3. **Sidebar wiring gap (fixed).** The workspace store loaded the sidebar once at
+   mount, before the sync catch-up pull populated `streams`; its per-stream
+   `{kind:'stream'}` subscriptions cannot cover a stream that does not exist yet,
+   so a freshly-synced `general` never appeared until a reload. Fixed minimally:
+   the store also re-queries `streams.list` on every `{kind:'sync'}` push. The
+   golden path surfaced this real M2 integration bug.
+4. **Channel bootstrap.** `POST /v1/setup` creates only `workspace-meta`; a
+   channel is born from a `channel.created` event. The harness bootstraps the
+   owner + a public `general` via `msgctl` before the browser runs, so the golden
+   path just logs in.
+
 ## Branch protection (flag for a human)
 
 Marking the gate "required" in GitHub branch protection is a repo-settings change
