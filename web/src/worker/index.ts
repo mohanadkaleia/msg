@@ -34,6 +34,11 @@ export {
   type MessagesListResult,
   type StreamsListResult,
   type MessageGetResult,
+  // ENG-79 sync status surface (ENG-82 sync indicator + scrollback backfill).
+  type SyncStatus,
+  type SyncState,
+  type BackfillResult,
+  type StreamPush,
 } from './types'
 
 // ENG-80 projection functions — the ENG-79 apply seam + the ENG-83 dump surface.
