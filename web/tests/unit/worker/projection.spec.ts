@@ -149,6 +149,56 @@ describe.each([
   })
 })
 
+describe.each([
+  { name: 'MemoryDb', make: (): Promise<MsgDb> => Promise.resolve(new MemoryDb()) },
+  { name: 'DexieDb', make: (): Promise<MsgDb> => openDb(fakeIdbOptions()) },
+])('listMessages clamps limit/before_seq [$name]', ({ make }) => {
+  async function seed3(db: MsgDb): Promise<void> {
+    await applyEventsToProjection(
+      db,
+      's1',
+      [1, 2, 3].map((seq) => messageCreatedEvent({ streamId: 's1', seq, messageId: `m_${seq}` })),
+    )
+  }
+
+  it('clamps limit=Infinity to a bounded page (fixes the has_more quirk)', async () => {
+    const db = await make()
+    await seed3(db)
+    const page = await listMessages(db, 's1', { limit: Number.POSITIVE_INFINITY })
+    expect(page.messages.map((m) => m.created_seq)).toEqual([3, 2, 1]) // bounded, all cached rows
+    expect(page.has_more).toBe(false)
+    await db.close()
+  })
+
+  it('clamps limit=0 and negatives to at least 1', async () => {
+    const db = await make()
+    await seed3(db)
+    for (const bad of [0, -5]) {
+      const page = await listMessages(db, 's1', { limit: bad })
+      expect(page.messages.map((m) => m.created_seq)).toEqual([3])
+      expect(page.has_more).toBe(true)
+    }
+    await db.close()
+  })
+
+  it('leaves a normal limit unaffected', async () => {
+    const db = await make()
+    await seed3(db)
+    const page = await listMessages(db, 's1', { limit: 2 })
+    expect(page.messages.map((m) => m.created_seq)).toEqual([3, 2])
+    expect(page.has_more).toBe(true)
+    await db.close()
+  })
+
+  it('coerces an invalid before_seq (NaN) to the head', async () => {
+    const db = await make()
+    await seed3(db)
+    const page = await listMessages(db, 's1', { beforeSeq: Number.NaN, limit: 2 })
+    expect(page.messages.map((m) => m.created_seq)).toEqual([3, 2])
+    await db.close()
+  })
+})
+
 describe('dumpMessages ordering', () => {
   it('sorts by (stream_id, created_seq, message_id) with compact fixed-key JSON', async () => {
     const db = new MemoryDb()

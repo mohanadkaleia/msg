@@ -33,6 +33,23 @@ import type {
 /** Default page size for `messages.list` when the caller omits `limit`. */
 export const DEFAULT_MESSAGE_PAGE = 50
 
+/** Hard cap on a `messages.list` page (mirrors the server's page cap). */
+export const MAX_MESSAGE_PAGE = 500
+
+/**
+ * Clamp a requested page size into `[1, MAX_MESSAGE_PAGE]`. A missing/NaN limit
+ * falls to the default; Infinity / oversize clamps to the cap; 0 / negative
+ * clamps to 1. This keeps the `fetch limit+1` has_more sentinel meaningful — an
+ * unclamped `Infinity` limit makes `limit + 1` still `Infinity`, so
+ * `rows.length > limit` is always false and pagination silently breaks.
+ */
+function clampLimit(requested: number | undefined): number {
+  if (requested === undefined || Number.isNaN(requested)) return DEFAULT_MESSAGE_PAGE
+  if (requested >= MAX_MESSAGE_PAGE) return MAX_MESSAGE_PAGE // clamps Infinity + oversize
+  if (requested < 1) return 1 // clamps 0, negatives, -Infinity
+  return Math.floor(requested)
+}
+
 /** Builds a `MessageRow` from an event + its body, or `null` to skip (D9/malformed). */
 export type MessageHandler = (event: EventRow, body: EventBody) => MessageRow | null
 
@@ -188,9 +205,11 @@ export async function listMessages(
   streamId: string,
   opts: { beforeSeq?: number; limit?: number } = {},
 ): Promise<MessagesListResult> {
-  const limit = opts.limit ?? DEFAULT_MESSAGE_PAGE
+  const limit = clampLimit(opts.limit)
+  // A missing / NaN / Infinity before_seq degrades to "from the head" (undefined).
+  const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : undefined
   const rows = await db.listMessagesByStream(streamId, {
-    ...(opts.beforeSeq !== undefined ? { beforeSeq: opts.beforeSeq } : {}),
+    ...(beforeSeq !== undefined ? { beforeSeq } : {}),
     limit: limit + 1,
   })
   const has_more = rows.length > limit
