@@ -77,6 +77,14 @@ export type {
 } from './payloads/reaction'
 
 export {
+  MAX_FILE_NAME_BYTES,
+  MAX_MIME_TYPE_BYTES,
+  MAX_FILE_SIZE_BYTES,
+  buildFileUploadedPayload,
+} from './payloads/file'
+export type { FileUploadedV1, BuildFileUploadedPayloadOptions } from './payloads/file'
+
+export {
   buildChannelCreatedPayload,
   buildChannelRenamedPayload,
   buildChannelArchivedPayload,

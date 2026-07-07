@@ -310,6 +310,34 @@
       "hash": "sha256:9db8962097245b284f702fee8ed3f7cb83303e1474168bb1f1ebc3ecc6ca64a5"
     },
     {
+      "id": "file-uploaded-canonical",
+      "desc": "file.uploaded body; sha256 as bare 64-char lowercase hex (the content-addressed BlobStore key form), image/png, ascii name.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"file.uploaded\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"file_id\":\"f_01JZ7N6A4M6Y8W5K2H7DGKX4Q6\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"name\":\"diagram.png\",\"mime_type\":\"image/png\",\"size_bytes\":15243}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZmlsZV9pZCI6ImZfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UTYiLCJtaW1lX3R5cGUiOiJpbWFnZS9wbmciLCJuYW1lIjoiZGlhZ3JhbS5wbmciLCJzaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic2l6ZV9ieXRlcyI6MTUyNDN9LCJzdHJlYW1faWQiOiJzXzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBDIiwidHlwZSI6ImZpbGUudXBsb2FkZWQiLCJ0eXBlX3ZlcnNpb24iOjEsIndvcmtzcGFjZV9pZCI6IndfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEIifQ==",
+      "hash": "sha256:3bf95ac33991b50612a6f0d176d13484937e83fac813e4e0383de94e91eab3e1"
+    },
+    {
+      "id": "file-uploaded-unicode-name",
+      "desc": "file.uploaded with a multi-script + astral-emoji filename, emitted as raw UTF-8; the name is opaque display text and never normalized by JCS.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"file.uploaded\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"file_id\":\"f_01JZ7N6A4M6Y8W5K2H7DGKX4Q6\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"name\":\"caf\u00e9_\u6587\u4ef6_\ud83d\ude00.pdf\",\"mime_type\":\"application/pdf\",\"size_bytes\":1048576}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZmlsZV9pZCI6ImZfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UTYiLCJtaW1lX3R5cGUiOiJhcHBsaWNhdGlvbi9wZGYiLCJuYW1lIjoiY2Fmw6lf5paH5Lu2X/CfmIAucGRmIiwic2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsInNpemVfYnl0ZXMiOjEwNDg1NzZ9LCJzdHJlYW1faWQiOiJzXzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBDIiwidHlwZSI6ImZpbGUudXBsb2FkZWQiLCJ0eXBlX3ZlcnNpb24iOjEsIndvcmtzcGFjZV9pZCI6IndfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEIifQ==",
+      "hash": "sha256:5d4c66e75faae04b82b2791a1552ba30d046d138169dd117e91296fd32761ef9"
+    },
+    {
+      "id": "file-uploaded-name-max-and-size-zero",
+      "desc": "file.uploaded at two accept edges: a 255-byte (MAX_FILE_NAME_BYTES) name and size_bytes=0 (an empty blob is a valid upload).",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"file.uploaded\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"file_id\":\"f_01JZ7N6A4M6Y8W5K2H7DGKX4Q6\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"name\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"mime_type\":\"application/octet-stream\",\"size_bytes\":0}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZmlsZV9pZCI6ImZfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UTYiLCJtaW1lX3R5cGUiOiJhcHBsaWNhdGlvbi9vY3RldC1zdHJlYW0iLCJuYW1lIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwic2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsInNpemVfYnl0ZXMiOjB9LCJzdHJlYW1faWQiOiJzXzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBDIiwidHlwZSI6ImZpbGUudXBsb2FkZWQiLCJ0eXBlX3ZlcnNpb24iOjEsIndvcmtzcGFjZV9pZCI6IndfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEIifQ==",
+      "hash": "sha256:8fe62b8071b291db082ebb95013885f9caa6bfefa0a6e2f029bde0a297a378a1"
+    },
+    {
+      "id": "file-uploaded-size-at-cap",
+      "desc": "file.uploaded with size_bytes = 2**53-1, the largest accepted integer (interop cap boundary). Pins the size accept edge; the 50 MB business cap is a server concern (ENG-116), not the payload.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"file.uploaded\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"file_id\":\"f_01JZ7N6A4M6Y8W5K2H7DGKX4Q6\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"name\":\"huge.bin\",\"mime_type\":\"application/octet-stream\",\"size_bytes\":9007199254740991}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZmlsZV9pZCI6ImZfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UTYiLCJtaW1lX3R5cGUiOiJhcHBsaWNhdGlvbi9vY3RldC1zdHJlYW0iLCJuYW1lIjoiaHVnZS5iaW4iLCJzaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic2l6ZV9ieXRlcyI6OTAwNzE5OTI1NDc0MDk5MX0sInN0cmVhbV9pZCI6InNfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEMiLCJ0eXBlIjoiZmlsZS51cGxvYWRlZCIsInR5cGVfdmVyc2lvbiI6MSwid29ya3NwYWNlX2lkIjoid18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQiJ9",
+      "hash": "sha256:0eb1ac3cc4939e5ca52bfa6e7b94bce69ea9c6ce30f0eb2a278bda31d99aea1e"
+    },
+    {
       "id": "depth-at-cap-list",
       "desc": "List nested exactly MAX_DEPTH deep; accepted. Pins the acceptance boundary.",
       "input_json": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
@@ -390,6 +418,15 @@
       "id": "reject-int-over-cap-plus1",
       "desc": "2^53+1 exceeds the interop cap.",
       "input_json": "9007199254740993",
+      "error": {
+        "kind": "integer_out_of_range",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-file-uploaded-size-over-cap",
+      "desc": "file.uploaded whose size_bytes = 2**53 exceeds the interop cap. The new payload rides the SAME JCS integer cap: an over-cap size must reject cross-language, never produce a hash. Cross-language caveat: JS JSON.parse silently truncates to 2^53, so the TS client rejects on magnitude.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"file.uploaded\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"file_id\":\"f_01JZ7N6A4M6Y8W5K2H7DGKX4Q6\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"name\":\"over.bin\",\"mime_type\":\"application/octet-stream\",\"size_bytes\":9007199254740992}}",
       "error": {
         "kind": "integer_out_of_range",
         "stage": "canonicalize"

@@ -97,3 +97,14 @@ def test_reaction_schemas_shape() -> None:
 def test_message_deleted_schema_shape() -> None:
     deleted = _DOCUMENTS["message.deleted.v1.schema.json"]
     assert deleted["required"] == ["message_id"]
+
+
+def test_file_uploaded_schema_shape() -> None:
+    # M3.5 (ENG-114): file.uploaded requires the full descriptor. The bounded
+    # name/mime_type/sha256 domains are field validators (not JSON Schema
+    # keywords), so the published schema is structural; the bounds are asserted in
+    # the model unit tests.
+    doc = _DOCUMENTS["file.uploaded.v1.schema.json"]
+    assert set(doc["required"]) == {"file_id", "sha256", "name", "mime_type", "size_bytes"}
+    assert doc["properties"]["size_bytes"]["type"] == "integer"
+    assert doc["properties"]["sha256"]["type"] == "string"

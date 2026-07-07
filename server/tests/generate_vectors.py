@@ -76,6 +76,10 @@ _F2 = "f_01JZ7N6A4M6Y8W5K2H7DGKX4Q2"
 _MEN1 = "u_01JZ7N6A4M6Y8W5K2H7DGKX4Q3"
 _MEN2 = "u_01JZ7N6A4M6Y8W5K2H7DGKX4Q4"
 _THREAD = "m_01JZ7N6A4M6Y8W5K2H7DGKX4Q5"
+_FILE = "f_01JZ7N6A4M6Y8W5K2H7DGKX4Q6"
+#: A valid content hash as bare 64-char lowercase hex (sha256 of b""), the
+#: content-addressed BlobStore key form (ENG-115) — no ``sha256:`` prefix.
+_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 def _body(**overrides: Any) -> dict[str, Any]:
@@ -405,6 +409,93 @@ CASES: list[_Case] = [
         ),
         "valid": True,
     },
+    # Valid — M3.5 file.uploaded payload (ENG-114). These prove the new payload
+    # *body* canonicalizes + hashes byte-identically in Python and TS. Payload-shape
+    # *validation* (empty name, bad file_id/sha256, wrong types) hashes fine, so it
+    # lives in the payload model unit tests, not this JCS+hash suite. The one
+    # file.uploaded reject that belongs here is a genuine JCS-level one
+    # (size_bytes over the 2**53-1 interop cap), below.
+    {
+        "id": "file-uploaded-canonical",
+        "desc": (
+            "file.uploaded body; sha256 as bare 64-char lowercase hex (the "
+            "content-addressed BlobStore key form), image/png, ascii name."
+        ),
+        "input_json": _compact(
+            _body(
+                type="file.uploaded",
+                payload={
+                    "file_id": _FILE,
+                    "sha256": _SHA,
+                    "name": "diagram.png",
+                    "mime_type": "image/png",
+                    "size_bytes": 15243,
+                },
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "file-uploaded-unicode-name",
+        "desc": (
+            "file.uploaded with a multi-script + astral-emoji filename, emitted as raw "
+            "UTF-8; the name is opaque display text and never normalized by JCS."
+        ),
+        "input_json": _compact(
+            _body(
+                type="file.uploaded",
+                payload={
+                    "file_id": _FILE,
+                    "sha256": _SHA,
+                    "name": "café_文件_\U0001f600.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1048576,
+                },
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "file-uploaded-name-max-and-size-zero",
+        "desc": (
+            "file.uploaded at two accept edges: a 255-byte (MAX_FILE_NAME_BYTES) name "
+            "and size_bytes=0 (an empty blob is a valid upload)."
+        ),
+        "input_json": _compact(
+            _body(
+                type="file.uploaded",
+                payload={
+                    "file_id": _FILE,
+                    "sha256": _SHA,
+                    "name": "a" * 255,
+                    "mime_type": "application/octet-stream",
+                    "size_bytes": 0,
+                },
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "file-uploaded-size-at-cap",
+        "desc": (
+            "file.uploaded with size_bytes = 2**53-1, the largest accepted integer "
+            "(interop cap boundary). Pins the size accept edge; the 50 MB business cap "
+            "is a server concern (ENG-116), not the payload."
+        ),
+        "input_json": _compact(
+            _body(
+                type="file.uploaded",
+                payload={
+                    "file_id": _FILE,
+                    "sha256": _SHA,
+                    "name": "huge.bin",
+                    "mime_type": "application/octet-stream",
+                    "size_bytes": _INT_INTEROP_MAX,
+                },
+            )
+        ),
+        "valid": True,
+    },
     # Valid — depth cap acceptance boundary (MAX_DEPTH)
     {
         "id": "depth-at-cap-list",
@@ -472,6 +563,28 @@ CASES: list[_Case] = [
         "id": "reject-int-over-cap-plus1",
         "desc": "2^53+1 exceeds the interop cap.",
         "input_json": "9007199254740993",
+        "error": {"kind": "integer_out_of_range", "stage": "canonicalize"},
+    },
+    {
+        "id": "reject-file-uploaded-size-over-cap",
+        "desc": (
+            "file.uploaded whose size_bytes = 2**53 exceeds the interop cap. The new "
+            "payload rides the SAME JCS integer cap: an over-cap size must reject "
+            "cross-language, never produce a hash. Cross-language caveat: JS JSON.parse "
+            "silently truncates to 2^53, so the TS client rejects on magnitude."
+        ),
+        "input_json": _compact(
+            _body(
+                type="file.uploaded",
+                payload={
+                    "file_id": _FILE,
+                    "sha256": _SHA,
+                    "name": "over.bin",
+                    "mime_type": "application/octet-stream",
+                    "size_bytes": _INT_INTEROP_MAX + 1,
+                },
+            )
+        ),
         "error": {"kind": "integer_out_of_range", "stage": "canonicalize"},
     },
     {

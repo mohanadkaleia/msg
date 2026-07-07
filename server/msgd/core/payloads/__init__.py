@@ -19,6 +19,12 @@ from pydantic import BaseModel
 
 from msgd.core import ids
 from msgd.core.envelope import Body
+from msgd.core.payloads.file import (
+    MAX_FILE_NAME_BYTES,
+    MAX_FILE_SIZE_BYTES,
+    MAX_MIME_TYPE_BYTES,
+    FileUploadedV1,
+)
 from msgd.core.payloads.message import (
     MessageCreatedV1,
     MessageDeletedV1,
@@ -50,6 +56,10 @@ from msgd.core.payloads.reaction import (
 __all__ = [
     "PAYLOAD_MODELS",
     "MAX_EMOJI_BYTES",
+    "MAX_FILE_NAME_BYTES",
+    "MAX_MIME_TYPE_BYTES",
+    "MAX_FILE_SIZE_BYTES",
+    "FileUploadedV1",
     "MessageCreatedV1",
     "MessageEditedV1",
     "MessageDeletedV1",
@@ -91,6 +101,7 @@ PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("channel.member_added", 1): ChannelMemberAddedV1,
     ("channel.member_removed", 1): ChannelMemberRemovedV1,
     ("dm.created", 1): DmCreatedV1,
+    ("file.uploaded", 1): FileUploadedV1,
 }
 
 

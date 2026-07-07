@@ -172,6 +172,13 @@ def _sample_payload(type_: str) -> dict[str, Any]:
         "channel.member_added": {"channel_stream_id": s, "user_id": u},
         "channel.member_removed": {"channel_stream_id": s, "user_id": u},
         "dm.created": {"dm_stream_id": s, "member_user_ids": [u]},
+        "file.uploaded": {
+            "file_id": ids.new_file_id(),
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name": "diagram.png",
+            "mime_type": "image/png",
+            "size_bytes": 15243,
+        },
     }
     return samples[type_]
 

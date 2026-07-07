@@ -1,0 +1,37 @@
+{
+  "$id": "https://msg.dev/schemas/file.uploaded.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Payload for ``file.uploaded`` v1 (\u00a72.2 / M3.5 Phase-A).\n\nThe frozen cross-language descriptor of an uploaded blob: its ``file_id``,\ncontent ``sha256``, opaque ``name``, ``mime_type``, and ``size_bytes``.  This\nmodel validates the event *shape* only \u2014 blob existence, the 50 MB business\ncap, and dedup-by-content-hash are server concerns (ENG-116), never enforced\nhere (see the module docstring).",
+  "properties": {
+    "file_id": {
+      "title": "File Id",
+      "type": "string"
+    },
+    "mime_type": {
+      "title": "Mime Type",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "sha256": {
+      "title": "Sha256",
+      "type": "string"
+    },
+    "size_bytes": {
+      "title": "Size Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "file_id",
+    "sha256",
+    "name",
+    "mime_type",
+    "size_bytes"
+  ],
+  "title": "msg file.uploaded payload (v1)",
+  "type": "object"
+}
