@@ -205,6 +205,60 @@ def batch_too_large() -> ProblemException:
     )
 
 
+# --- files (ENG-116) ---------------------------------------------------------
+
+
+def file_too_large() -> ProblemException:
+    # Per-file byte cap (``file_max_size_bytes``, §6). Raised BOTH by
+    # ``POST /v1/files/initiate`` on a declared ``size_bytes`` over the cap and by
+    # the streaming ``PUT .../blob`` the instant the ACTUAL bytes cross it — a
+    # lying ``size_bytes`` cannot smuggle a larger body past the streaming guard.
+    return ProblemException(
+        status=413,
+        type="/problems/file-too-large",
+        title="File too large",
+        detail="file exceeds the per-file size limit",
+    )
+
+
+def quota_exceeded() -> ProblemException:
+    # Per-workspace storage quota (``workspaces.file_quota_bytes``, §6). Computed
+    # under a ``SELECT ... FOR UPDATE`` on the workspace row so two concurrent
+    # initiates cannot both slip past the cap. A ``sha256`` already stored in the
+    # workspace adds zero new bytes (content-addressed dedup) and is always allowed.
+    return ProblemException(
+        status=413,
+        type="/problems/quota-exceeded",
+        title="Storage quota exceeded",
+        detail="the workspace storage quota would be exceeded by this file",
+    )
+
+
+def blob_hash_mismatch() -> ProblemException:
+    # ``PUT .../blob``: the server recomputed sha256 over the streamed bytes and it
+    # did not equal the ``sha256`` committed at initiate (the client's claimed hash
+    # is NEVER trusted). The BlobStore promoted nothing — no bytes are stored.
+    return ProblemException(
+        status=422,
+        type="/problems/blob-hash-mismatch",
+        title="Uploaded bytes do not match the declared hash",
+        detail="the uploaded bytes do not hash to the sha256 declared at initiate",
+    )
+
+
+def blob_size_mismatch() -> ProblemException:
+    # ``PUT .../blob``: the bytes hashed correctly but their length did not equal
+    # the ``size_bytes`` committed at initiate — the client under/over-declared the
+    # size (which is what the per-workspace quota was reserved against). Rejected so
+    # every PRESENT file's ``size_bytes`` is truthful and quota accounting is sound.
+    return ProblemException(
+        status=422,
+        type="/problems/blob-size-mismatch",
+        title="Uploaded bytes do not match the declared size",
+        detail="the uploaded byte length does not equal the size_bytes declared at initiate",
+    )
+
+
 # --- handler registration ----------------------------------------------------
 
 

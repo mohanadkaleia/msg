@@ -303,6 +303,14 @@ class File(Base):
     stream_id: Mapped[str | None] = mapped_column(  # null = orphan (GC candidate)
         Text, nullable=True
     )
+    # Whether the content-addressed blob for this row's ``sha256`` has actually
+    # landed in the BlobStore (ENG-116). A row is created NOT present by
+    # ``POST /v1/files/initiate`` and flipped present by a successful
+    # ``PUT /v1/files/{file_id}/blob`` (server-recomputed-hash verified). The
+    # download + workspace-scoped dedup surfaces gate on this flag: a not-present
+    # row is NEVER downloadable and NEVER reveals its bytes to a same-sha initiate
+    # (so an initiate that never completed its upload is invisible as content).
+    present: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )

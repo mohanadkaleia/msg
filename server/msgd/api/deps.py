@@ -27,6 +27,7 @@ from msgd.auth.context import AuthContext
 from msgd.auth.ratelimit import RateLimiter, client_ip
 from msgd.auth.sessions import bump_session, lookup_session, utcnow
 from msgd.auth.tokens import hash_token
+from msgd.blobs.store import BlobStore
 from msgd.db.engine import get_session
 from msgd.events.permissions import can_read
 from msgd.settings import Settings
@@ -49,6 +50,18 @@ def get_event_limiters(request: Request) -> tuple[RateLimiter, RateLimiter]:
     minute: RateLimiter = request.app.state.event_limiter_minute
     burst: RateLimiter = request.app.state.event_limiter_burst
     return minute, burst
+
+
+def get_blob_store(request: Request) -> BlobStore:
+    """Return the process-wide content-addressed :class:`BlobStore` (app.state, ENG-116).
+
+    One :class:`~msgd.blobs.store.LocalDiskBlobStore` is constructed in
+    ``create_app`` (rooted at ``settings.data_dir / "blobs"``) and shared by every
+    request — the store is stateless beyond its root path, so a singleton is
+    correct and avoids re-resolving the root per request.
+    """
+    store: BlobStore = request.app.state.blob_store
+    return store
 
 
 AppSettings = Annotated[Settings, Depends(get_app_settings)]

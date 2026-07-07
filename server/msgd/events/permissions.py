@@ -116,9 +116,16 @@ async def can_write(db: AsyncSession, *, ctx: AuthContext, stream_id: str, event
       edit/delete a given message) needs the message row, which ``can_write`` does
       not have, so it is enforced downstream in ``validate._check_referential``
       alongside the ``unknown_message`` existence check (ENG-98, M3) |
+    | ``file.uploaded`` | any member who can WRITE (== read) the target stream —
+      attaching a file is a write to the stream it is shared into, so the
+      stream-level gate is the identical readable-streams predicate, exactly like
+      ``message.created`` (§2.4). Files are allowed in DMs and private channels the
+      caller belongs to. ``POST /v1/files/initiate`` (ENG-116) is the HTTP surface
+      that consults this; the reducer that materializes the ``file.uploaded`` event
+      is a later ticket |
 
-    ``pin.*`` / ``file.uploaded`` are out of scope — later tickets define their
-    rules; they are not in this matrix and default to not-writable here.
+    ``pin.*`` is out of scope — a later ticket defines its rules; it is not in this
+    matrix and defaults to not-writable here.
     """
     if event_type in (
         "message.created",
@@ -126,12 +133,15 @@ async def can_write(db: AsyncSession, *, ctx: AuthContext, stream_id: str, event
         "reaction.removed",
         "message.edited",
         "message.deleted",
+        "file.uploaded",
     ):
-        # Write access == read access for messages, reactions, AND edits/deletes —
-        # all are writes to the same stream the target message lives in (§2.4), so
-        # the stream-level gate is the identical readable-streams predicate. For
-        # edits/deletes this is only the FIRST gate: the author-or-admin rule is
-        # applied in validate._check_referential, which has the message row.
+        # Write access == read access for messages, reactions, edits/deletes, AND
+        # file attachments — all are writes to the same stream the target lives in
+        # (§2.4), so the stream-level gate is the identical readable-streams
+        # predicate. For edits/deletes this is only the FIRST gate: the
+        # author-or-admin rule is applied in validate._check_referential, which has
+        # the message row. For ``file.uploaded`` the stream gate IS the whole rule
+        # (ENG-116) — a caller may attach a file to exactly the streams it can read.
         return await can_read(db, ctx=ctx, stream_id=stream_id)
     if event_type in ("channel.created", "dm.created"):
         # Any non-guest member may create a channel OR open a DM; guests are scoped

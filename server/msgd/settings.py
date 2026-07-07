@@ -66,6 +66,15 @@ class Settings(BaseSettings):
     invite_default_ttl_seconds: int = 604800  # 7 days
     invite_max_ttl_seconds: int = 2592000  # 30 days
 
+    # --- File attachments (ENG-116, §6) --------------------------------------
+    # Hard per-file byte cap, enforced at BOTH edges: ``POST /v1/files/initiate``
+    # rejects a declared ``size_bytes`` over this (413), and the streaming
+    # ``PUT .../blob`` aborts the moment the *actual* uploaded bytes cross it — so
+    # a client that lies about ``size_bytes`` still cannot stream past the cap and
+    # fill the disk. The 10 GiB PER-WORKSPACE quota is NOT here: it lives on the
+    # ``workspaces.file_quota_bytes`` row (per-workspace, DB-authoritative).
+    file_max_size_bytes: int = 52428800  # 50 MiB
+
     # --- First-run defaults (ENG-109) ----------------------------------------
     # Name of the default public channel /v1/setup auto-creates so a fresh
     # workspace is usable out of the box (the web channel-creation UI is not
