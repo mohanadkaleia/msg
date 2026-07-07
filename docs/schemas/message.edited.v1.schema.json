@@ -1,0 +1,31 @@
+{
+  "$id": "https://msg.dev/schemas/message.edited.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Payload for ``message.edited`` v1 (\u00a72.2 / \u00a72.4).\n\nCarries the *new* body of an existing message: the target ``message_id``\nplus the replacement ``text`` and ``format``.  ``text``/``format`` reuse\nexactly the ``message.created`` rules \u2014 ``format`` is the same locked\n``\"markdown\" | \"plain\"`` domain (a new value \u21d2 ``type_version`` bump).\n\nEdits are last-write-wins by ``server_sequence`` (\u00a72.4); prior payloads\nremain in the log for the edit-history UI.  Ordering/LWW is a server\nprojection concern, not enforced here \u2014 this model validates shape only.",
+  "properties": {
+    "format": {
+      "default": "markdown",
+      "enum": [
+        "markdown",
+        "plain"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "text"
+  ],
+  "title": "msg message.edited payload (v1)",
+  "type": "object"
+}

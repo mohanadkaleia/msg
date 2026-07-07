@@ -19,7 +19,11 @@ from pydantic import BaseModel
 
 from msgd.core import ids
 from msgd.core.envelope import Body
-from msgd.core.payloads.message import MessageCreatedV1
+from msgd.core.payloads.message import (
+    MessageCreatedV1,
+    MessageDeletedV1,
+    MessageEditedV1,
+)
 from msgd.core.payloads.meta import (
     ChannelArchivedV1,
     ChannelCreatedV1,
@@ -34,10 +38,20 @@ from msgd.core.payloads.meta import (
     build_user_joined_body,
     build_workspace_created_body,
 )
+from msgd.core.payloads.reaction import (
+    MAX_EMOJI_BYTES,
+    ReactionAddedV1,
+    ReactionRemovedV1,
+)
 
 __all__ = [
     "PAYLOAD_MODELS",
+    "MAX_EMOJI_BYTES",
     "MessageCreatedV1",
+    "MessageEditedV1",
+    "MessageDeletedV1",
+    "ReactionAddedV1",
+    "ReactionRemovedV1",
     "WorkspaceCreatedV1",
     "UserJoinedV1",
     "UserLeftV1",
@@ -57,6 +71,10 @@ __all__ = [
 #: Registry of every known ``(type, type_version)`` payload model.
 PAYLOAD_MODELS: dict[tuple[str, int], type[BaseModel]] = {
     ("message.created", 1): MessageCreatedV1,
+    ("message.edited", 1): MessageEditedV1,
+    ("message.deleted", 1): MessageDeletedV1,
+    ("reaction.added", 1): ReactionAddedV1,
+    ("reaction.removed", 1): ReactionRemovedV1,
     ("workspace.created", 1): WorkspaceCreatedV1,
     ("user.joined", 1): UserJoinedV1,
     ("user.left", 1): UserLeftV1,

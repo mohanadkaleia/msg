@@ -148,6 +148,7 @@ def _sample_payload(type_: str) -> dict[str, Any]:
     """A representative valid payload for each registered event ``type``."""
     u = ids.new_user_id()
     s = ids.new_stream_id()
+    m = ids.new_message_id()
     samples: dict[str, dict[str, Any]] = {
         "message.created": {
             "message_id": ids.new_message_id(),
@@ -157,6 +158,10 @@ def _sample_payload(type_: str) -> dict[str, Any]:
             "file_ids": [],
             "mentions": [],
         },
+        "message.edited": {"message_id": m, "text": "edited", "format": "markdown"},
+        "message.deleted": {"message_id": m},
+        "reaction.added": {"message_id": m, "emoji": "👍"},
+        "reaction.removed": {"message_id": m, "emoji": "👍"},
         "workspace.created": {"name": "Acme"},
         "user.joined": {"user_id": u, "display_name": "Dana"},
         "user.left": {"user_id": u, "display_name": "Dana"},

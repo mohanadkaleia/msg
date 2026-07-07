@@ -75,3 +75,25 @@ def test_message_schema_locks_format_domain() -> None:
     # §2.2 lock: message.created.format is exactly "markdown" | "plain".
     message = _DOCUMENTS["message.created.v1.schema.json"]
     assert message["properties"]["format"]["enum"] == ["markdown", "plain"]
+
+
+def test_message_edited_schema_locks_format_domain() -> None:
+    # §2.2 lock: message.edited.format reuses the same "markdown" | "plain" domain.
+    edited = _DOCUMENTS["message.edited.v1.schema.json"]
+    assert edited["properties"]["format"]["enum"] == ["markdown", "plain"]
+    assert set(edited["required"]) == {"message_id", "text"}
+
+
+def test_reaction_schemas_shape() -> None:
+    # M3: reaction.added / reaction.removed require (message_id, emoji). The
+    # 64-byte emoji bound is a field validator (not a JSON Schema keyword), so the
+    # published schema is structural; the byte cap is asserted in the model tests.
+    for filename in ("reaction.added.v1.schema.json", "reaction.removed.v1.schema.json"):
+        doc = _DOCUMENTS[filename]
+        assert set(doc["required"]) == {"message_id", "emoji"}
+        assert doc["properties"]["emoji"]["type"] == "string"
+
+
+def test_message_deleted_schema_shape() -> None:
+    deleted = _DOCUMENTS["message.deleted.v1.schema.json"]
+    assert deleted["required"] == ["message_id"]

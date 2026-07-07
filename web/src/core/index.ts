@@ -33,5 +33,27 @@ export type { ParsedId } from './ids'
 export { buildMessageCreatedBody, finalizeEnvelope } from './envelope'
 export type { Body, Envelope, BuildMessageCreatedBodyOptions } from './envelope'
 
-export { buildMessageCreatedPayload } from './payloads/message'
-export type { MessageCreatedV1, BuildMessageCreatedPayloadOptions } from './payloads/message'
+export {
+  buildMessageCreatedPayload,
+  buildMessageEditedPayload,
+  buildMessageDeletedPayload,
+} from './payloads/message'
+export type {
+  MessageCreatedV1,
+  BuildMessageCreatedPayloadOptions,
+  MessageEditedV1,
+  BuildMessageEditedPayloadOptions,
+  MessageDeletedV1,
+  BuildMessageDeletedPayloadOptions,
+} from './payloads/message'
+
+export {
+  MAX_EMOJI_BYTES,
+  buildReactionAddedPayload,
+  buildReactionRemovedPayload,
+} from './payloads/reaction'
+export type {
+  ReactionAddedV1,
+  ReactionRemovedV1,
+  BuildReactionPayloadOptions,
+} from './payloads/reaction'

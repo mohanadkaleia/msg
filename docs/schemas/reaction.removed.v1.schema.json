@@ -1,0 +1,22 @@
+{
+  "$id": "https://msg.dev/schemas/reaction.removed.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Payload for ``reaction.removed`` v1 (\u00a72.2) \u2014 idempotent remove (\u00a72.4).",
+  "properties": {
+    "emoji": {
+      "title": "Emoji",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "emoji"
+  ],
+  "title": "msg reaction.removed payload (v1)",
+  "type": "object"
+}
