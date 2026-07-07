@@ -39,12 +39,14 @@ OWNER_PASSWORD = "correct-horse-battery-staple"
 
 
 def _bootstrap() -> None:
-    """Create the owner + a public ``general`` channel via ``msgctl`` (§2.2).
+    """Create the owner + seed one message in the default ``general`` channel.
 
-    The server's ``POST /v1/setup`` creates only ``workspace-meta``; a channel is
-    born from a ``channel.created`` event, which ``msgctl send --stream general``
-    auto-emits. So the browser has a real channel to open, this seeds the owner,
-    ``general``, and one message — then the golden-path spec just logs in.
+    ENG-109: ``POST /v1/setup`` now auto-creates the public ``general`` channel
+    (with owner membership), so the browser has a real channel to open the moment
+    it logs in. ``msgctl login`` pulls that channel locally, so the following
+    ``send --stream general`` RESOLVES the setup-created ``general`` by name (no
+    duplicate ``channel.created``) and just seeds one welcome message into it —
+    then the golden-path spec logs in and finds ``#general`` populated.
     """
     from msgctl.cli import main as msgctl_main
 

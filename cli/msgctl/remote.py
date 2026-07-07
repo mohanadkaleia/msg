@@ -19,9 +19,7 @@ from typing import Any
 
 from msgd.core.envelope import Body, Envelope, check_event_size
 from msgd.core.hashing import hash_event
-from msgd.core.ids import new_event_id
-from msgd.core.payloads import build_message_created_body
-from msgd.core.payloads.meta import ChannelCreatedV1
+from msgd.core.payloads import build_channel_created_body, build_message_created_body
 
 from msgctl import outbox
 from msgctl.append import flock_exclusive
@@ -137,7 +135,9 @@ def cmd_login(args: argparse.Namespace) -> int:
     Initializes a fresh remote workspace (or re-authenticates an already-bound
     one), rebinds identity to the server's, writes 0600 credentials + the remote
     binding, does one ``GET /v1/sync`` to cache ``meta_stream_id``, and updates
-    ``.gitignore``. Prints only non-secret identity fields — never the token.
+    ``.gitignore``. Login is complete once those are durable; a final best-effort
+    ``pull`` reconciles the server's channels (ENG-109) but never fails the login.
+    Prints only non-secret identity fields — never the token.
     """
     ws = _open_or_init(args)
     already_remote = is_remote(ws)
@@ -188,18 +188,39 @@ def cmd_login(args: argparse.Namespace) -> int:
         sync = client.get_sync()
         meta_stream_id = _find_meta_stream_id(sync)
 
-    write_remote_binding(
-        ws,
-        {
-            "server_url": server_url,
-            "workspace_id": str(resp["workspace_id"]),
-            "user_id": str(resp["user_id"]),
-            "device_id": str(resp["device_id"]),
-            "role": str(resp["role"]),
-            "meta_stream_id": meta_stream_id,
-        },
-    )
-    ensure_gitignore(ws)
+        # Login has SUCCEEDED the moment auth + identity + credentials + binding are
+        # durable — persist the binding FIRST (before the reconciling pull below).
+        # The pull is only a convenience: a transient failure in it must never fail
+        # the login nor leave partial state (a written credential with no binding
+        # would brick `--setup` — retry 409s `already_initialized` and there is no
+        # device_id for a plain re-login).
+        write_remote_binding(
+            ws,
+            {
+                "server_url": server_url,
+                "workspace_id": str(resp["workspace_id"]),
+                "user_id": str(resp["user_id"]),
+                "device_id": str(resp["device_id"]),
+                "role": str(resp["role"]),
+                "meta_stream_id": meta_stream_id,
+            },
+        )
+        ensure_gitignore(ws)
+
+        # Best-effort reconcile: pull the server's streams so the workspace learns
+        # its channels — notably the setup-created public #general (ENG-109) — so a
+        # later `send --stream general` finds it by name and REUSES the server id
+        # (no duplicate `channel.created`). On any error the login still succeeds;
+        # the next `msgctl pull` (or the pull a `send` triggers on first use)
+        # reconciles. Applies to all three paths (setup / invite / re-login).
+        try:
+            pull(ws, client)
+        except Exception as exc:  # deliberately best-effort — never fail the login
+            print(
+                f"warning: logged in, but the initial sync was deferred ({exc}); "
+                "run `msgctl pull` to fetch channels — it will sync on next use",
+                file=sys.stderr,
+            )
 
     # Non-secret identity only — the raw token is NEVER printed.
     print(
@@ -302,23 +323,18 @@ def _enqueue_channel_created(
     — after ``pull`` the synced dir is ``streams/<channel_stream_id>/``, identical
     across clients.
     """
-    payload = ChannelCreatedV1(
-        channel_stream_id=channel_stream_id, name=name, visibility="public"
-    ).model_dump(mode="json")
-    body_model = Body(
-        event_id=new_event_id(),
+    body = build_channel_created_body(
         workspace_id=ws.workspace_id,
         stream_id=meta_stream_id,
-        type="channel.created",
-        type_version=1,
         author_user_id=ws.local_author.user_id,
         author_device_id=ws.local_author.device_id,
         client_created_at=now_rfc3339(),
-        payload=payload,
+        channel_stream_id=channel_stream_id,
+        name=name,
+        visibility="public",
     )
-    body = body_model.model_dump(mode="json")
     event_hash = hash_event(body)
-    check_event_size(Envelope(body=body_model, event_hash=event_hash))
+    check_event_size(Envelope(body=Body(**body), event_hash=event_hash))
     outbox.enqueue(ws, body, event_hash)
 
 

@@ -222,11 +222,24 @@ async def test_adversary_private_absent_and_events_404(
 # --- always 200, never 404 ----------------------------------------------------
 
 
-async def test_sync_never_404_only_meta(client: AsyncClient, db_session: AsyncSession) -> None:
-    """With only meta visible, sync is still a 200 listing (never a 404)."""
+async def test_sync_after_setup_returns_meta_and_general(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Right after setup, sync is a 200 listing the meta + the seeded #general (ENG-109)."""
     o = await do_setup(client)
     meta = await _meta_id(db_session, o["workspace_id"])
     body = await _sync(client, o["token"])
     streams = _by_id(body)
-    assert meta in streams  # meta is the sole readable stream at setup
-    assert all(s["kind"] == "workspace-meta" for s in body["streams"])
+
+    # The two streams a fresh workspace's owner sees: workspace-meta + #general.
+    assert meta in streams
+    assert streams[meta]["kind"] == "workspace-meta"
+    kinds = {s["kind"] for s in body["streams"]}
+    assert kinds == {"workspace-meta", "channel"}
+
+    # The seeded channel: public, member:true, ready to receive messages (head 0).
+    general = next(s for s in body["streams"] if s["kind"] == "channel")
+    assert general["name"] == "general"
+    assert general["visibility"] == "public"
+    assert general["member"] is True
+    assert general["head_seq"] == 0

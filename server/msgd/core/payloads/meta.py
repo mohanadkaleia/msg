@@ -41,6 +41,7 @@ __all__ = [
     "DmCreatedV1",
     "build_workspace_created_body",
     "build_user_joined_body",
+    "build_channel_created_body",
 ]
 
 
@@ -267,6 +268,49 @@ def build_user_joined_body(
         workspace_id=workspace_id,
         stream_id=stream_id,
         type="user.joined",
+        type_version=1,
+        author_user_id=author_user_id,
+        author_device_id=author_device_id,
+        client_created_at=client_created_at,
+        payload=payload.model_dump(mode="json"),
+    )
+    dumped: dict[str, Any] = body.model_dump(mode="json")
+    return dumped
+
+
+def build_channel_created_body(
+    *,
+    workspace_id: str,
+    stream_id: str,
+    author_user_id: str,
+    author_device_id: str,
+    client_created_at: str,
+    channel_stream_id: str,
+    name: str,
+    visibility: str = "public",
+    event_id: str | None = None,
+) -> dict[str, Any]:
+    """Assemble a ``channel.created`` v1 body dict (§2.2).
+
+    §2.2 homing (which stream the genesis event lands in) is the CALLER's choice:
+    ``stream_id`` is the *home* stream (``workspace-meta`` for a public channel,
+    the channel's own stream for a private one), while ``payload.channel_stream_id``
+    is the channel's own stream id the reducer creates.  Shared by the server's
+    ``/v1/setup`` (server-authored default ``#general``) and ``msgctl``'s lazy
+    channel auto-create, so there is a single hash-honest body shape.  The model is
+    the source of truth, so ``hash_event(returned dict) == event_hash`` holds by
+    construction (D2).
+    """
+    payload = ChannelCreatedV1(
+        channel_stream_id=channel_stream_id,
+        name=name,
+        visibility=visibility,  # type: ignore[arg-type]  # validated by the model
+    )
+    body = Body(
+        event_id=event_id if event_id is not None else ids.new_event_id(),
+        workspace_id=workspace_id,
+        stream_id=stream_id,
+        type="channel.created",
         type_version=1,
         author_user_id=author_user_id,
         author_device_id=author_device_id,
