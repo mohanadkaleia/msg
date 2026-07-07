@@ -167,9 +167,11 @@ async def fetch_stream(db: AsyncSession, stream_id: str) -> Stream | None:
 # sibling tests' rolled-back sessions (committed rows are visible across txns).
 # ENG-97: reactions_proj joins for the same reason — insert_event materializes a
 # reaction membership row per committed reaction.added.
+# ENG-99: thread_participants_proj joins for the same reason — insert_event
+# materializes a participant row per committed threaded reply.
 AUTH_TABLES = (
     "sessions, devices, invites, events, messages_proj, reactions_proj, "
-    "stream_members, streams, users, workspaces"
+    "thread_participants_proj, stream_members, streams, users, workspaces"
 )
 
 

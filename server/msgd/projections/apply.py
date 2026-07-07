@@ -10,10 +10,13 @@ SQLite ``project``/``rebuild`` both calling ``_apply_message_created``).
 Dispatch mirrors ``reducers.REDUCERS`` and the M0 ``projection._HANDLERS``, but
 is keyed on ``(type, type_version)`` (a version bump is a new, unhandled key —
 D9-skipped, never a silent mis-apply).  Handlers exist for ``("message.created",
-1)`` (→ ``messages_proj`` insert); since ENG-97 (M3) ``("reaction.added", 1)`` /
+1)`` (→ ``messages_proj`` insert, plus — since ENG-99 (M3) — a thread reply
+RECOMPUTE of the root's ``reply_count``/``last_reply_seq``/``thread_participants_proj``
+when ``thread_root_id`` is set); since ENG-97 (M3) ``("reaction.added", 1)`` /
 ``("reaction.removed", 1)`` (→ the ``reactions_proj`` set); and since ENG-98 (M3)
 ``("message.edited", 1)`` (LWW ``text``/``edited_seq`` update by ``server_sequence``)
-/ ``("message.deleted", 1)`` (tombstone ``deleted`` + ``text`` content redaction).
+/ ``("message.deleted", 1)`` (tombstone ``deleted`` + ``text`` content redaction, plus
+the ENG-99 delete-side thread recompute when the deleted message was a reply).
 Everything else — meta events, unknown types, and any ``v>=2`` — has no handler
 and is a **no-op** (D9: skipped in the projection, never crashes).  ``bot.*`` is a
 later milestone; its ``messages_proj`` columns exist but no reducer writes them.
@@ -24,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
-from sqlalchemy import delete, func, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,7 +38,7 @@ from msgd.core.payloads import (
     ReactionAddedV1,
     ReactionRemovedV1,
 )
-from msgd.db.models import MessageProj, ReactionProj
+from msgd.db.models import MessageProj, ReactionProj, ThreadParticipantProj
 
 __all__ = ["PROJECTION_VERSION", "apply_projection"]
 
@@ -62,9 +65,100 @@ __all__ = ["PROJECTION_VERSION", "apply_projection"]
 #: exist from M1 ENG-69, so NO migration is needed, only this version bump). An
 #: operator upgrading runs ``msgctl rebuild-projections`` once so replayed
 #: edits/deletes materialize.
-PROJECTION_VERSION: Final = 3
+#:
+#: Bumped to 4 by ENG-99 (M3): the ``message.created`` reply reducer + the
+#: ``message.deleted`` reply-recompute now WRITE ``messages_proj``'s pre-existing
+#: ``reply_count`` / ``last_reply_seq`` columns (M1 ENG-69, previously unused) AND
+#: maintain the NEW ``thread_participants_proj`` set — a change to both the apply
+#: logic and the projection tables (the new table ships in migration 0004). An
+#: operator upgrading runs ``msgctl rebuild-projections`` once so replayed thread
+#: counters + participants materialize.
+PROJECTION_VERSION: Final = 4
 
 _Handler = Callable[..., Awaitable[None]]
+
+
+async def _recompute_thread_root(db: AsyncSession, root_message_id: str) -> None:
+    """RECOMPUTE a thread root's ``reply_count`` / ``last_reply_seq`` / participants.
+
+    The single delete-aware, rebuild-equivalent thread reducer (ENG-99, D7). Given
+    a ``root_message_id``, it derives ALL thread state for that root from the
+    CURRENT committed ``messages_proj`` rows whose ``thread_root_id`` equals it and
+    that are NOT deleted:
+
+    * ``reply_count`` = ``count(*)`` of those non-deleted replies (written onto the
+      root's own ``messages_proj`` row);
+    * ``last_reply_seq`` = ``max(created_seq)`` among them (``NULL`` when none
+      remain — e.g. every reply was deleted);
+    * ``thread_participants_proj`` = the DISTINCT ``author_user_id`` set of them
+      (fully rebuilt: delete the root's rows, re-insert from the current set).
+
+    WHY RECOMPUTE, NOT ``+1`` (the load-bearing rebuild-equivalence argument): a
+    reply can be DELETED after it was counted, so a blind ``reply_count += 1`` on
+    ``message.created`` is not invertible by a later ``message.deleted``. Recomputing
+    from state makes every value a PURE FUNCTION of the current ``messages_proj``
+    ``(thread_root_id, deleted, author_user_id, created_seq)`` columns — whose state
+    is itself already ``rebuild ≡ incremental`` (ENG-98 gate). The recompute is
+    triggered on EXACTLY the events that can change a root's non-deleted-reply set —
+    a reply ``message.created`` and a reply ``message.deleted`` — so the last such
+    event leaves the derived state equal to a full replay's, in any delivery/replay
+    order. (A ``message.edited`` cannot change ``thread_root_id`` or ``deleted``, so
+    it needs no recompute; a ROOT's own ``message.deleted`` does not change
+    ``count(thread_root_id = root)``, so it triggers none either.)
+
+    A ``root_message_id`` with no ``messages_proj`` row (a not-yet/never-projected
+    root) leaves the counter ``UPDATE`` a zero-row no-op; the participant rebuild
+    still reflects the current reply set. On the validated accept path the root
+    always exists (the ENG-99 referential check), so this is a defensive edge.
+    """
+    non_deleted_replies = (
+        MessageProj.thread_root_id == root_message_id,
+        MessageProj.deleted.is_(False),
+    )
+    # ``.correlate(None)`` is LOAD-BEARING: the subqueries scan the SAME table the
+    # UPDATE targets (``messages_proj``), and SQLAlchemy would otherwise auto-correlate
+    # that reference to the outer UPDATE row — counting only the root's own row instead
+    # of its replies. Forcing no correlation makes each subquery an independent
+    # whole-table aggregate over the replies.
+    await db.execute(
+        update(MessageProj)
+        .where(MessageProj.message_id == root_message_id)
+        .values(
+            reply_count=select(func.count())
+            .select_from(MessageProj)
+            .where(*non_deleted_replies)
+            .correlate(None)
+            .scalar_subquery(),
+            last_reply_seq=select(func.max(MessageProj.created_seq))
+            .where(*non_deleted_replies)
+            .correlate(None)
+            .scalar_subquery(),
+        )
+    )
+    # Rebuild the participant set for this root from the current non-deleted replies.
+    await db.execute(
+        delete(ThreadParticipantProj).where(
+            ThreadParticipantProj.root_message_id == root_message_id
+        )
+    )
+    await db.execute(
+        pg_insert(ThreadParticipantProj)
+        .from_select(
+            ["root_message_id", "user_id"],
+            select(
+                MessageProj.thread_root_id,
+                MessageProj.author_user_id,
+            )
+            .where(*non_deleted_replies)
+            .distinct(),
+        )
+        .on_conflict_do_nothing(
+            index_elements=[
+                ThreadParticipantProj.root_message_id,
+                ThreadParticipantProj.user_id,
+            ]
+        )
+    )
 
 
 async def _apply_message_created(
@@ -87,10 +181,18 @@ async def _apply_message_created(
     * ``stream_id`` / ``author_user_id`` — from the envelope ``body``.
     * ``created_seq`` — the accept-time ``server_sequence``.
 
-    Everything else DEFAULTS: ``edited_seq``/``last_reply_seq`` NULL, ``deleted``
-    FALSE, ``reply_count`` 0 (edits/deletes/thread counters are a later milestone
-    — the columns exist, no reducer touches them now).  ``search_tsv`` is a
-    GENERATED column (a pure function of ``text``) and is never written.
+    The row's OWN ``edited_seq``/``last_reply_seq`` DEFAULT NULL, ``deleted``
+    FALSE, ``reply_count`` 0.  ``search_tsv`` is a GENERATED column (a pure
+    function of ``text``) and is never written.
+
+    **Thread reply (ENG-99, D7).** When ``thread_root_id`` is non-null this message
+    is a reply, so AFTER inserting its own row (the insert must land first, so the
+    reply is included in the count) it RECOMPUTES the ROOT message's thread state
+    via :func:`_recompute_thread_root` — ``reply_count`` / ``last_reply_seq`` on the
+    root row and the root's ``thread_participants_proj`` set, all delete-aware and
+    rebuild-equivalent (see that helper). Recompute reads the just-inserted row, so
+    a duplicate (``ON CONFLICT DO NOTHING``) re-apply still recomputes the same count
+    — idempotent.
     """
     payload = MessageCreatedV1(**body["payload"])
     await db.execute(
@@ -105,6 +207,8 @@ async def _apply_message_created(
         )
         .on_conflict_do_nothing(index_elements=[MessageProj.message_id])
     )
+    if payload.thread_root_id is not None:
+        await _recompute_thread_root(db, payload.thread_root_id)
 
 
 async def _apply_reaction_added(
@@ -222,6 +326,16 @@ async def _apply_message_deleted(
 
     A delete of a message with no projected row (impossible on the accept path —
     validation proved existence) updates zero rows: a safe no-op.
+
+    **Thread reply (ENG-99, D7).** If the deleted message was itself a REPLY (its
+    ``thread_root_id`` is non-null), the delete drops it from the root's
+    non-deleted-reply set, so AFTER tombstoning it RECOMPUTES the root's
+    ``reply_count`` / ``last_reply_seq`` / participants from the now-current state
+    (:func:`_recompute_thread_root`) — this is the delete-side of the reply counter
+    that a blind create-time ``+1`` could not honor. Deleting a ROOT (its own
+    ``thread_root_id`` is null) triggers no recompute: a root's replies survive it
+    (the root row stays as a tombstone with ``reply_count`` intact, §2.4 / D7), and
+    ``count(thread_root_id = root)`` is unchanged by the root's own deletion.
     """
     payload = MessageDeletedV1(**body["payload"])
     await db.execute(
@@ -229,6 +343,11 @@ async def _apply_message_deleted(
         .where(MessageProj.message_id == payload.message_id)
         .values(deleted=True, text="")
     )
+    thread_root_id = await db.scalar(
+        select(MessageProj.thread_root_id).where(MessageProj.message_id == payload.message_id)
+    )
+    if thread_root_id is not None:
+        await _recompute_thread_root(db, thread_root_id)
 
 
 #: The projection's dispatch table, keyed ``(type, type_version)`` — distinct

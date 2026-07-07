@@ -17,16 +17,27 @@ from __future__ import annotations
 import asyncio
 
 from authutil import committing_app, truncate_auth_tables
-from eventsutil import message_edited_body, post_batch, reaction_body, wire_item
-from msgd.db.models import Event, MessageProj, ReactionProj
-from msgd.projections.dump import dump_messages_proj, dump_reactions_proj
+from eventsutil import message_body, message_edited_body, post_batch, reaction_body, wire_item
+from msgd.db.models import Event, MessageProj, ReactionProj, ThreadParticipantProj
+from msgd.projections.dump import (
+    dump_messages_proj,
+    dump_reactions_proj,
+    dump_thread_participants_proj,
+)
 from msgd.projections.rebuild import rebuild_projections
 from msgd.settings import Settings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from simulation.client import SimClient
-from simulation.invariants import MessageRows, ReactionRows, Truth, assert_all
+from simulation.invariants import (
+    MessageRows,
+    ReactionRows,
+    ThreadCounterRows,
+    ThreadParticipantRows,
+    Truth,
+    assert_all,
+)
 from simulation.setup import World, build_world
 from simulation.strategies import (
     REACT_EMOJIS,
@@ -41,6 +52,7 @@ from simulation.strategies import (
     React,
     ReconnectCatchup,
     Send,
+    ThreadReply,
     Unreact,
 )
 
@@ -100,6 +112,17 @@ async def _apply_op(world: World, op: Op) -> None:
             await actor.delete(stream, message_id)
         if actor.connected:
             await actor.flush()
+    elif isinstance(op, ThreadReply):
+        actor = world.actors[op.actor]
+        stream = world.stream_id(op.stream)
+        if actor.connected:
+            await actor.catchup_pull(stream)  # learn the stream's root messages first
+        root_id = _resolve_root_message(actor, stream, op.msg)
+        if root_id is None:
+            return  # no non-reply root to reply to yet → a no-op
+        await actor.reply(stream, root_id, text=op.text)
+        if actor.connected:
+            await actor.flush()
     elif isinstance(op, ConcurrentReactBurst):
         stream = world.stream_id(op.stream)
         participants = [a for a in world.actors if a.connected]
@@ -142,6 +165,19 @@ def _resolve_own_message(actor: SimClient, stream: str, msg_index: int) -> str |
     return known[msg_index % len(known)]
 
 
+def _resolve_root_message(actor: SimClient, stream: str, msg_index: int) -> str | None:
+    """The root a ThreadReply op targets: ``msg_index`` modulo the NON-reply messages
+    the actor knows in ``stream`` (or ``None`` when it knows none).
+
+    Rooting only on non-reply messages keeps threads flat (D7), so every generated
+    reply is Accepted and genuinely grows a root's thread counters/participants.
+    """
+    known = actor.known_root_message_ids(stream)
+    if not known:
+        return None
+    return known[msg_index % len(known)]
+
+
 async def _settle(world: World) -> None:
     """Reconnect + flush every writer, catch up all readable streams, probe adversary."""
     for actor in world.actors:
@@ -177,6 +213,25 @@ async def _settle(world: World) -> None:
         )
         resp = await post_batch(world.adversary.http, world.adversary.token, [wire_item(body)])
         world.adversary_reaction_forbidden = (
+            resp.status_code == 200 and len(resp.json()["accepted"]) == 0
+        )
+
+    # ENG-99 thread isolation probe: the adversary tries to REPLY into the private
+    # stream it cannot read (a message.created homed in the private stream, rooting on
+    # a private message). Like the reaction probe this is blocked at the stream gate —
+    # can_write(private) == can_read(private) == False → the upload is rejected and no
+    # message/thread row is written. The private root id is sourced from the owner (a
+    # member); the adversary never legitimately learns it, and cannot observe or grow
+    # a thread in a stream it may not read.
+    if priv_msgs:
+        reply = message_body(
+            auth=world.adversary.auth,
+            stream_id=world.private_stream,
+            text="adversary-reply",
+            thread_root_id=priv_msgs[0],
+        )
+        resp = await post_batch(world.adversary.http, world.adversary.token, [wire_item(reply)])
+        world.adversary_thread_reply_forbidden = (
             resp.status_code == 200 and len(resp.json()["accepted"]) == 0
         )
 
@@ -270,6 +325,31 @@ async def _snapshot_reactions(world: World) -> ReactionRows:
         return [(r[0], r[1], r[2]) for r in rows.all()]
 
 
+async def _snapshot_thread_counters(world: World) -> ThreadCounterRows:
+    """Read ``messages_proj`` thread counters as ``(message_id, reply_count,
+    last_reply_seq)`` rows — the surface the ENG-99 thread invariant folds the log
+    against (per-root reply count + last reply sequence)."""
+    maker = async_sessionmaker(world.engine, expire_on_commit=False)
+    async with maker() as db:
+        rows = await db.execute(
+            select(MessageProj.message_id, MessageProj.reply_count, MessageProj.last_reply_seq)
+        )
+        return [(r[0], r[1], r[2]) for r in rows.all()]
+
+
+async def _snapshot_thread_participants(world: World) -> ThreadParticipantRows:
+    """Read ``thread_participants_proj`` as ``(root_message_id, user_id)`` rows.
+
+    A list (not a set) so the invariant can assert NO duplicate participant row
+    (the PK enforces it, but the sim proves it too)."""
+    maker = async_sessionmaker(world.engine, expire_on_commit=False)
+    async with maker() as db:
+        rows = await db.execute(
+            select(ThreadParticipantProj.root_message_id, ThreadParticipantProj.user_id)
+        )
+        return [(r[0], r[1]) for r in rows.all()]
+
+
 async def _assert_rebuild_equivalence(world: World) -> None:
     """§12 invariant 6 for BOTH projections: rebuild ≡ incremental, byte for byte.
 
@@ -284,6 +364,7 @@ async def _assert_rebuild_equivalence(world: World) -> None:
     async with maker() as db:
         before_messages = await dump_messages_proj(db)
         before_reactions = await dump_reactions_proj(db)
+        before_threads = await dump_thread_participants_proj(db)
         await rebuild_projections(db)
     async with maker() as db:
         assert await dump_messages_proj(db) == before_messages, (
@@ -291,6 +372,9 @@ async def _assert_rebuild_equivalence(world: World) -> None:
         )
         assert await dump_reactions_proj(db) == before_reactions, (
             "rebuild ≠ incremental for reactions_proj"
+        )
+        assert await dump_thread_participants_proj(db) == before_threads, (
+            "rebuild ≠ incremental for thread_participants_proj"
         )
 
 
@@ -313,10 +397,20 @@ async def run_plan(settings: Settings, plan: Plan) -> None:
             truth = await _snapshot_truth(world)
             reaction_rows = await _snapshot_reactions(world)
             message_rows = await _snapshot_messages(world)
-            assert_all(world, truth, reaction_rows, message_rows)
-            # §12 invariant 6 (reactions + messages): rebuild ≡ incremental. Run
-            # last — it TRUNCATEs + replays the committed log (reproducing identical
-            # state), which the finally-block truncation then clears.
+            thread_counter_rows = await _snapshot_thread_counters(world)
+            thread_participant_rows = await _snapshot_thread_participants(world)
+            assert_all(
+                world,
+                truth,
+                reaction_rows,
+                message_rows,
+                thread_counter_rows,
+                thread_participant_rows,
+            )
+            # §12 invariant 6 (reactions + messages + thread participants):
+            # rebuild ≡ incremental. Run last — it TRUNCATEs + replays the committed
+            # log (reproducing identical state), which the finally-block truncation
+            # then clears.
             await _assert_rebuild_equivalence(world)
     finally:
         await truncate_auth_tables(cleanup_engine)

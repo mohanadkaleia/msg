@@ -65,7 +65,11 @@ from msgd.core.time import now_rfc3339
 from msgd.db.models import MessageProj, Stream, Workspace
 from msgd.events.insert import insert_event
 from msgd.projections import apply as apply_mod
-from msgd.projections.dump import dump_messages_proj, dump_reactions_proj
+from msgd.projections.dump import (
+    dump_messages_proj,
+    dump_reactions_proj,
+    dump_thread_participants_proj,
+)
 from msgd.projections.rebuild import rebuild_projections
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -86,7 +90,8 @@ _GATE_SETTINGS = (
 )
 
 _RESET = (
-    "TRUNCATE messages_proj, reactions_proj, events, stream_members, streams, workspaces CASCADE"
+    "TRUNCATE messages_proj, reactions_proj, thread_participants_proj, "
+    "events, stream_members, streams, workspaces CASCADE"
 )
 
 #: Reaction emoji domain for the gate — exercises the OPAQUE-BYTES contract (a base
@@ -102,19 +107,24 @@ _GATE_EMOJIS = ("\U0001f44d", "\U0001f44d\U0001f3fd", "x", "\u0001")
 
 @dataclass(frozen=True)
 class _Action:
-    """One randomized event: a message, unknown type, reaction, edit, or delete.
+    """One randomized event: a message, thread reply, unknown type, reaction, edit, or delete.
 
-    ``react_add`` / ``react_remove`` / ``edited`` / ``deleted`` target a message
-    previously created in the same stream (resolved modulo ``msg`` at apply time; a
-    no-op if the stream has no message yet). Reactions build/tear down the
+    ``reply`` / ``react_add`` / ``react_remove`` / ``edited`` / ``deleted`` target a
+    message previously created in the same stream (resolved modulo ``msg`` at apply
+    time; a no-op if the stream has no message yet). Reactions build/tear down the
     ``reactions_proj`` set (ENG-97); ``edited`` (LWW ``text``/``edited_seq``) and
-    ``deleted`` (tombstone + ``text`` redaction) MUTATE ``messages_proj`` rows —
-    the interleaved edit/delete coverage the permanent gate must keep proving
-    rebuild-equivalent (ENG-98), with a small ``msg`` pool so repeated edits on the
-    same message exercise LWW and edit-after-delete exercises terminality.
+    ``deleted`` (tombstone + ``text`` redaction) MUTATE ``messages_proj`` rows
+    (ENG-98). ``reply`` is a ``message.created`` carrying a ``thread_root_id`` that
+    points at a REAL prior message in the same stream, so the ROOT's
+    ``reply_count`` / ``last_reply_seq`` (in ``messages_proj``) and its
+    ``thread_participants_proj`` set are exercised (ENG-99) — and because a reply is
+    itself a created message, a later ``deleted`` can delete a reply, driving the
+    delete-side recompute the rebuild must reproduce. A small ``msg`` pool forces
+    repeated edits (LWW), edit-after-delete (terminality), and multiple replies /
+    replies-then-delete on the same root.
     """
 
-    kind: str  # "created" | "unknown" | "react_add" | "react_remove" | "edited" | "deleted"
+    kind: str  # "created"|"reply"|"unknown"|"react_add"|"react_remove"|"edited"|"deleted"
     stream: str
     text: str = ""
     format: str = "markdown"
@@ -139,19 +149,29 @@ def _send_plan(draw: st.DrawFn) -> list[_Action]:
     n_streams = draw(st.integers(min_value=1, max_value=4))
     streams = [f"s{i}" for i in range(n_streams)]
 
+    _body_text = st.text(
+        st.characters(codec="utf-8", exclude_characters="\x00"), min_size=0, max_size=200
+    )
     created = st.builds(
         _Action,
         kind=st.just("created"),
         stream=st.sampled_from(streams),
-        text=st.text(
-            st.characters(codec="utf-8", exclude_characters="\x00"), min_size=0, max_size=200
-        ),
+        text=_body_text,
         format=st.sampled_from(["markdown", "plain"]),
-        thread_root_id=st.none() | st.builds(ids.new_message_id),
+        # Top-level only here; real threaded replies come from the ``reply`` kind
+        # (which roots on an EXISTING message so the thread counters are exercised).
     )
     unknown = st.builds(_Action, kind=st.just("unknown"), stream=st.sampled_from(streams))
     emoji = st.sampled_from(_GATE_EMOJIS)
     msg = st.integers(min_value=0, max_value=3)
+    reply = st.builds(
+        _Action,
+        kind=st.just("reply"),
+        stream=st.sampled_from(streams),
+        text=_body_text,
+        format=st.sampled_from(["markdown", "plain"]),
+        msg=msg,
+    )
     react_add = st.builds(
         _Action, kind=st.just("react_add"), stream=st.sampled_from(streams), emoji=emoji, msg=msg
     )
@@ -162,19 +182,19 @@ def _send_plan(draw: st.DrawFn) -> list[_Action]:
         _Action,
         kind=st.just("edited"),
         stream=st.sampled_from(streams),
-        text=st.text(
-            st.characters(codec="utf-8", exclude_characters="\x00"), min_size=0, max_size=200
-        ),
+        text=_body_text,
         msg=msg,
     )
     deleted = st.builds(_Action, kind=st.just("deleted"), stream=st.sampled_from(streams), msg=msg)
 
     def _pick(n: int) -> st.SearchStrategy[_Action]:
         # ~10% unknown, ~20% react_add, ~10% react_remove, ~10% edited, ~10% deleted,
-        # ~40% created — created stays the plurality (rows to mutate) while reactions
-        # build/tear down the set and edits/deletes mutate messages_proj rows, with a
-        # small emoji/msg pool forcing duplicate adds, absent removes, repeated edits
-        # (LWW), and edit-after-delete (terminality) the rebuild must reproduce.
+        # ~20% reply, ~20% created — created + reply stay the plurality (rows to
+        # mutate / thread roots to grow) while reactions build/tear down the set,
+        # edits/deletes mutate messages_proj rows, and replies drive the ENG-99
+        # thread counters/participants. The small emoji/msg pool forces duplicate
+        # adds, absent removes, repeated edits (LWW), edit-after-delete (terminality),
+        # multiple replies per root, and reply-then-delete (the delete-side recompute).
         if n == 0:
             return unknown
         if n in (1, 2):
@@ -185,6 +205,8 @@ def _send_plan(draw: st.DrawFn) -> list[_Action]:
             return edited
         if n == 5:
             return deleted
+        if n in (6, 7):
+            return reply
         return created
 
     action = st.integers(min_value=0, max_value=9).flatmap(_pick)
@@ -195,7 +217,13 @@ def _send_plan(draw: st.DrawFn) -> list[_Action]:
 
 
 def _created_body(
-    *, workspace_id: str, stream_id: str, author: str, device: str, action: _Action
+    *,
+    workspace_id: str,
+    stream_id: str,
+    author: str,
+    device: str,
+    action: _Action,
+    thread_root_id: str | None = None,
 ) -> dict[str, Any]:
     return build_message_created_body(
         workspace_id=workspace_id,
@@ -205,7 +233,7 @@ def _created_body(
         client_created_at=now_rfc3339(),
         text=action.text,
         format=action.format,
-        thread_root_id=action.thread_root_id,
+        thread_root_id=thread_root_id if thread_root_id is not None else action.thread_root_id,
     ).model_dump(mode="json")
 
 
@@ -342,6 +370,29 @@ async def _one_example(database_url: str, plan: list[_Action]) -> None:
                             body["payload"]["message_id"]
                         )
                         n_created += 1
+                    elif action.kind == "reply":
+                        # A threaded reply roots on a REAL prior message in the same
+                        # stream (resolved modulo msg), so the root's reply_count /
+                        # last_reply_seq / participants are exercised (ENG-99). No prior
+                        # message yet → a no-op. The reply is itself a created message,
+                        # so it joins ``created_by_stream`` and a later delete may delete
+                        # it, driving the delete-side recompute.
+                        known = created_by_stream.get(action.stream, [])
+                        if not known:
+                            continue
+                        root = known[action.msg % len(known)]
+                        body = _created_body(
+                            workspace_id=ws,
+                            stream_id=sid,
+                            author=author,
+                            device=device,
+                            action=action,
+                            thread_root_id=root,
+                        )
+                        created_by_stream.setdefault(action.stream, []).append(
+                            body["payload"]["message_id"]
+                        )
+                        n_created += 1
                     elif action.kind == "unknown":
                         body = _unknown_body(
                             workspace_id=ws, stream_id=sid, author=author, device=device
@@ -385,23 +436,30 @@ async def _one_example(database_url: str, plan: list[_Action]) -> None:
 
                 dump_incremental = await dump_messages_proj(session)
                 dump_incremental_reactions = await dump_reactions_proj(session)
+                dump_incremental_threads = await dump_thread_participants_proj(session)
 
-                # D9: one row per created action, none for unknown-type events.
+                # D9: one row per created action (top-level OR reply), none for
+                # unknown-type events (reactions/edits/deletes add no rows).
                 row_count = await session.scalar(select(func.count()).select_from(MessageProj))
                 assert row_count == n_created
 
-                # The permanent invariant: rebuild ≡ incremental, byte for byte —
-                # for BOTH first-class projections (ENG-97 adds reactions_proj).
+                # The permanent invariant: rebuild ≡ incremental, byte for byte — for
+                # ALL projections. ``messages_proj`` now carries reply_count +
+                # last_reply_seq (ENG-99), and thread_participants_proj is its own
+                # surface, so the gate proves the delete-aware thread state rebuilds too.
                 await rebuild_projections(session)
                 dump_rebuilt = await dump_messages_proj(session)
                 dump_rebuilt_reactions = await dump_reactions_proj(session)
+                dump_rebuilt_threads = await dump_thread_participants_proj(session)
                 assert dump_rebuilt == dump_incremental
                 assert dump_rebuilt_reactions == dump_incremental_reactions
+                assert dump_rebuilt_threads == dump_incremental_threads
 
-                # Rebuild is idempotent (both projections).
+                # Rebuild is idempotent (all projections).
                 await rebuild_projections(session)
                 assert await dump_messages_proj(session) == dump_rebuilt
                 assert await dump_reactions_proj(session) == dump_rebuilt_reactions
+                assert await dump_thread_participants_proj(session) == dump_rebuilt_threads
         finally:
             # Defensive end-of-example cleanup so committed rows never leak to
             # sibling tests (rebuild_projections commits).
@@ -628,6 +686,91 @@ async def test_gate_detects_edit_delete_divergence(
     await rebuild_projections(db_session)
     monkeypatch.undo()
     assert await dump_messages_proj(db_session) != dump_incremental
+
+
+async def test_gate_detects_thread_divergence(db_session: AsyncSession, monkeypatch: Any) -> None:
+    """Teeth for the thread side (ENG-99): a rebuild that SKIPS the reply-count/participant
+    recompute — OR skips it on the DELETE side only (a 'blind +1 that ignores deletes') —
+    must turn the ``messages_proj`` (reply_count/last_reply_seq) AND
+    ``thread_participants_proj`` rebuild-equivalence assertions RED (green by default).
+
+    Same one-sided mechanism as the reaction/edit teeth: patch the REBUILD pass ONLY
+    (a global patch would mutate both sides identically and prove nothing). The scenario
+    is a root with two replies (authors a, b) where a's reply is then DELETED — so the
+    correct incremental state is ``reply_count=1``, participants ``{b}``.
+    """
+    ws, stream = ids.new_workspace_id(), ids.new_stream_id()
+    await _seed_stream(db_session, workspace_id=ws, stream_id=stream)
+    author_a, author_b = ids.new_user_id(), ids.new_user_id()
+    device = ids.new_device_id()
+
+    def _created(text: str, user: str, root: str | None = None) -> tuple[str, dict[str, Any]]:
+        mid = ids.new_message_id()
+        return mid, build_message_created_body(
+            workspace_id=ws,
+            stream_id=stream,
+            author_user_id=user,
+            author_device_id=device,
+            client_created_at=now_rfc3339(),
+            text=text,
+            message_id=mid,
+            thread_root_id=root,
+        ).model_dump(mode="json")
+
+    m_root, root_created = _created("root", author_a)
+    m_reply_a, reply_a_created = _created("ra", author_a, root=m_root)
+    m_reply_b, reply_b_created = _created("rb", author_b, root=m_root)
+    await insert_event(db_session, stream_id=stream, body=root_created)
+    await insert_event(db_session, stream_id=stream, body=reply_a_created)
+    await insert_event(db_session, stream_id=stream, body=reply_b_created)
+    # Delete a's reply → correct state: reply_count=1, participants={b}.
+    await insert_event(
+        db_session,
+        stream_id=stream,
+        body=_deleted_body(
+            workspace_id=ws, stream_id=stream, author=author_a, device=device, message_id=m_reply_a
+        ),
+    )
+    dump_incremental_messages = await dump_messages_proj(db_session)
+    dump_incremental_threads = await dump_thread_participants_proj(db_session)
+
+    # Positive control: unpatched rebuild reproduces the delete-aware thread state.
+    await rebuild_projections(db_session)
+    assert await dump_messages_proj(db_session) == dump_incremental_messages
+    assert await dump_thread_participants_proj(db_session) == dump_incremental_threads
+
+    # Buggy rebuild #1: the recompute is a total no-op → reply_count reverts to 0 and
+    # NO participant row is written. Both the messages dump (reply_count/last_reply_seq)
+    # and the participants dump diverge.
+    async def _noop_recompute(db: AsyncSession, root_message_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(apply_mod, "_recompute_thread_root", _noop_recompute)
+    await rebuild_projections(db_session)
+    monkeypatch.undo()
+    assert await dump_messages_proj(db_session) != dump_incremental_messages
+    assert await dump_thread_participants_proj(db_session) != dump_incremental_threads
+
+    # Buggy rebuild #2: a 'blind +1 that ignores deletes' — the CREATE side still counts
+    # (recompute runs), but the DELETE side skips its recompute, so a's deleted reply
+    # wrongly keeps inflating reply_count (2, not 1) and leaves a ghost participant.
+    real_created = apply_mod._HANDLERS[("message.created", 1)]
+
+    async def _delete_no_recompute(
+        db: AsyncSession, *, body: dict[str, Any], server_sequence: int
+    ) -> None:
+        # Tombstone WITHOUT recomputing the reply's root (the delete-side bug).
+        await db.execute(
+            text("UPDATE messages_proj SET deleted = true, text = '' WHERE message_id = :mid"),
+            {"mid": body["payload"]["message_id"]},
+        )
+
+    monkeypatch.setitem(apply_mod._HANDLERS, ("message.created", 1), real_created)
+    monkeypatch.setitem(apply_mod._HANDLERS, ("message.deleted", 1), _delete_no_recompute)
+    await rebuild_projections(db_session)
+    monkeypatch.undo()
+    assert await dump_messages_proj(db_session) != dump_incremental_messages
+    assert await dump_thread_participants_proj(db_session) != dump_incremental_threads
 
 
 # --- honest end-to-end wiring: real upload smoke -----------------------------

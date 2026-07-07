@@ -18,9 +18,9 @@ from typing import Final
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from msgd.db.models import MessageProj, ReactionProj
+from msgd.db.models import MessageProj, ReactionProj, ThreadParticipantProj
 
-__all__ = ["dump_messages_proj", "dump_reactions_proj"]
+__all__ = ["dump_messages_proj", "dump_reactions_proj", "dump_thread_participants_proj"]
 
 #: The dumped columns, in fixed order (never ``SELECT *``).  The subset the apply
 #: actually writes.
@@ -31,16 +31,17 @@ __all__ = ["dump_messages_proj", "dump_reactions_proj"]
 #: equivalence surface — the gate must prove rebuild reproduces the LWW winner and
 #: the tombstone byte-for-byte.
 #:
-#: EXCLUDED and why: ``reply_count`` / ``last_reply_seq`` are still constant defaults
-#: (thread counters are a later milestone) — dumping them proves nothing about the
-#: apply logic and would couple the gate to those defaults.  ``search_tsv`` is
-#: GENERATED (a pure function of ``text``), not part of the equivalence surface.
-#: ``messages_proj`` has NO ``format`` column (§4.2 drops it — a deliberate
-#: difference from M0's SQLite ``messages`` table), so, unlike M0's dump, ``format``
-#: is not dumped.
+#: INCLUDED by ENG-99: ``reply_count`` + ``last_reply_seq`` — the thread reply
+#: reducer (message.created of a reply) and the delete-side recompute
+#: (message.deleted of a reply) now WRITE them onto the ROOT message's row, so both
+#: are part of the equivalence surface: the gate must prove a full replay
+#: reproduces the delete-aware reply counter byte-for-byte. (Participant rows are a
+#: separate table — see :func:`dump_thread_participants_proj`.)
 #:
-#: When later milestones land thread-counter reducers, EXTEND this list to cover the
-#: columns they write so the gate keeps proving those too.
+#: EXCLUDED and why: ``search_tsv`` is GENERATED (a pure function of ``text``), not
+#: part of the equivalence surface.  ``messages_proj`` has NO ``format`` column
+#: (§4.2 drops it — a deliberate difference from M0's SQLite ``messages`` table),
+#: so, unlike M0's dump, ``format`` is not dumped.
 _DUMP_COLUMNS: Final = (
     "message_id",
     "stream_id",
@@ -50,6 +51,8 @@ _DUMP_COLUMNS: Final = (
     "created_seq",
     "edited_seq",
     "deleted",
+    "reply_count",
+    "last_reply_seq",
 )
 
 
@@ -71,6 +74,8 @@ async def dump_messages_proj(session: AsyncSession) -> str:
             MessageProj.created_seq,
             MessageProj.edited_seq,
             MessageProj.deleted,
+            MessageProj.reply_count,
+            MessageProj.last_reply_seq,
         ).order_by(MessageProj.stream_id, MessageProj.created_seq, MessageProj.message_id)
     )
     return "\n".join(
@@ -114,6 +119,41 @@ async def dump_reactions_proj(session: AsyncSession) -> str:
     return "\n".join(
         json.dumps(
             dict(zip(_REACTION_DUMP_COLUMNS, row, strict=True)),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        for row in rows.all()
+    )
+
+
+#: The dumped ``thread_participants_proj`` columns, in fixed order — the full
+#: membership key (the table IS the participant set, ENG-99). No derived columns.
+_THREAD_PARTICIPANT_DUMP_COLUMNS: Final = (
+    "root_message_id",
+    "user_id",
+)
+
+
+async def dump_thread_participants_proj(session: AsyncSession) -> str:
+    """Return the normalized, deterministic ``thread_participants_proj`` dump (ENG-99).
+
+    Same discipline as :func:`dump_reactions_proj`: a fixed column list, one compact
+    JSON object per row, ``\\n``-joined, under a total ``ORDER BY`` on the membership
+    key ``(root_message_id, user_id)`` — unique (it is the primary key), so the order
+    is total and stable and two equal participant sets yield byte-identical dumps.
+    This is the ``rebuild ≡ incremental`` equivalence surface for thread participants
+    (paired with ``reply_count`` / ``last_reply_seq`` in :func:`dump_messages_proj`;
+    TDD §5 / §12 invariant 6).
+    """
+    rows = await session.execute(
+        select(
+            ThreadParticipantProj.root_message_id,
+            ThreadParticipantProj.user_id,
+        ).order_by(ThreadParticipantProj.root_message_id, ThreadParticipantProj.user_id)
+    )
+    return "\n".join(
+        json.dumps(
+            dict(zip(_THREAD_PARTICIPANT_DUMP_COLUMNS, row, strict=True)),
             ensure_ascii=False,
             separators=(",", ":"),
         )

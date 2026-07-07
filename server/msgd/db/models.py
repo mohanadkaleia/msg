@@ -242,6 +242,40 @@ class ReactionProj(Base):
     emoji: Mapped[str] = mapped_column(Text(collation="C"), primary_key=True)
 
 
+class ThreadParticipantProj(Base):
+    """Server-side thread-participant projection (ENG-99, M3) — rebuildable.
+
+    One row per ``(root_message_id, user_id)``: the DISTINCT authors of the
+    NON-DELETED replies that share ``thread_root_id == root_message_id``. The
+    companion ``messages_proj.reply_count`` (count of those non-deleted replies)
+    and ``messages_proj.last_reply_seq`` (max ``created_seq`` among them) live on
+    the ROOT message's row; this table carries the participant *set*.
+
+    **Delete-aware + rebuild-equivalent by RECOMPUTE (see
+    :func:`msgd.projections.apply._recompute_thread_root`).** Both the count and
+    this set are RECOMPUTED from the current ``messages_proj`` state on every event
+    that can change the non-deleted-reply set of a root — a reply ``message.created``
+    (adds an author) and a reply ``message.deleted`` (may drop the last non-deleted
+    reply of an author). Because each recompute is a pure function of committed
+    ``messages_proj`` rows (``WHERE thread_root_id = root AND deleted = false``), and
+    ``messages_proj``'s own ``(thread_root_id, deleted)`` state is already proven
+    ``rebuild ≡ incremental`` (ENG-98 gate), the derived thread state is
+    rebuild-equivalent by construction — a blind ``+1`` on create (which a later
+    delete could not undo) is deliberately NOT used.
+
+    A deleted reply therefore neither inflates ``reply_count`` nor keeps a ghost
+    participant. Deleting a ROOT keeps its replies (the root row survives as a
+    tombstone with ``reply_count`` intact — §2.4 / D7): a root's own deletion does
+    not touch ``count(thread_root_id = root)``, so no recompute of the root's
+    counters is triggered by it.
+    """
+
+    __tablename__ = "thread_participants_proj"
+
+    root_message_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+
 class ReadState(Base):
     __tablename__ = "read_state"
 

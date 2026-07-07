@@ -85,11 +85,12 @@ async def rebuild_projections(session: AsyncSession) -> RebuildResult:
     the prior projection intact (interrupt safety).  Returns a
     :class:`RebuildResult` for the CLI summary.
 
-    BOTH projection tables are truncated + replayed together (ENG-97): a rebuild
-    that dropped only ``messages_proj`` would leave stale ``reactions_proj`` rows
-    and break ``rebuild ≡ incremental`` for reactions.
+    ALL projection tables are truncated + replayed together: ``reactions_proj``
+    (ENG-97) and ``thread_participants_proj`` (ENG-99) alongside ``messages_proj``.
+    A rebuild that dropped only ``messages_proj`` would leave stale rows in the
+    others and break ``rebuild ≡ incremental`` for reactions / thread participants.
     """
-    await session.execute(text("TRUNCATE messages_proj, reactions_proj"))
+    await session.execute(text("TRUNCATE messages_proj, reactions_proj, thread_participants_proj"))
     result = RebuildResult()
     async for body, server_sequence in _iter_events(session):
         if await apply_projection(session, body=body, server_sequence=server_sequence):

@@ -209,6 +209,35 @@ async def _resolve_message_stream(db: AsyncSession, message_id: str) -> str | No
     return stream_id
 
 
+async def _resolve_message_home_and_root(
+    db: AsyncSession, message_id: str
+) -> tuple[str, str | None] | None:
+    """The ``(stream_id, thread_root_id)`` of a message, or ``None`` if unknown.
+
+    The thread-root referential oracle (ENG-99): a ``message.created`` carrying a
+    ``thread_root_id`` must root on a message that (a) EXISTS, (b) lives in the exact
+    stream the reply is homed in, and (c) is itself a NON-reply (``thread_root_id IS
+    NULL`` — flat-channel threads, D7 / §2.2 "the first reply *is* the thread"). All
+    three are decided from this one lookup. A DELETED (tombstoned) root still has its
+    row — ``stream_id`` / ``thread_root_id`` are never cleared on delete — so replying
+    into a deleted root's thread resolves and is ALLOWED (the root row exists; the
+    tombstone is a projection concern). A message that never existed and one in a
+    DIFFERENT stream both resolve to a value the reply's home cannot match (or to
+    ``None``), collapsing to the identical non-disclosing ``unknown_message`` (D13 —
+    no cross-stream/cross-tenant existence oracle).
+    """
+    row = (
+        await db.execute(
+            select(MessageProj.stream_id, MessageProj.thread_root_id).where(
+                MessageProj.message_id == message_id
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    return row[0], row[1]
+
+
 async def _resolve_message_home_and_author(
     db: AsyncSession, message_id: str
 ) -> tuple[str, str] | None:
@@ -424,8 +453,10 @@ async def _check_referential(
     ``None`` to pass. ``reaction.*`` adds a message-referential branch (ENG-97):
     the target ``message_id`` must exist in the stream the reaction is homed in.
     ``message.edited`` / ``message.deleted`` add the same message-referential check
-    plus an **author-or-admin** authorization gate (ENG-98). ``thread_root_id`` /
-    ``file_ids`` / ``mentions`` existence are still deferred (D8d).
+    plus an **author-or-admin** authorization gate (ENG-98). ``message.created`` adds
+    a **thread-root** referential check (ENG-99): a non-null ``thread_root_id`` must
+    reference an existing NON-reply message in the reply's own stream. ``file_ids`` /
+    ``mentions`` existence are still deferred (D8d).
 
     TOTALITY (security round 2): every ``return None`` accept path leaves the
     effective home stream id (``body.stream_id``, which reaches ``insert_event``'s
@@ -701,9 +732,45 @@ async def _check_referential(
         # a projection concern (ENG-98 apply.py), never a reject here.
         return None
 
-    # message.created and unknown D9 types: no referential branch. Home totality is
-    # upheld UPSTREAM at step iii — ``can_read`` / ``can_write`` gate on
-    # ``readable_streams_predicate``, which filters ``Stream.workspace_id ==
-    # ctx.workspace_id``, so the only accepted home is a stream in the caller's
-    # workspace. (Unknown types run no reducer; message.created has none in M1.)
+    if event_type == "message.created":
+        # §3.2 thread-root referential check (ENG-99, D7). A message.created with a
+        # non-null thread_root_id is a THREAD REPLY: the root must EXIST, live in the
+        # exact stream the reply is homed in, and be a NON-reply (flat threads). A
+        # null thread_root_id is a top-level message — nothing to resolve, pass.
+        #
+        # Home totality: an accept here is only reachable for body.stream_id already
+        # gated at step iii (can_write == workspace-scoped readable predicate), so the
+        # only accepted home is a stream in ctx.workspace_id — cross-tenant home
+        # injection is dead upstream, exactly as for a top-level message.created.
+        thread_root_id = payload.get("thread_root_id")
+        if thread_root_id is None:
+            return None  # top-level message — no thread root to resolve.
+
+        # Shape guard (500-proof + D9): the known v1 payload model already forced a
+        # valid m_ id, but an unknown message.created version skips it, so a
+        # garbage/mistyped thread_root_id must be handled here — it references no real
+        # message, so the same non-disclosing unknown_message as a well-formed-absent
+        # reference (never invalid_schema, to keep ONE uniform non-disclosing outcome).
+        if not isinstance(thread_root_id, str) or not ids.is_valid_typed_id(
+            thread_root_id, ids.IdKind.MESSAGE
+        ):
+            return Rejected(event_id="", code="unknown_message", detail=_UNKNOWN_MESSAGE_DETAIL)
+
+        # Existence + §2.2 same-stream homing + flat-thread (non-reply root) in ONE
+        # check. A root that never existed (None), one in a DIFFERENT stream (private/
+        # unreadable or another workspace), AND one that is ITSELF a reply (reply-of-
+        # reply — forbidden by the flat-channel model, D7) all collapse to the identical
+        # unknown_message: existence is never disclosed, and the reply-of-reply case is
+        # within a readable stream so folding it into the same outcome leaks nothing.
+        # Replying into a DELETED root's thread is ALLOWED — the tombstone row still
+        # resolves with its stream_id + null thread_root_id (see _resolve_message_home_and_root).
+        resolved = await _resolve_message_home_and_root(db, thread_root_id)
+        if resolved is None or resolved[0] != body_model.stream_id or resolved[1] is not None:
+            return Rejected(event_id="", code="unknown_message", detail=_UNKNOWN_MESSAGE_DETAIL)
+        return None
+
+    # unknown D9 types: no referential branch. Home totality is upheld UPSTREAM at
+    # step iii — ``can_read`` / ``can_write`` gate on ``readable_streams_predicate``,
+    # which filters ``Stream.workspace_id == ctx.workspace_id``, so the only accepted
+    # home is a stream in the caller's workspace. (Unknown types run no reducer.)
     return None

@@ -34,13 +34,15 @@ def message_body(
     auth: Auth,
     stream_id: str,
     text: str = "hello",
+    thread_root_id: str | None = None,
     **overrides: Any,
 ) -> dict[str, Any]:
     """A valid ``message.created`` v1 body authored by ``auth``'s principal.
 
-    ``overrides`` are applied AFTER the model dump, onto the raw dict — so tests
-    can produce deliberately nonconforming bodies (tampered scalars, bad ids)
-    without the builder model rejecting them.
+    ``thread_root_id`` (ENG-99) makes this message a THREAD REPLY rooting on an
+    existing message id (validated m_ format). ``overrides`` are applied AFTER the
+    model dump, onto the raw dict — so tests can produce deliberately nonconforming
+    bodies (tampered scalars, bad ids) without the builder model rejecting them.
     """
     body = build_message_created_body(
         workspace_id=auth["workspace_id"],
@@ -49,6 +51,7 @@ def message_body(
         author_device_id=auth["device_id"],
         client_created_at=now_rfc3339(),
         text=text,
+        thread_root_id=thread_root_id,
     ).model_dump(mode="json")
     body.update(overrides)
     return body

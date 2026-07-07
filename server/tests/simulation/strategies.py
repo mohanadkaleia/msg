@@ -144,6 +144,26 @@ class Delete:
     msg: int
 
 
+@dataclass(frozen=True)
+class ThreadReply:
+    """``actor`` replies to an existing NON-reply message in ``stream`` (ENG-99, D7).
+
+    ``msg`` selects among the ROOT (top-level, non-reply) messages the actor knows in
+    that stream (resolved modulo at apply time; a no-op if it knows none yet). The
+    reply is a ``message.created`` carrying ``thread_root_id`` = the resolved root, so
+    it grows the root's ``reply_count`` / ``last_reply_seq`` / participant set. Because
+    a reply is itself a message, a later :class:`Delete` on it (own reply) exercises the
+    delete-side recompute (the count must decrement, the ghost participant must drop).
+    Rooting only on NON-reply messages keeps threads flat, so every generated reply is
+    Accepted and the thread state is genuinely exercised.
+    """
+
+    actor: int
+    stream: int
+    msg: int
+    text: str
+
+
 Op = (
     Send
     | DuplicateSend
@@ -155,6 +175,7 @@ Op = (
     | ConcurrentReactBurst
     | Edit
     | Delete
+    | ThreadReply
 )
 
 #: Reaction emoji domain sampled by the strategy. Deliberately exercises the
@@ -222,6 +243,7 @@ def _op(n: int) -> st.SearchStrategy[Op]:
         ),
         st.builds(Edit, actor=actor, stream=stream, msg=msg, text=text),
         st.builds(Delete, actor=actor, stream=stream, msg=msg),
+        st.builds(ThreadReply, actor=actor, stream=stream, msg=msg, text=text),
     )
 
 
