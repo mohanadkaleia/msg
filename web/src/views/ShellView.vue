@@ -13,20 +13,24 @@ import AppSidebar from '../components/shell/AppSidebar.vue'
 import CommandPalette, { type QuickItem } from '../components/shell/CommandPalette.vue'
 import MessageComposer from '../components/shell/MessageComposer.vue'
 import MessageList from '../components/shell/MessageList.vue'
+import ThreadPane from '../components/shell/ThreadPane.vue'
 import { useAuthStore } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
 import { useSyncStore } from '../stores/sync'
+import { useThreadStore } from '../stores/thread'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const router = useRouter()
 const auth = useAuthStore()
 const workspace = useWorkspaceStore()
 const messages = useMessagesStore()
+const thread = useThreadStore()
 const sync = useSyncStore()
 
 const { myUserId } = storeToRefs(auth)
 const { selectedStream, selectedStreamId, channels, dms, mentionItems } = storeToRefs(workspace)
 const { displayMessages, hasMore } = storeToRefs(messages)
+const { isOpen: threadOpen } = storeToRefs(thread)
 
 const paletteOpen = ref(false)
 /** The message currently in inline edit (ENG-102); null = none. */
@@ -58,6 +62,8 @@ watch(
   selectedStreamId,
   (id) => {
     if (id) void messages.selectStream(id)
+    // A thread belongs to one stream; switching streams closes the pane.
+    thread.close()
   },
   { immediate: false },
 )
@@ -115,6 +121,16 @@ function onDeleteMessage(messageId: string): void {
   void messages.deleteMessage(messageId)
 }
 
+/**
+ * Open the thread pane on a root (ENG-103) — the reply-count affordance or a
+ * "Reply in thread" action. The root is in the selected stream; a re-open of the
+ * same root is a no-op in the store.
+ */
+function onOpenThread(rootMessageId: string): void {
+  const streamId = selectedStreamId.value
+  if (streamId) void thread.openThread(rootMessageId, streamId)
+}
+
 async function onLogout(): Promise<void> {
   await auth.logout()
   await router.push('/login')
@@ -122,6 +138,7 @@ async function onLogout(): Promise<void> {
 
 onMounted(async () => {
   messages.setMyUserId(myUserId.value ?? '')
+  thread.setMyUserId(myUserId.value ?? '')
   void sync.start()
   await workspace.load()
   if (selectedStreamId.value) void messages.selectStream(selectedStreamId.value)
@@ -132,6 +149,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
   workspace.dispose()
   messages.dispose()
+  thread.dispose()
   sync.stop()
 })
 </script>
@@ -171,6 +189,7 @@ onBeforeUnmount(() => {
         @edit-submit="onEditSubmit"
         @edit-cancel="onEditCancel"
         @delete="onDeleteMessage"
+        @open-thread="onOpenThread"
       />
 
       <MessageComposer
@@ -181,6 +200,9 @@ onBeforeUnmount(() => {
         @edit-last="onEditLast"
       />
     </main>
+
+    <!-- M3 thread pane (ENG-103): a right-hand region, mounted only when open. -->
+    <ThreadPane v-if="threadOpen" />
 
     <CommandPalette
       :open="paletteOpen"

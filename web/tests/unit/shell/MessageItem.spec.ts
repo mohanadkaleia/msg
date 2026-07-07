@@ -168,4 +168,68 @@ describe('MessageItem', () => {
     // No affordances on a tombstone.
     expect(wrapper.find('[data-testid="message-edit"]').exists()).toBe(false)
   })
+
+  // -- ENG-103 thread affordance --------------------------------------------
+
+  it('shows the reply-count + participant avatars on a thread root, and opens on click', async () => {
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: makeMessage({
+          reply_count: 3,
+          threadParticipants: [
+            { user_id: 'u_a', display_name: 'Ann' },
+            { user_id: 'u_b', display_name: 'Bo' },
+          ],
+        }),
+      },
+    })
+
+    const affordance = wrapper.get('[data-testid="thread-affordance"]')
+    expect(affordance.get('[data-testid="thread-reply-count"]').text()).toBe('3 replies')
+    // A participant avatar per participant (capped at 3), initial from the name.
+    const avatars = wrapper.findAll('[data-testid="thread-participant"]')
+    expect(avatars).toHaveLength(2)
+    expect(avatars[0]!.text()).toBe('A')
+
+    await affordance.trigger('click')
+    expect(wrapper.emitted('open-thread')?.[0]).toEqual(['m_00000000000000000000000000'])
+  })
+
+  it('singularizes a single reply and hides the affordance on a non-root', () => {
+    const one = mount(MessageItem, { props: { message: makeMessage({ reply_count: 1 }) } })
+    expect(one.get('[data-testid="thread-reply-count"]').text()).toBe('1 reply')
+
+    const none = mount(MessageItem, { props: { message: makeMessage({ reply_count: 0 }) } })
+    expect(none.find('[data-testid="thread-affordance"]').exists()).toBe(false)
+  })
+
+  it('"Reply in thread" targets the message itself (a non-reply becomes the root)', async () => {
+    const wrapper = mount(MessageItem, { props: { message: makeMessage() } })
+    await wrapper.get('[data-testid="reply-in-thread"]').trigger('click')
+    expect(wrapper.emitted('open-thread')?.[0]).toEqual(['m_00000000000000000000000000'])
+  })
+
+  it('"Reply in thread" on a reply targets its root (no reply-of-reply)', async () => {
+    const wrapper = mount(MessageItem, {
+      props: { message: makeMessage({ thread_root_id: 'm_root' }) },
+    })
+    await wrapper.get('[data-testid="reply-in-thread"]').trigger('click')
+    expect(wrapper.emitted('open-thread')?.[0]).toEqual(['m_root'])
+  })
+
+  it('renders a participant display name with an XSS payload as inert text', () => {
+    const payload = '<img src=x onerror="window.__pwned=1">Eve'
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: makeMessage({
+          reply_count: 1,
+          threadParticipants: [{ user_id: 'u_e', display_name: payload }],
+        }),
+      },
+    })
+    // The avatar/title carry the name as inert text — never an injected element.
+    // (The payload rides an escaped `title` attribute value, which is inert.)
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="thread-participant"]').attributes('title')).toBe(payload)
+  })
 })

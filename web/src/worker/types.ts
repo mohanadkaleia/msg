@@ -370,6 +370,8 @@ export interface MsgDb {
   deleteThreadParticipantsForRoot(rootMessageId: string): Promise<void>
   /** Every thread-participant row — the participants dump source. */
   getAllThreadParticipants(): Promise<ThreadParticipantRow[]>
+  /** A single root's participant rows (by `root_message_id` index) — thread reads. */
+  listThreadParticipantsByRoot(rootMessageId: string): Promise<ThreadParticipantRow[]>
   /** A root's replies (by `thread_root_id` index) — the recompute input. */
   listRepliesByRoot(rootMessageId: string): Promise<MessageRow[]>
   putStreams(rows: readonly StreamRow[]): Promise<void>
@@ -441,6 +443,19 @@ export type QueryParams =
   // the client only holds readable data, so no extra scoping. `emoji` is OPAQUE
   // bytes rendered ONLY via Vue text interpolation tab-side (never a raw sink).
   | { q: 'messages.reactions'; message_ids: string[] }
+  // ENG-103 (M3 thread pane, D7 flat-channel threads): the thread reads.
+  //   • `messages.thread`  — a single root's REPLIES (messages whose
+  //     `thread_root_id` is the root), newest-first + paginated by `created_seq`
+  //     (older pages via `before_seq`), plus the root row and its participant set.
+  //     The thread pane reads this. A LOCAL projection read (zero network) — the
+  //     client only holds readable data, so no extra scoping.
+  //   • `messages.threads` — batch thread summaries (`reply_count` + participants)
+  //     for a set of roots, so the main message list renders the reply-count +
+  //     participant-avatar affordance. Mirrors `messages.reactions`. Participant
+  //     display names are resolved from the shared workspace directory; the tab
+  //     renders them ONLY via Vue text interpolation (never a raw-HTML sink).
+  | { q: 'messages.thread'; root_message_id: string; before_seq?: number; limit?: number }
+  | { q: 'messages.threads'; root_message_ids: string[] }
 
 /**
  * Mutation taxonomy (ENG-81) — durable mutations carried on the existing
@@ -570,6 +585,47 @@ export interface ReactionsListResult {
   messages: MessageReactions[]
 }
 
+/**
+ * One thread participant (ENG-103) — a DISTINCT author of a root's non-deleted
+ * settled replies, with a `display_name` resolved from the workspace directory
+ * (falls back to the `user_id`). Rendered as a small avatar/initial in the reply
+ * affordance and the pane header; `display_name` is OPAQUE user content, so the
+ * tab renders it ONLY via Vue text interpolation.
+ */
+export interface ThreadParticipant {
+  user_id: string
+  display_name: string
+}
+
+/**
+ * A thread summary for one root (ENG-103, `messages.threads`) — the reply count
+ * and participant set the main message list needs to render the affordance. The
+ * count mirrors the root row's `reply_count` (non-deleted settled replies).
+ */
+export interface ThreadSummary {
+  root_message_id: string
+  reply_count: number
+  participants: ThreadParticipant[]
+}
+
+/** `messages.threads` result — a thread summary for each requested root id. */
+export interface ThreadsListResult {
+  threads: ThreadSummary[]
+}
+
+/**
+ * `messages.thread` result (ENG-103) — the thread pane's payload: the `root`
+ * message (or `null` if it is not loaded), a page of `replies` ordered ASC by
+ * `created_seq` (with `has_more` for scroll-up backfill), and the full
+ * participant set.
+ */
+export interface ThreadResult {
+  root: MessageRow | null
+  replies: MessageRow[]
+  has_more: boolean
+  participants: ThreadParticipant[]
+}
+
 /** The union of every projection-query result (RpcResultMap['query']). */
 export type QueryResultUnion =
   | MessagesListResult
@@ -577,6 +633,8 @@ export type QueryResultUnion =
   | MessageGetResult
   | DirectoryListResult
   | ReactionsListResult
+  | ThreadResult
+  | ThreadsListResult
 
 /** Result keyed to the query's `q` discriminant (WorkerClient.query<Q>). */
 export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' }
@@ -589,7 +647,11 @@ export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' 
         ? DirectoryListResult
         : Q extends { q: 'messages.reactions' }
           ? ReactionsListResult
-          : never
+          : Q extends { q: 'messages.thread' }
+            ? ThreadResult
+            : Q extends { q: 'messages.threads' }
+              ? ThreadsListResult
+              : never
 export type MutateResult<M extends MutateParams> = M extends {
   m: 'outbox.send' | 'outbox.react' | 'outbox.edit' | 'outbox.remove'
 }

@@ -198,6 +198,10 @@ export class DexieDb implements MsgDb {
     return this.db.thread_participants.toArray()
   }
 
+  async listThreadParticipantsByRoot(rootMessageId: string): Promise<ThreadParticipantRow[]> {
+    return this.db.thread_participants.where('root_message_id').equals(rootMessageId).toArray()
+  }
+
   async listRepliesByRoot(rootMessageId: string): Promise<MessageRow[]> {
     return this.db.messages.where('thread_root_id').equals(rootMessageId).toArray()
   }
@@ -502,6 +506,12 @@ export class MemoryDb implements MsgDb {
 
   getAllThreadParticipants(): Promise<ThreadParticipantRow[]> {
     return Promise.resolve([...this.participantsMap.values()])
+  }
+
+  listThreadParticipantsByRoot(rootMessageId: string): Promise<ThreadParticipantRow[]> {
+    return Promise.resolve(
+      [...this.participantsMap.values()].filter((r) => r.root_message_id === rootMessageId),
+    )
   }
 
   listRepliesByRoot(rootMessageId: string): Promise<MessageRow[]> {

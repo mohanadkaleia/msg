@@ -33,6 +33,10 @@ import type {
   ReactionsListResult,
   StreamBadge,
   StreamRow,
+  ThreadParticipant,
+  ThreadResult,
+  ThreadsListResult,
+  ThreadSummary,
 } from './types'
 
 /** Default page size for `messages.list` when the caller omits `limit`. */
@@ -633,6 +637,83 @@ export async function listReactions(
     messages.push({ message_id: messageId, reactions })
   }
   return { messages }
+}
+
+/**
+ * Resolve a root's participant set (ENG-103) from the derived
+ * `thread_participants` store (the DISTINCT authors of its non-deleted settled
+ * replies — recomputed projection-side, delete-aware), each name resolved from
+ * the shared workspace `directory` (`user_id` fallback). Sorted by display name
+ * for a stable avatar order. A LOCAL projection read; names are OPAQUE user
+ * content rendered ONLY via Vue text interpolation tab-side.
+ */
+async function resolveParticipants(
+  db: MsgDb,
+  rootMessageId: string,
+  directory: Map<string, string>,
+): Promise<ThreadParticipant[]> {
+  const rows = await db.listThreadParticipantsByRoot(rootMessageId)
+  return rows
+    .map((r): ThreadParticipant => ({
+      user_id: r.user_id,
+      display_name: directory.get(r.user_id) ?? r.user_id,
+    }))
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
+}
+
+/**
+ * A thread's replies + root + participants (ENG-103, `messages.thread`) — the
+ * thread pane's read (D7 flat-channel threads). Replies are the messages whose
+ * `thread_root_id` is this root, paginated newest-first by `created_seq` (older
+ * pages via `beforeSeq`, `limit + 1` to decide `has_more`) and returned ASC for
+ * render. Includes tombstoned + pending replies (the pane renders both, same as
+ * the main list). A LOCAL projection read (zero network for already-synced
+ * replies); the participant set comes from the derived store. `root` is `null`
+ * when the root is not (yet) in the projection.
+ */
+export async function listThread(
+  db: MsgDb,
+  rootMessageId: string,
+  opts: { beforeSeq?: number; limit?: number } = {},
+): Promise<ThreadResult> {
+  const directory = await buildUserDirectory(db)
+  const root = (await db.getMessage(rootMessageId)) ?? null
+  const limit = clampLimit(opts.limit)
+  const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : undefined
+  const all = await db.listRepliesByRoot(rootMessageId)
+  const desc = [...all].sort((a, b) => b.created_seq - a.created_seq)
+  const filtered = beforeSeq !== undefined ? desc.filter((m) => m.created_seq < beforeSeq) : desc
+  const page = filtered.slice(0, limit + 1)
+  const has_more = page.length > limit
+  const replies = (has_more ? page.slice(0, limit) : page).reverse() // ASC render order
+  const participants = await resolveParticipants(db, rootMessageId, directory)
+  return { root, replies, has_more, participants }
+}
+
+/**
+ * Batch thread summaries (ENG-103, `messages.threads`) — the reply count +
+ * participant set for a set of roots, so the main message list renders the
+ * reply-count + participant-avatar affordance. Mirrors `messages.reactions`:
+ * one directory build, then a per-root participant read. `reply_count` mirrors
+ * the root row's counter (non-deleted settled replies); a missing/plain root
+ * yields `0`. A LOCAL projection read (zero network).
+ */
+export async function listThreadSummaries(
+  db: MsgDb,
+  rootMessageIds: readonly string[],
+): Promise<ThreadsListResult> {
+  const directory = await buildUserDirectory(db)
+  const threads: ThreadSummary[] = []
+  for (const rootMessageId of rootMessageIds) {
+    const root = await db.getMessage(rootMessageId)
+    const participants = await resolveParticipants(db, rootMessageId, directory)
+    threads.push({
+      root_message_id: rootMessageId,
+      reply_count: root?.reply_count ?? 0,
+      participants,
+    })
+  }
+  return { threads }
 }
 
 /** The sidebar: every stream merged with its unread/mention badge (`streams.list`). */

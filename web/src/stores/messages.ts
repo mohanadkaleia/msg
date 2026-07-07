@@ -13,7 +13,7 @@ import { computed, ref } from 'vue'
 
 import { resolveWorkerClient } from '../composables/useWorkerClient'
 import { messageTimestamp } from '../lib/time'
-import type { MessageRow, ReactionAggregate, Unsubscribe } from '../worker'
+import type { MessageRow, ReactionAggregate, ThreadParticipant, Unsubscribe } from '../worker'
 
 /** Newest-first page size for a projection read. */
 const PAGE = 50
@@ -34,6 +34,13 @@ export interface DisplayMessage extends MessageRow {
    * omit it (defaults to `[]` in the view).
    */
   reactions?: ReactionAggregate[]
+  /**
+   * Thread participants (ENG-103) — the DISTINCT authors of this root's replies,
+   * joined in from the `messages.threads` projection read, for the reply-count +
+   * avatar affordance. Only meaningful on a thread root (`reply_count > 0`);
+   * optional so isolated component tests can omit it (defaults to `[]` in the view).
+   */
+  threadParticipants?: ThreadParticipant[]
 }
 
 export const useMessagesStore = defineStore('messages', () => {
@@ -49,6 +56,8 @@ export const useMessagesStore = defineStore('messages', () => {
   const sendEventIds = new Map<string, string>()
   /** `message_id → aggregated reaction chips`, from the `messages.reactions` read. */
   const reactionsByMessage = ref<Map<string, ReactionAggregate[]>>(new Map())
+  /** `root_message_id → participants`, from the `messages.threads` read (ENG-103). */
+  const participantsByRoot = ref<Map<string, ThreadParticipant[]>>(new Map())
   let unsub: Unsubscribe | undefined
 
   const displayMessages = computed<DisplayMessage[]>(() =>
@@ -58,6 +67,7 @@ export const useMessagesStore = defineStore('messages', () => {
         ts: messageTimestamp(m),
         mine: m.author_user_id === myUserId.value,
         reactions: reactionsByMessage.value.get(m.message_id) ?? [],
+        threadParticipants: participantsByRoot.value.get(m.message_id) ?? [],
       }
       const eventId = sendEventIds.get(m.message_id)
       if (eventId !== undefined) decorated.eventId = eventId
@@ -107,9 +117,33 @@ export const useMessagesStore = defineStore('messages', () => {
       rows.value = res.messages.slice(0, PAGE).reverse()
       hasMore.value = res.has_more
       await syncReactions()
+      await syncThreads()
     } finally {
       loading.value = false
     }
+  }
+
+  /**
+   * Re-read the thread summaries for the currently loaded ROOT rows (ENG-103) — a
+   * LOCAL `messages.threads` projection read (reply count + participant avatars,
+   * zero network). Only roots (`reply_count > 0`) are queried. Runs alongside
+   * `syncReactions` after every list load / refresh / backfill, so a new reply
+   * arriving via the stream push updates the affordance's count + avatars. A
+   * stream-switch race drops the stale result.
+   */
+  async function syncThreads(): Promise<void> {
+    const streamId = currentStreamId.value
+    const rootIds = rows.value.filter((m) => (m.reply_count ?? 0) > 0).map((m) => m.message_id)
+    if (rootIds.length === 0) {
+      participantsByRoot.value = new Map()
+      return
+    }
+    const client = await resolveWorkerClient()
+    const res = await client.query({ q: 'messages.threads', root_message_ids: rootIds })
+    if (streamId !== currentStreamId.value) return // switched streams mid-flight — drop
+    const next = new Map<string, ThreadParticipant[]>()
+    for (const t of res.threads) next.set(t.root_message_id, t.participants)
+    participantsByRoot.value = next
   }
 
   /**
@@ -149,6 +183,7 @@ export const useMessagesStore = defineStore('messages', () => {
     rows.value = res.messages.slice(0, limit).reverse()
     hasMore.value = res.has_more
     await syncReactions()
+    await syncThreads()
   }
 
   /**
@@ -175,6 +210,7 @@ export const useMessagesStore = defineStore('messages', () => {
       if (older.length > 0) rows.value = [...older, ...rows.value]
       hasMore.value = res.has_more || backfilled.has_more
       await syncReactions()
+      await syncThreads()
       return older.length
     } finally {
       loadingOlder.value = false

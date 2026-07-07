@@ -51,6 +51,7 @@ const emit = defineEmits<{
   'edit-submit': [messageId: string, text: string]
   'edit-cancel': []
   delete: [messageId: string]
+  'open-thread': [rootMessageId: string]
 }>()
 
 /** A flat render item: a day divider or a message. */
@@ -198,6 +199,7 @@ onBeforeUnmount(() => {
           @edit-submit="(id, text) => emit('edit-submit', id, text)"
           @edit-cancel="emit('edit-cancel')"
           @delete="emit('delete', $event)"
+          @open-thread="emit('open-thread', $event)"
         />
       </template>
     </div>

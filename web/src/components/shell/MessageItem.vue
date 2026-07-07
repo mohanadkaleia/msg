@@ -41,6 +41,13 @@ const emit = defineEmits<{
   'edit-cancel': []
   /** Soft-delete this (own) message (already confirmed in-UI). */
   delete: [messageId: string]
+  /**
+   * Open the thread pane targeting `rootMessageId` (ENG-103). Fired by the
+   * reply-count affordance (target = this root) and by "Reply in thread" (target =
+   * this message when it is a non-reply root, else its `thread_root_id` — a
+   * reply-of-reply is server-rejected, so a reply threads under its own root).
+   */
+  'open-thread': [rootMessageId: string]
 }>()
 
 /** Quick one-click reactions in the hover toolbar. Safe literal emoji. */
@@ -61,6 +68,22 @@ const canReact = computed(() => isSettled.value && !isDeleted.value)
 const canAct = computed(() => props.message.eventId !== undefined)
 const time = computed(() => formatTime(props.message.ts))
 const reactions = computed(() => props.message.reactions ?? [])
+/** Thread affordance (ENG-103): a root shows its reply count + participant avatars. */
+const replyCount = computed(() => props.message.reply_count ?? 0)
+const isThreadRoot = computed(() => replyCount.value > 0)
+const participants = computed(() => props.message.threadParticipants ?? [])
+/**
+ * The root a "Reply in thread" from THIS message threads under: a non-reply
+ * message is its own root; a reply threads under its `thread_root_id` (D7 rejects
+ * a reply-of-reply). Keeps the client from ever composing an illegal root.
+ */
+const threadTarget = computed(() => props.message.thread_root_id ?? props.message.message_id)
+
+/** First letter of a display name for the avatar chip (safe-interpolated). */
+function initial(name: string): string {
+  const c = name.trim().charAt(0)
+  return c ? c.toUpperCase() : '?'
+}
 
 const pickerOpen = ref(false)
 const confirmingDelete = ref(false)
@@ -219,6 +242,30 @@ function confirmDelete(): void {
         </button>
       </div>
 
+      <!-- Thread affordance (ENG-103): reply count + participant avatars on a
+           root. Click opens the thread pane. Avatars/names are safe-interpolated. -->
+      <button
+        v-if="isThreadRoot"
+        type="button"
+        class="mt-1 flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-indigo-600 hover:bg-slate-50"
+        data-testid="thread-affordance"
+        @click="emit('open-thread', props.message.message_id)"
+      >
+        <span class="flex -space-x-1">
+          <span
+            v-for="p in participants.slice(0, 3)"
+            :key="p.user_id"
+            class="flex h-4 w-4 items-center justify-center rounded-full border border-white bg-slate-300 text-[9px] font-semibold text-slate-700"
+            data-testid="thread-participant"
+            :title="p.display_name"
+            >{{ initial(p.display_name) }}</span
+          >
+        </span>
+        <span class="font-medium" data-testid="thread-reply-count"
+          >{{ replyCount }} {{ replyCount === 1 ? 'reply' : 'replies' }}</span
+        >
+      </button>
+
       <!-- Hover toolbar: quick reactions + emoji picker + (own) edit/delete. -->
       <div
         v-if="canReact && !props.editing"
@@ -264,6 +311,15 @@ function confirmDelete(): void {
             </button>
           </div>
         </div>
+        <button
+          type="button"
+          class="rounded px-1 text-xs text-slate-500 hover:bg-slate-100"
+          data-testid="reply-in-thread"
+          aria-label="Reply in thread"
+          @click="emit('open-thread', threadTarget)"
+        >
+          Reply
+        </button>
         <template v-if="canModify">
           <button
             type="button"

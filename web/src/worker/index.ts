@@ -42,6 +42,11 @@ export {
   type ReactionAggregate,
   type MessageReactions,
   type ReactionsListResult,
+  // ENG-103 thread reads (thread pane + reply affordance; zero-network projection).
+  type ThreadParticipant,
+  type ThreadSummary,
+  type ThreadsListResult,
+  type ThreadResult,
   // ENG-79 sync status surface (ENG-82 sync indicator + scrollback backfill).
   type SyncStatus,
   type SyncState,

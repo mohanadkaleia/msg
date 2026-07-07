@@ -16,6 +16,8 @@ import {
   listMessages,
   listReactions,
   listStreamsForSidebar,
+  listThread,
+  listThreadSummaries,
 } from './projection'
 import { SyncEngine } from './sync'
 import { browserWsFactory, type WsFactory } from './ws'
@@ -342,6 +344,13 @@ export class WorkerCore {
         return listDirectory(this.db)
       case 'messages.reactions':
         return listReactions(this.db, params.message_ids, this.auth.status().my_user_id ?? '')
+      case 'messages.thread':
+        return listThread(this.db, params.root_message_id, {
+          ...(params.before_seq !== undefined ? { beforeSeq: params.before_seq } : {}),
+          ...(params.limit !== undefined ? { limit: params.limit } : {}),
+        })
+      case 'messages.threads':
+        return listThreadSummaries(this.db, params.root_message_ids)
       default:
         // Exhaustive: a new QueryParams member without a case is a COMPILE error
         // here (params narrows to `never`). At runtime an out-of-contract `q`

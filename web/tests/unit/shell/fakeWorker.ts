@@ -21,6 +21,7 @@ import type {
   StreamBadge,
   StreamRow,
   SyncStatus,
+  ThreadParticipant,
   Topic,
   Unsubscribe,
   WorkerClient,
@@ -90,6 +91,8 @@ export class FakeWorker {
       format: opts.format ?? 'plain',
       mention_user_ids: opts.mention_user_ids ?? [],
       created_seq: opts.created_seq,
+      ...(opts.thread_root_id ? { thread_root_id: opts.thread_root_id } : {}),
+      ...(opts.reply_count !== undefined ? { reply_count: opts.reply_count } : {}),
       ...(opts.state ? { state: opts.state } : {}),
       ...(opts.error_code ? { error_code: opts.error_code } : {}),
     }
@@ -98,6 +101,52 @@ export class FakeWorker {
     list.sort((a, b) => a.created_seq - b.created_seq)
     this.messages.set(streamId, list)
     return row
+  }
+
+  /** Seed / inject a SETTLED reply (e.g. a live reply over WS) + recompute + publish. */
+  addReply(
+    streamId: string,
+    rootMessageId: string,
+    opts: Partial<MessageRow> & { created_seq: number },
+  ): MessageRow {
+    const row = this.addMessage(streamId, { ...opts, thread_root_id: rootMessageId })
+    this.recomputeThread(rootMessageId)
+    this.publishStream(streamId)
+    return row
+  }
+
+  /** Find a message by id across all streams. */
+  private findMessage(messageId: string): MessageRow | undefined {
+    return [...this.messages.values()].flat().find((m) => m.message_id === messageId)
+  }
+
+  /** A root's replies (any stream), by `thread_root_id`. */
+  private repliesOf(rootMessageId: string): MessageRow[] {
+    return [...this.messages.values()].flat().filter((m) => m.thread_root_id === rootMessageId)
+  }
+
+  /**
+   * Recompute a root's `reply_count` / `last_reply_seq` from its NON-DELETED,
+   * SETTLED replies (mirrors the projection's delete-aware, settled-only counter —
+   * a pending reply does not bump the counter).
+   */
+  private recomputeThread(rootMessageId: string): void {
+    const root = this.findMessage(rootMessageId)
+    if (!root) return
+    const replies = this.repliesOf(rootMessageId).filter((r) => !r.deleted && !r.state)
+    root.reply_count = replies.length
+    if (replies.length > 0) root.last_reply_seq = Math.max(...replies.map((r) => r.created_seq))
+    else delete root.last_reply_seq
+  }
+
+  /** A root's participants (distinct authors of its non-deleted settled replies). */
+  private threadParticipants(rootMessageId: string): ThreadParticipant[] {
+    const names = new Map(this.directory.users.map((u) => [u.user_id, u.display_name]))
+    const replies = this.repliesOf(rootMessageId).filter((r) => !r.deleted && !r.state)
+    const ids = [...new Set(replies.map((r) => r.author_user_id))]
+    return ids
+      .map((user_id) => ({ user_id, display_name: names.get(user_id) ?? user_id }))
+      .sort((a, b) => a.display_name.localeCompare(b.display_name))
   }
 
   /** Seed the @mention / #channel autocomplete source a `directory.list` returns. */
@@ -150,6 +199,8 @@ export class FakeWorker {
         delete row.error_code
         row.created_seq = serverSeq
         list.sort((a, b) => a.created_seq - b.created_seq)
+        // A settled reply now counts toward its root (settled-only counter).
+        if (row.thread_root_id) this.recomputeThread(row.thread_root_id)
         this.publishStream(streamId)
         return
       }
@@ -219,6 +270,33 @@ export class FakeWorker {
       })
       return Promise.resolve({ messages } as QueryResult<Q>)
     }
+    if (params.q === 'messages.thread') {
+      const root = this.findMessage(params.root_message_id) ?? null
+      const all = this.repliesOf(params.root_message_id)
+      const limit = params.limit ?? 50
+      const desc = [...all].sort((a, b) => b.created_seq - a.created_seq)
+      const filtered =
+        params.before_seq !== undefined
+          ? desc.filter((m) => m.created_seq < params.before_seq!)
+          : desc
+      const page = filtered.slice(0, limit + 1)
+      const has_more = page.length > limit
+      const replies = (has_more ? page.slice(0, limit) : page).reverse()
+      return Promise.resolve({
+        root,
+        replies,
+        has_more,
+        participants: this.threadParticipants(params.root_message_id),
+      } as QueryResult<Q>)
+    }
+    if (params.q === 'messages.threads') {
+      const threads = params.root_message_ids.map((root_message_id) => ({
+        root_message_id,
+        reply_count: this.findMessage(root_message_id)?.reply_count ?? 0,
+        participants: this.threadParticipants(root_message_id),
+      }))
+      return Promise.resolve({ threads } as QueryResult<Q>)
+    }
     // messages.list — newest-first, paginated by created_seq, `limit+1` has_more.
     const list = this.messages.get(params.stream_id) ?? []
     const limit = params.limit ?? 50
@@ -247,6 +325,7 @@ export class FakeWorker {
         text: params.text,
         created_seq: createdSeq,
         mention_user_ids: params.mentions ?? [],
+        ...(params.thread_root_id ? { thread_root_id: params.thread_root_id } : {}),
         state: 'pending',
       })
       this.publishStream(params.stream_id)
@@ -316,6 +395,8 @@ export class FakeWorker {
       if (row) {
         row.deleted = true
         row.text = ''
+        // A deleted reply no longer counts toward its root.
+        if (row.thread_root_id) this.recomputeThread(row.thread_root_id)
         return
       }
     }
