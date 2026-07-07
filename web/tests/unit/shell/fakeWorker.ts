@@ -222,9 +222,18 @@ export class FakeWorker {
       this.retrySpy(params.event_id)
       return Promise.resolve({ ok: true } as MutateResult<M>)
     }
-    // outbox.delete
-    this.deleteSpy(params.event_id)
-    return Promise.resolve({ ok: true } as MutateResult<M>)
+    if (params.m === 'outbox.delete') {
+      this.deleteSpy(params.event_id)
+      return Promise.resolve({ ok: true } as MutateResult<M>)
+    }
+    // ENG-100 M3 optimistic ops (outbox.react / outbox.edit / outbox.remove) —
+    // the fake just echoes a SendResult so the shell round-trips; the real
+    // projection effects are covered by the worker suites.
+    return Promise.resolve({
+      message_id: params.message_id,
+      event_id: newEventId(),
+      created_seq: Date.now(),
+    } as MutateResult<M>)
   }
 
   private subscribe = <T extends Topic>(

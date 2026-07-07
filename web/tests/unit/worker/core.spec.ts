@@ -96,7 +96,10 @@ describe.each([
       t: 'res',
       id: 'm1',
       ok: false,
-      error: { code: 'not_authenticated', detail: 'outbox.send requires an authenticated session' },
+      error: {
+        code: 'not_authenticated',
+        detail: 'a durable mutation requires an authenticated session',
+      },
     })
     await db.close()
   })

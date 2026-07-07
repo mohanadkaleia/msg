@@ -13,19 +13,31 @@ import { PROJECTION_VERSION, type MsgDb } from '../../../src/worker/types'
 import { fakeIdbOptions, makeFakeMsgDB, stubEnvelope } from './helpers'
 
 describe('MsgDB schema (§5.2, verbatim)', () => {
-  it('declares the seven tables with the load-bearing indexes', async () => {
+  it('declares the schema tables with the load-bearing indexes', async () => {
     const db = makeFakeMsgDB()
     await db.open()
     try {
+      // ENG-100 (M3) added the `reactions` + `thread_participants` derived sets.
       expect(db.tables.map((t) => t.name).sort()).toEqual([
         'cursors',
         'events',
         'messages',
         'meta',
         'outbox',
+        'reactions',
         'read_state',
         'streams',
+        'thread_participants',
       ])
+
+      // reactions: compound membership pk + a message_id secondary index.
+      expect(db.reactions.schema.primKey.keyPath).toEqual(['message_id', 'author_user_id', 'emoji'])
+      expect(db.reactions.schema.indexes.map((i) => i.keyPath)).toContainEqual('message_id')
+      // thread_participants: compound pk + a root_message_id secondary index.
+      expect(db.thread_participants.schema.primKey.keyPath).toEqual(['root_message_id', 'user_id'])
+      expect(db.thread_participants.schema.indexes.map((i) => i.keyPath)).toContainEqual(
+        'root_message_id',
+      )
 
       // events: compound primary key + secondary indexes.
       expect(db.events.schema.primKey.keyPath).toEqual(['stream_id', 'server_sequence'])

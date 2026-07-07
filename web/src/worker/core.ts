@@ -304,6 +304,12 @@ export class WorkerCore {
     switch (params.m) {
       case 'outbox.send':
         return this.outbox.send(params)
+      case 'outbox.react':
+        return this.outbox.react(params)
+      case 'outbox.edit':
+        return this.outbox.edit(params)
+      case 'outbox.remove':
+        return this.outbox.remove(params)
       case 'outbox.retry':
         return this.outbox.retry(params.event_id)
       case 'outbox.delete':

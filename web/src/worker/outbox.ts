@@ -16,11 +16,27 @@
 // the shared http client's worker-side `Authorization` header and never crosses
 // the RPC surface or a log.
 
-import { buildMessageCreatedBody, finalizeEnvelope } from '../core'
+import {
+  buildMessageCreatedBody,
+  buildMessageDeletedBody,
+  buildMessageEditedBody,
+  buildReactionAddedBody,
+  buildReactionRemovedBody,
+  finalizeEnvelope,
+  type Body,
+} from '../core'
 
 import { backoffDelay, OUTBOX_BASE_MS, OUTBOX_CAP_MS } from './backoff'
 import type { HttpClient } from './http'
-import { applyEventsToProjection, applyMessageCreatedV1 } from './projection'
+import {
+  applyEventsToProjection,
+  applyMessageCreatedV1,
+  applyMessageDeleted,
+  applyPendingEdit,
+  applyReactionAdded,
+  applyReactionRemoved,
+  recomputeThreadRoot,
+} from './projection'
 import type { TimerId } from './sync'
 import {
   META_DEVICE_ID,
@@ -122,16 +138,11 @@ export class Outbox {
    * optimistic row. Throws `not_authenticated` (coded) if there is no session.
    */
   async send(params: Extract<MutateParams, { m: 'outbox.send' }>): Promise<SendResult> {
-    const status = this.authStatus()
-    if (!status.authenticated || !status.my_user_id || !status.workspace_id) {
-      throw new RpcCodedError('not_authenticated', 'outbox.send requires an authenticated session')
-    }
-    const deviceId = (await this.db.metaGet<string>(META_DEVICE_ID)) ?? ''
-
+    const { my_user_id, workspace_id, deviceId } = await this.identity()
     const body = buildMessageCreatedBody({
-      workspace_id: status.workspace_id,
+      workspace_id,
       stream_id: params.stream_id,
-      author_user_id: status.my_user_id,
+      author_user_id: my_user_id,
       author_device_id: deviceId,
       client_created_at: new Date(this.now()).toISOString(),
       text: params.text,
@@ -140,8 +151,87 @@ export class Outbox {
       ...(params.mentions !== undefined ? { mentions: params.mentions } : {}),
       ...(params.file_ids !== undefined ? { file_ids: params.file_ids } : {}),
     })
-    const { body: finalBody, event_hash } = await finalizeEnvelope(body)
+    return this.enqueue(body)
+  }
 
+  /**
+   * Optimistic reaction (ENG-100). Builds a `reaction.added`/`reaction.removed`
+   * v1 event (the reactor is the worker-side `my_user_id`), applies the membership
+   * overlay instantly, and settles under the hash-bound stream_id. The `message_id`
+   * denormalized onto the outbox row is the REACTION TARGET.
+   */
+  async react(params: Extract<MutateParams, { m: 'outbox.react' }>): Promise<SendResult> {
+    const { my_user_id, workspace_id, deviceId } = await this.identity()
+    const opts = {
+      workspace_id,
+      stream_id: params.stream_id,
+      author_user_id: my_user_id,
+      author_device_id: deviceId,
+      client_created_at: new Date(this.now()).toISOString(),
+      message_id: params.message_id,
+      emoji: params.emoji,
+    }
+    const body = params.remove ? buildReactionRemovedBody(opts) : buildReactionAddedBody(opts)
+    return this.enqueue(body)
+  }
+
+  /** Optimistic edit (ENG-100): a `message.edited` v1 event; overlay forces text/format. */
+  async edit(params: Extract<MutateParams, { m: 'outbox.edit' }>): Promise<SendResult> {
+    const { my_user_id, workspace_id, deviceId } = await this.identity()
+    const body = buildMessageEditedBody({
+      workspace_id,
+      stream_id: params.stream_id,
+      author_user_id: my_user_id,
+      author_device_id: deviceId,
+      client_created_at: new Date(this.now()).toISOString(),
+      message_id: params.message_id,
+      text: params.text,
+      ...(params.format !== undefined ? { format: params.format } : {}),
+    })
+    return this.enqueue(body)
+  }
+
+  /** Optimistic delete (ENG-100): a `message.deleted` v1 event; overlay tombstones + redacts. */
+  async remove(params: Extract<MutateParams, { m: 'outbox.remove' }>): Promise<SendResult> {
+    const { my_user_id, workspace_id, deviceId } = await this.identity()
+    const body = buildMessageDeletedBody({
+      workspace_id,
+      stream_id: params.stream_id,
+      author_user_id: my_user_id,
+      author_device_id: deviceId,
+      client_created_at: new Date(this.now()).toISOString(),
+      message_id: params.message_id,
+    })
+    return this.enqueue(body)
+  }
+
+  /** Worker-side identity snapshot for the send arms (never from a tab). */
+  private async identity(): Promise<{
+    my_user_id: string
+    workspace_id: string
+    deviceId: string
+  }> {
+    const status = this.authStatus()
+    if (!status.authenticated || !status.my_user_id || !status.workspace_id) {
+      throw new RpcCodedError(
+        'not_authenticated',
+        'a durable mutation requires an authenticated session',
+      )
+    }
+    const deviceId = (await this.db.metaGet<string>(META_DEVICE_ID)) ?? ''
+    return { my_user_id: status.my_user_id, workspace_id: status.workspace_id, deviceId }
+  }
+
+  /**
+   * The shared send tail for every optimistic op (ENG-81 machinery, generalized by
+   * ENG-100): finalize (hash) the body, persist the durable `outbox` row, apply the
+   * PENDING projection overlay (renders instantly — a message row for `message.created`,
+   * a membership for reactions, an in-place text/tombstone for edit/delete), publish,
+   * and kick the drain. `message_id` is the payload's message id (the created message,
+   * or the reaction/edit/delete TARGET).
+   */
+  private async enqueue(body: Body): Promise<SendResult> {
+    const { body: finalBody, event_hash } = await finalizeEnvelope(body)
     const createdAt = this.now()
     const messageId = (finalBody.payload as unknown as { message_id: string }).message_id
     const outboxRow: OutboxRow = {
@@ -154,29 +244,20 @@ export class Outbox {
       state: 'queued',
     }
     await this.db.putOutbox([outboxRow])
-
-    const pending = buildPendingMessageRow(outboxRow)
-    if (pending) await this.db.putMessages([pending])
+    await applyPendingOutboxRow(this.db, outboxRow)
     this.publishStream(outboxRow.stream_id)
-
     this.drain()
-
-    return {
-      message_id: outboxRow.message_id,
-      event_id: outboxRow.event_id,
-      created_seq: createdAt,
-    }
+    return { message_id: messageId, event_id: outboxRow.event_id, created_seq: createdAt }
   }
 
-  /** Re-queue a `rejected` send: clear the failed marker + kick the drain. */
+  /** Re-queue a `rejected` send: clear the failed marker, re-apply the overlay, kick the drain. */
   async retry(eventId: string): Promise<{ ok: true }> {
     const row = await this.db.getOutbox(eventId)
     if (row && row.state === 'rejected') {
       const requeued: OutboxRow = { ...row, state: 'queued' }
       delete requeued.error_code
       await this.db.putOutbox([requeued])
-      const pending = buildPendingMessageRow(requeued)
-      if (pending) await this.db.putMessages([pending])
+      await applyPendingOutboxRow(this.db, requeued)
       this.publishStream(requeued.stream_id)
       this.drain()
     }
@@ -184,16 +265,26 @@ export class Outbox {
   }
 
   /**
-   * Drop a queued/failed send: delete the outbox row and — only if it is NOT yet
-   * settled (no matching `events` row) — its projection row. A settled event
-   * keeps living in `events`; only the pending/failed echo is removed.
+   * Drop a queued/failed send + REVERT its optimistic overlay. For a
+   * `message.created` this deletes the (unsettled) pending row. For an M3 op
+   * (react/edit/delete) the overlay MUTATED an existing message/reaction, so we
+   * REVERT by recomputing the target's derived state from the settled `events`
+   * cache + any REMAINING pending overlays for it (the "recompute from state"
+   * discipline). A settled event keeps living in `events`; only the pending echo
+   * is undone.
    */
   async delete(eventId: string): Promise<{ ok: true }> {
     const row = await this.db.getOutbox(eventId)
     await this.db.deleteOutbox(eventId)
     if (row) {
       const settled = await this.db.hasEvent(eventId)
-      if (!settled) await this.db.deleteMessage(row.message_id)
+      const type = (row.body as { type?: unknown }).type
+      if (type === 'message.created') {
+        if (!settled) await this.db.deleteMessage(row.message_id)
+      } else {
+        // An M3 op mutated existing state — recompute the target from scratch.
+        await recomputeMessageProjection(this.db, row.stream_id, row.message_id)
+      }
       this.publishStream(row.stream_id)
     }
     return { ok: true }
@@ -311,8 +402,11 @@ export class Outbox {
   private async reject(rej: RejectedEvent, row: OutboxRow): Promise<void> {
     const parked: OutboxRow = { ...row, state: 'rejected', error_code: rej.code }
     await this.db.putOutbox([parked])
-    const failed = buildPendingMessageRow(parked)
-    if (failed) await this.db.putMessages([failed])
+    // Re-apply the overlay in its parked form: for `message.created` this surfaces
+    // the `failed` marker + error_code on the projection row; for an M3 op the
+    // effect is already applied and stays visible (idempotent re-apply) — parked,
+    // not reverted, so the user can retry or explicitly discard (outbox.delete).
+    await applyPendingOutboxRow(this.db, parked)
     this.publishStream(parked.stream_id)
   }
 
@@ -364,19 +458,102 @@ export function buildPendingMessageRow(row: OutboxRow): MessageRow | null {
 }
 
 /**
- * Rebuild step 2 (§8): re-derive still-pending/failed projection rows from the
- * `outbox` source table. An outbox row whose `event_id` is already in `events`
- * (crash between `putEvents` + `deleteOutbox`) is SKIPPED — the settled row from
- * the events replay already won, exactly as in the incremental state. Uses the
- * same `buildPendingMessageRow` as the incremental send path, so the two agree.
+ * Apply ONE outbox row's optimistic PENDING OVERLAY (ENG-100 generalization of
+ * ENG-81's `buildPendingMessageRow`). Dispatched on the event `type`:
+ *   • `message.created`  → the pending/failed `MessageRow` echo (renders instantly);
+ *   • `reaction.added/removed` → the membership set-insert/-delete (IDENTICAL to the
+ *     settled handler — a reaction has no seq/LWW, so settle is a pure no-op);
+ *   • `message.edited`   → force `text`/`format` (leaving `edited_seq` so the settled
+ *     edit's real seq wins the LWW cleanly on settle);
+ *   • `message.deleted`  → tombstone + redact + delete-aware thread recompute.
+ *
+ * The SAME function runs on the incremental send/reject/retry path AND on the
+ * rebuild-step-2 overlay, so `incremental ≡ rebuild` holds by construction:
+ * `state = f(settled events) + g(pending outbox)` with an identical `g` both ways.
+ * A junk body is a skip (never a crash).
+ */
+export async function applyPendingOutboxRow(db: MsgDb, row: OutboxRow): Promise<void> {
+  const body = row.body as unknown as EventBody
+  switch (body.type) {
+    case 'message.created': {
+      const pending = buildPendingMessageRow(row)
+      if (pending) await db.putMessages([pending])
+      return
+    }
+    case 'reaction.added':
+      await applyReactionAdded(db, body)
+      return
+    case 'reaction.removed':
+      await applyReactionRemoved(db, body)
+      return
+    case 'message.edited':
+      await applyPendingEdit(db, body)
+      return
+    case 'message.deleted':
+      await applyMessageDeleted(db, body)
+      return
+    default:
+      return // unknown type → skip (D9)
+  }
+}
+
+/**
+ * Rebuild step 2 (§8): re-derive the still-pending overlay from the `outbox` source
+ * table, replayed in `created_at` order (so multiple pending edits of one message
+ * apply last-wins, matching the incremental order). An outbox row whose `event_id`
+ * is already in `events` (crash between `putEvents` + `deleteOutbox`) is SKIPPED —
+ * the settled event replay already applied its effect. Uses the SAME
+ * {@link applyPendingOutboxRow} as the incremental path, so the two agree.
  */
 export async function applyOutboxToProjection(db: MsgDb): Promise<void> {
-  const rows = await db.listOutbox()
-  const derived: MessageRow[] = []
+  const rows = [...(await db.listOutbox())].sort((a, b) => a.created_at - b.created_at)
   for (const row of rows) {
     if (await db.hasEvent(row.event_id)) continue // already settled — skip
-    const pending = buildPendingMessageRow(row)
-    if (pending) derived.push(pending)
+    await applyPendingOutboxRow(db, row)
   }
-  if (derived.length > 0) await db.putMessages(derived)
+}
+
+/**
+ * Recompute a single message's derived projection (row + reactions + its thread
+ * state) from the settled `events` cache + any REMAINING pending overlays — the
+ * "recompute from state" revert used when an M3 optimistic op is discarded
+ * (outbox.delete). Wipes the target's derived state, replays only the settled
+ * events REFERENCING it (create/edit/delete/reactions, ascending server_sequence)
+ * through the real handlers, then re-applies the remaining pending overlays for it.
+ * Because it reuses the exact incremental handlers, the recomputed state equals a
+ * full rebuild's for that message.
+ */
+export async function recomputeMessageProjection(
+  db: MsgDb,
+  streamId: string,
+  messageId: string,
+): Promise<void> {
+  const old = await db.getMessage(messageId)
+  // Wipe the target's derived state (row + its reactions).
+  await db.deleteMessage(messageId)
+  for (const r of await db.getReactionsForMessage(messageId)) {
+    await db.deleteReaction(r.message_id, r.author_user_id, r.emoji)
+  }
+  // Replay the settled events that reference this message, in server order.
+  const events = await db.getEventsForStream(streamId)
+  const relevant = events.filter((e) => {
+    const p = e.envelope?.body?.payload
+    return (
+      p !== null &&
+      typeof p === 'object' &&
+      (p as { message_id?: unknown }).message_id === messageId
+    )
+  })
+  await applyEventsToProjection(db, streamId, relevant)
+  // Re-apply the still-pending overlays for this message (created_at order).
+  const pending = [...(await db.listOutbox())]
+    .filter((o) => o.message_id === messageId)
+    .sort((a, b) => a.created_at - b.created_at)
+  for (const o of pending) {
+    if (await db.hasEvent(o.event_id)) continue
+    await applyPendingOutboxRow(db, o)
+  }
+  // Keep the thread counters consistent if this message participates in a thread.
+  if (old?.thread_root_id !== undefined) await recomputeThreadRoot(db, old.thread_root_id)
+  await recomputeThreadRoot(db, messageId)
 }

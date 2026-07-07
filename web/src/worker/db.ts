@@ -20,9 +20,11 @@ import {
   type MetaRow,
   type MsgDb,
   type OutboxRow,
+  type ReactionRow,
   type ReadStateRow,
   type StreamRow,
   type TableName,
+  type ThreadParticipantRow,
 } from './types'
 
 /** Guard against engines that hang the IndexedDB open (D-5). */
@@ -36,6 +38,8 @@ const OPEN_TIMEOUT_MS = 3000
 export class MsgDB extends Dexie {
   events!: Table<EventRow, [string, number]>
   messages!: Table<MessageRow, string>
+  reactions!: Table<ReactionRow, [string, string, string]>
+  thread_participants!: Table<ThreadParticipantRow, [string, string]>
   streams!: Table<StreamRow, string>
   cursors!: Table<CursorRow, string>
   outbox!: Table<OutboxRow, string>
@@ -52,6 +56,16 @@ export class MsgDB extends Dexie {
       outbox: 'event_id, created_at',
       read_state: 'stream_id',
       meta: 'key',
+    })
+    // ENG-100 (M3): the `reactions` set (row per (message_id, author_user_id,
+    // emoji) — `emoji` an exact-byte key component) + the `thread_participants`
+    // set (row per (root_message_id, user_id)). Additive tables only; the
+    // existing indexes are unchanged (Dexie carries them forward), so no
+    // `.upgrade()` data migration is needed — a shape/handler change is handled
+    // by the PROJECTION_VERSION bump (drop + rebuild derived tables).
+    this.version(2).stores({
+      reactions: '[message_id+author_user_id+emoji], message_id',
+      thread_participants: '[root_message_id+user_id], root_message_id',
     })
   }
 }
@@ -145,6 +159,40 @@ export class DexieDb implements MsgDb {
     await this.db.messages.delete(messageId)
   }
 
+  // -- ENG-100 reactions + thread participants -----------------------------
+
+  async putReactions(rows: readonly ReactionRow[]): Promise<void> {
+    await this.db.reactions.bulkPut([...rows])
+  }
+
+  async deleteReaction(messageId: string, authorUserId: string, emoji: string): Promise<void> {
+    await this.db.reactions.delete([messageId, authorUserId, emoji])
+  }
+
+  async getReactionsForMessage(messageId: string): Promise<ReactionRow[]> {
+    return this.db.reactions.where('message_id').equals(messageId).toArray()
+  }
+
+  async getAllReactions(): Promise<ReactionRow[]> {
+    return this.db.reactions.toArray()
+  }
+
+  async putThreadParticipants(rows: readonly ThreadParticipantRow[]): Promise<void> {
+    await this.db.thread_participants.bulkPut([...rows])
+  }
+
+  async deleteThreadParticipantsForRoot(rootMessageId: string): Promise<void> {
+    await this.db.thread_participants.where('root_message_id').equals(rootMessageId).delete()
+  }
+
+  async getAllThreadParticipants(): Promise<ThreadParticipantRow[]> {
+    return this.db.thread_participants.toArray()
+  }
+
+  async listRepliesByRoot(rootMessageId: string): Promise<MessageRow[]> {
+    return this.db.messages.where('thread_root_id').equals(rootMessageId).toArray()
+  }
+
   async putStreams(rows: readonly StreamRow[]): Promise<void> {
     await this.db.streams.bulkPut([...rows])
   }
@@ -160,10 +208,19 @@ export class DexieDb implements MsgDb {
   async clearDerivedTables(): Promise<void> {
     await this.db.transaction(
       'rw',
-      [this.db.messages, this.db.streams, this.db.cursors, this.db.read_state],
+      [
+        this.db.messages,
+        this.db.reactions,
+        this.db.thread_participants,
+        this.db.streams,
+        this.db.cursors,
+        this.db.read_state,
+      ],
       async () => {
         await Promise.all([
           this.db.messages.clear(),
+          this.db.reactions.clear(),
+          this.db.thread_participants.clear(),
           this.db.streams.clear(),
           this.db.cursors.clear(),
           this.db.read_state.clear(),
@@ -234,6 +291,10 @@ export class DexieDb implements MsgDb {
         return this.db.events.count()
       case 'messages':
         return this.db.messages.count()
+      case 'reactions':
+        return this.db.reactions.count()
+      case 'thread_participants':
+        return this.db.thread_participants.count()
       case 'streams':
         return this.db.streams.count()
       case 'cursors':
@@ -267,12 +328,24 @@ export class MemoryDb implements MsgDb {
   private readonly eventsMap = new Map<string, EventRow>()
   private readonly outboxMap = new Map<string, OutboxRow>()
   private readonly messagesMap = new Map<string, MessageRow>()
+  private readonly reactionsMap = new Map<string, ReactionRow>()
+  private readonly participantsMap = new Map<string, ThreadParticipantRow>()
   private readonly streamsMap = new Map<string, StreamRow>()
   private readonly cursorsMap = new Map<string, CursorRow>()
   private readonly readStateMap = new Map<string, ReadStateRow>()
 
   private static eventKey(streamId: string, seq: number): string {
     return `${streamId}::${seq}`
+  }
+
+  // JSON-array key: collision-free even when `emoji` contains any byte
+  // (separators, control chars) — the emoji domain is opaque bytes.
+  private static reactionKey(messageId: string, authorUserId: string, emoji: string): string {
+    return JSON.stringify([messageId, authorUserId, emoji])
+  }
+
+  private static participantKey(rootMessageId: string, userId: string): string {
+    return JSON.stringify([rootMessageId, userId])
   }
 
   metaGet<T = unknown>(key: string): Promise<T | undefined> {
@@ -368,6 +441,54 @@ export class MemoryDb implements MsgDb {
     return Promise.resolve()
   }
 
+  // -- ENG-100 reactions + thread participants -----------------------------
+
+  putReactions(rows: readonly ReactionRow[]): Promise<void> {
+    for (const r of rows) {
+      this.reactionsMap.set(MemoryDb.reactionKey(r.message_id, r.author_user_id, r.emoji), r)
+    }
+    return Promise.resolve()
+  }
+
+  deleteReaction(messageId: string, authorUserId: string, emoji: string): Promise<void> {
+    this.reactionsMap.delete(MemoryDb.reactionKey(messageId, authorUserId, emoji))
+    return Promise.resolve()
+  }
+
+  getReactionsForMessage(messageId: string): Promise<ReactionRow[]> {
+    return Promise.resolve(
+      [...this.reactionsMap.values()].filter((r) => r.message_id === messageId),
+    )
+  }
+
+  getAllReactions(): Promise<ReactionRow[]> {
+    return Promise.resolve([...this.reactionsMap.values()])
+  }
+
+  putThreadParticipants(rows: readonly ThreadParticipantRow[]): Promise<void> {
+    for (const r of rows) {
+      this.participantsMap.set(MemoryDb.participantKey(r.root_message_id, r.user_id), r)
+    }
+    return Promise.resolve()
+  }
+
+  deleteThreadParticipantsForRoot(rootMessageId: string): Promise<void> {
+    for (const [key, r] of this.participantsMap) {
+      if (r.root_message_id === rootMessageId) this.participantsMap.delete(key)
+    }
+    return Promise.resolve()
+  }
+
+  getAllThreadParticipants(): Promise<ThreadParticipantRow[]> {
+    return Promise.resolve([...this.participantsMap.values()])
+  }
+
+  listRepliesByRoot(rootMessageId: string): Promise<MessageRow[]> {
+    return Promise.resolve(
+      [...this.messagesMap.values()].filter((m) => m.thread_root_id === rootMessageId),
+    )
+  }
+
   putStreams(rows: readonly StreamRow[]): Promise<void> {
     for (const row of rows) this.streamsMap.set(row.stream_id, row)
     return Promise.resolve()
@@ -385,6 +506,8 @@ export class MemoryDb implements MsgDb {
 
   clearDerivedTables(): Promise<void> {
     this.messagesMap.clear()
+    this.reactionsMap.clear()
+    this.participantsMap.clear()
     this.streamsMap.clear()
     this.cursorsMap.clear()
     this.readStateMap.clear()
@@ -450,6 +573,10 @@ export class MemoryDb implements MsgDb {
         return Promise.resolve(this.eventsMap.size)
       case 'messages':
         return Promise.resolve(this.messagesMap.size)
+      case 'reactions':
+        return Promise.resolve(this.reactionsMap.size)
+      case 'thread_participants':
+        return Promise.resolve(this.participantsMap.size)
       case 'streams':
         return Promise.resolve(this.streamsMap.size)
       case 'cursors':

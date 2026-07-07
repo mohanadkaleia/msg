@@ -30,7 +30,14 @@ export {
 } from './ids'
 export type { ParsedId } from './ids'
 
-export { buildMessageCreatedBody, finalizeEnvelope } from './envelope'
+export {
+  buildMessageCreatedBody,
+  buildReactionAddedBody,
+  buildReactionRemovedBody,
+  buildMessageEditedBody,
+  buildMessageDeletedBody,
+  finalizeEnvelope,
+} from './envelope'
 export type { Body, Envelope, BuildMessageCreatedBodyOptions } from './envelope'
 
 export {

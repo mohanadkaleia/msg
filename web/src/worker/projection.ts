@@ -106,11 +106,202 @@ export function applyMessageCreatedV1(event: EventRow, body: EventBody): Message
   return row
 }
 
+// ---------------------------------------------------------------------------
+// M3 stateful handlers (ENG-100). Unlike `message.created` (a PURE row builder),
+// reactions/edits/deletes/threads read + write the projection, so they run
+// against `db` inside `applyEventsToProjection`. Each MIRRORS the server's
+// `apply.py` handler so client rebuild ≡ incremental AND client ≡ server on the
+// shared fields. Every handler is a D9-safe no-op on a malformed/missing target
+// (skip, never throw) and idempotent (re-apply is a no-op) so replay is safe.
+// ---------------------------------------------------------------------------
+
+/** Extract a non-empty-string field from a payload, or `undefined`. */
+function strField(payload: unknown, key: string): string | undefined {
+  if (payload === null || typeof payload !== 'object') return undefined
+  const v = (payload as Record<string, unknown>)[key]
+  return typeof v === 'string' && v.length > 0 ? v : undefined
+}
+
 /**
- * Incrementally apply a per-stream batch of events into `messages` — the seam
- * ENG-79 calls after it has written the events into `events` and advanced
- * `cursors`. Idempotent (upsert by `message_id`), D9-safe (skip, never throw),
- * writes ONLY the `messages` table.
+ * `reaction.added` v1 — idempotent set-insert of the membership
+ * `(message_id, author_user_id, emoji)` (mirrors `_apply_reaction_added`). The
+ * reactor is the ENVELOPE `author_user_id` (not the payload); `emoji` is an
+ * exact-byte key (opaque — no grapheme normalization). Already-present membership
+ * is a no-op, so the derived count is a pure function of the log.
+ */
+export async function applyReactionAdded(db: MsgDb, body: EventBody): Promise<void> {
+  const messageId = strField(body.payload, 'message_id')
+  const emoji = strField(body.payload, 'emoji')
+  const author = typeof body.author_user_id === 'string' ? body.author_user_id : ''
+  if (messageId === undefined || emoji === undefined || author === '') return // D9 skip
+  await db.putReactions([{ message_id: messageId, author_user_id: author, emoji }])
+}
+
+/**
+ * `reaction.removed` v1 — idempotent set-delete of the membership (mirrors
+ * `_apply_reaction_removed`). Removing an absent reaction deletes nothing. Exported
+ * so the optimistic outbox overlay applies the SAME effect (a pending reaction is
+ * identical to its eventual settled one — no seq/LWW — so settle is a no-op).
+ */
+export async function applyReactionRemoved(db: MsgDb, body: EventBody): Promise<void> {
+  const messageId = strField(body.payload, 'message_id')
+  const emoji = strField(body.payload, 'emoji')
+  const author = typeof body.author_user_id === 'string' ? body.author_user_id : ''
+  if (messageId === undefined || emoji === undefined || author === '') return // D9 skip
+  await db.deleteReaction(messageId, author, emoji)
+}
+
+/**
+ * `message.edited` v1 — LWW by `server_sequence` (mirrors `_apply_message_edited`).
+ * Applies `text`+`format`+`edited_seq` only when this event out-ranks the current
+ * state — `server_sequence > coalesce(edited_seq, created_seq)` — AND the row is
+ * NOT deleted (delete is terminal: an edit after a delete, any order, is skipped
+ * so it never un-deletes/un-redacts). The single guard makes the apply
+ * order-independent (converges to the highest-seq edit). Unlike the server the
+ * CLIENT also stores `format` (the payload carries it). A missing/older/deleted
+ * target is a safe no-op.
+ */
+async function applyMessageEdited(db: MsgDb, event: EventRow, body: EventBody): Promise<void> {
+  const messageId = strField(body.payload, 'message_id')
+  if (messageId === undefined) return // D9 skip
+  const existing = await db.getMessage(messageId)
+  if (existing === undefined || existing.deleted === true) return // no row / terminal
+  const floor = existing.edited_seq ?? existing.created_seq
+  if (event.server_sequence <= floor) return // LWW: older/equal → skip
+  const p = body.payload as Record<string, unknown>
+  const updated: MessageRow = {
+    ...existing,
+    text: typeof p.text === 'string' ? p.text : '',
+    format: p.format === 'plain' ? 'plain' : 'markdown',
+    edited_seq: event.server_sequence,
+  }
+  await db.putMessages([updated])
+}
+
+/**
+ * OPTIMISTIC (pending-overlay) edit (ENG-100). Unlike the settled
+ * {@link applyMessageEdited}, this has NO `server_sequence`, so it force-applies
+ * `text`+`format` and DELIBERATELY LEAVES `edited_seq` untouched — the eventual
+ * settled edit (real seq) then wins the LWW guard cleanly (real_seq >
+ * coalesce(edited_seq, created_seq)) and stamps the real `edited_seq`, converging
+ * to one effect. Guarded on `deleted` (an optimistic edit of a tombstoned message
+ * is a no-op, same terminal rule). A missing target is a no-op. Applied identically
+ * by the incremental send path AND the rebuild-step-2 overlay, so the two agree.
+ */
+export async function applyPendingEdit(db: MsgDb, body: EventBody): Promise<void> {
+  const messageId = strField(body.payload, 'message_id')
+  if (messageId === undefined) return
+  const existing = await db.getMessage(messageId)
+  if (existing === undefined || existing.deleted === true) return
+  const p = body.payload as Record<string, unknown>
+  const updated: MessageRow = {
+    ...existing,
+    text: typeof p.text === 'string' ? p.text : '',
+    format: p.format === 'plain' ? 'plain' : 'markdown',
+  }
+  await db.putMessages([updated])
+}
+
+/**
+ * `message.deleted` v1 — tombstone + content REDACTION (mirrors
+ * `_apply_message_deleted`). Sets `deleted=true` AND `text=''` UNCONDITIONALLY
+ * (delete always wins over any edit, any replay order; delete-after-delete
+ * re-sets the same tombstone). The projected content is redacted so the client
+ * cannot render/serve deleted text — the raw event still lives in the `events`
+ * cache (event-sourcing reality; ENG-111 owns cache redaction). When the deleted
+ * message was itself a REPLY, recompute the root's thread state (delete-side of
+ * the reply counter). A delete of a message with no projected row is a no-op.
+ */
+export async function applyMessageDeleted(db: MsgDb, body: EventBody): Promise<void> {
+  const messageId = strField(body.payload, 'message_id')
+  if (messageId === undefined) return // D9 skip
+  const existing = await db.getMessage(messageId)
+  if (existing === undefined) return // no row → no-op
+  const updated: MessageRow = { ...existing, deleted: true, text: '' }
+  await db.putMessages([updated])
+  if (existing.thread_root_id !== undefined) {
+    await recomputeThreadRoot(db, existing.thread_root_id)
+  }
+}
+
+/**
+ * RECOMPUTE a thread root's `reply_count` / `last_reply_seq` / participants from
+ * the CURRENT `messages` table (mirrors `_recompute_thread_root`, D7). Given a
+ * `rootMessageId` it derives ALL thread state from that root's replies that are
+ * NOT deleted AND SETTLED (`state === undefined` — a pending/failed reply does
+ * not bump a settled counter, so incremental and rebuild-step-2 agree):
+ *   • `reply_count`    = count of those replies (on the root's own row);
+ *   • `last_reply_seq` = max `created_seq` among them (absent when none);
+ *   • participants     = their DISTINCT `author_user_id` set (sorted; delete-all-
+ *     then-insert so it is a pure function of the current reply set).
+ *
+ * WHY RECOMPUTE not `+1`: a reply can be deleted after being counted, so a blind
+ * increment is not invertible. Recomputing makes every value a pure function of
+ * the `messages` table (whose state is itself rebuild ≡ incremental), triggered on
+ * exactly the events that change a root's non-deleted-reply set (reply create /
+ * reply delete) — so the last such event leaves the derived state equal to a full
+ * replay's, in any order.
+ */
+export async function recomputeThreadRoot(db: MsgDb, rootMessageId: string): Promise<void> {
+  const replies = (await db.listRepliesByRoot(rootMessageId)).filter(
+    (r) => r.deleted !== true && r.state === undefined,
+  )
+  const root = await db.getMessage(rootMessageId)
+  if (root !== undefined) {
+    const replyCount = replies.length
+    const updated: MessageRow = { ...root, reply_count: replyCount }
+    if (replies.length > 0) {
+      updated.last_reply_seq = Math.max(...replies.map((r) => r.created_seq))
+    } else {
+      delete updated.last_reply_seq
+    }
+    await db.putMessages([updated])
+  }
+  // Rebuild the participant set for this root from the current non-deleted replies.
+  await db.deleteThreadParticipantsForRoot(rootMessageId)
+  const authors = [...new Set(replies.map((r) => r.author_user_id))].sort()
+  if (authors.length > 0) {
+    await db.putThreadParticipants(
+      authors.map((user_id) => ({ root_message_id: rootMessageId, user_id })),
+    )
+  }
+}
+
+/**
+ * `message.created` v1 apply (via the monkeypatchable {@link HANDLERS} registry,
+ * so the ENG-61 teeth pattern still bites). Builds the row, then:
+ *   • upserts it UNLESS an already-MUTATED row exists (edited or deleted) — the
+ *     client analogue of the server `ON CONFLICT DO NOTHING`: a duplicate delivery
+ *     must not clobber a later edit/delete. A pending optimistic row is never
+ *     mutated, so it still settles in place (created_seq: sentinel → server_seq);
+ *   • if it is a REPLY, recomputes its ROOT's thread state (the reply must land
+ *     first so it is included in the count) — mirroring `_apply_message_created`.
+ *
+ * Like the server, a NON-reply message gets no thread recompute: a valid reply is
+ * always in the same stream as its root (cross-stream/reply-of-reply are server-
+ * rejected — the client only sees valid replies), so the root's `message.created`
+ * always applies before its replies' and no "reply before root" recompute is
+ * needed. `reply_count`/`last_reply_seq` therefore exist only on a root that has
+ * received a reply (absent ⇒ 0 in the dump).
+ */
+async function applyMessageCreated(db: MsgDb, event: EventRow, body: EventBody): Promise<void> {
+  const handler = HANDLERS['message.created@1']
+  const row = handler ? handler(event, body) : null
+  if (row === null) return // malformed-known → skip (warned inside the builder)
+  const existing = await db.getMessage(row.message_id)
+  const mutated =
+    existing !== undefined && (existing.deleted === true || existing.edited_seq !== undefined)
+  if (!mutated) await db.putMessages([row])
+  if (row.thread_root_id !== undefined) await recomputeThreadRoot(db, row.thread_root_id)
+}
+
+/**
+ * Incrementally apply a per-stream batch of events into the derived projection
+ * (`messages` + ENG-100's `reactions` / `thread_participants`) — the seam ENG-79
+ * calls after it has written the events into `events` and advanced `cursors`.
+ * Idempotent, D9-safe (skip, never throw). Dispatch is keyed `(type@version)`
+ * (mirrors the server `_HANDLERS`); an unknown type / above-max version / meta
+ * event has no handler and is skipped.
  *
  * `db` first, then `streamId`, then the new events (the pinned seam signature).
  */
@@ -119,24 +310,36 @@ export async function applyEventsToProjection(
   streamId: string,
   events: readonly EventRow[],
 ): Promise<void> {
-  // Fixed apply order (ascending server_sequence). State is order-independent
-  // (immutable message_id keys), but a fixed order keeps a run reproducible.
+  // Fixed apply order (ascending server_sequence) — LWW/thread recompute read the
+  // current state, so a deterministic order keeps a run reproducible.
   const ordered = [...events].sort((a, b) => a.server_sequence - b.server_sequence)
-  const rows: MessageRow[] = []
   for (const event of ordered) {
     // Defensive: the seam is per-stream; a foreign-stream event is not this
     // batch's to project (never throw — just skip).
     if (event.stream_id !== streamId) continue
     const body = event.envelope?.body
-    // Defensive skip if ENG-79 handed a body-less row (shape-mismatch degrades to
-    // "no rows", caught loudly by the equivalence + query tests, not a crash).
+    // Defensive skip if ENG-79 handed a body-less row (degrades to a no-op).
     if (body === undefined) continue
-    const handler = HANDLERS[`${event.type}@${body.type_version}`]
-    if (handler === undefined) continue // D9: unknown type / v>=2 / meta → skip
-    const row = handler(event, body)
-    if (row !== null) rows.push(row)
+    switch (`${event.type}@${body.type_version}`) {
+      case 'message.created@1':
+        await applyMessageCreated(db, event, body)
+        break
+      case 'reaction.added@1':
+        await applyReactionAdded(db, body)
+        break
+      case 'reaction.removed@1':
+        await applyReactionRemoved(db, body)
+        break
+      case 'message.edited@1':
+        await applyMessageEdited(db, event, body)
+        break
+      case 'message.deleted@1':
+        await applyMessageDeleted(db, body)
+        break
+      default:
+        break // D9: unknown type / v>=2 / meta → skip
+    }
   }
-  if (rows.length > 0) await db.putMessages(rows)
 }
 
 /**
