@@ -146,6 +146,61 @@ def reaction_body(
     return body
 
 
+def message_edited_body(
+    *,
+    auth: Auth,
+    stream_id: str,
+    message_id: str,
+    text: str = "edited",
+    format: str = "markdown",
+    type_version: int = 1,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """A ``message.edited`` body authored by ``auth`` (ENG-98).
+
+    §2.4 homes an edit in the target message's stream, so the caller passes that
+    stream as ``stream_id``. ``overrides`` are applied onto the raw dict (after
+    assembly) so tests can build deliberately nonconforming bodies.
+    """
+    body: dict[str, Any] = {
+        "event_id": ids.new_event_id(),
+        "workspace_id": auth["workspace_id"],
+        "stream_id": stream_id,
+        "type": "message.edited",
+        "type_version": type_version,
+        "author_user_id": auth["user_id"],
+        "author_device_id": auth["device_id"],
+        "client_created_at": now_rfc3339(),
+        "payload": {"message_id": message_id, "text": text, "format": format},
+    }
+    body.update(overrides)
+    return body
+
+
+def message_deleted_body(
+    *,
+    auth: Auth,
+    stream_id: str,
+    message_id: str,
+    type_version: int = 1,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """A ``message.deleted`` body (tombstone) authored by ``auth`` (ENG-98)."""
+    body: dict[str, Any] = {
+        "event_id": ids.new_event_id(),
+        "workspace_id": auth["workspace_id"],
+        "stream_id": stream_id,
+        "type": "message.deleted",
+        "type_version": type_version,
+        "author_user_id": auth["user_id"],
+        "author_device_id": auth["device_id"],
+        "client_created_at": now_rfc3339(),
+        "payload": {"message_id": message_id},
+    }
+    body.update(overrides)
+    return body
+
+
 def custom_body(
     *,
     auth: Auth,

@@ -27,7 +27,15 @@ from __future__ import annotations
 from typing import Any
 
 from authutil import auth_header
-from eventsutil import Auth, message_body, post_batch, reaction_body, wire_item
+from eventsutil import (
+    Auth,
+    message_body,
+    message_deleted_body,
+    message_edited_body,
+    post_batch,
+    reaction_body,
+    wire_item,
+)
 from httpx import AsyncClient
 
 #: A §3.2 upload item: ``{body, event_hash}``.
@@ -98,6 +106,20 @@ class SimClient:
             if ev["body"].get("type") == "message.created"
         ]
 
+    def known_own_message_ids(self, stream_id: str) -> list[str]:
+        """The ``message_id``s this client PULLED in ``stream_id`` that IT authored.
+
+        Edits/deletes target only own messages (the author-or-admin rule), so the
+        strategy resolves a target from this list — the same constraint the real
+        client has (you edit your own message on screen), sourced from cursor-truth.
+        """
+        return [
+            ev["body"]["payload"]["message_id"]
+            for ev in self.pulled.get(stream_id, [])
+            if ev["body"].get("type") == "message.created"
+            and ev["body"].get("author_user_id") == self.user_id
+        ]
+
     async def react(
         self, stream_id: str, message_id: str, emoji: str, *, removed: bool = False
     ) -> None:
@@ -115,6 +137,23 @@ class SimClient:
             emoji=emoji,
             removed=removed,
         )
+        self.outbox.append(wire_item(body))
+
+    async def edit(self, stream_id: str, message_id: str, text: str) -> None:
+        """Mint a ``message.edited`` and enqueue it (§2.4, LWW by server_sequence).
+
+        Homed in ``stream_id`` (the message's stream). Rides the same dumb outbox as
+        :meth:`send`. Does NOT touch ``_last_item`` — ``duplicate_send`` must keep
+        replaying the last *message*, not an edit.
+        """
+        body = message_edited_body(
+            auth=self.auth, stream_id=stream_id, message_id=message_id, text=text
+        )
+        self.outbox.append(wire_item(body))
+
+    async def delete(self, stream_id: str, message_id: str) -> None:
+        """Mint a ``message.deleted`` (tombstone) and enqueue it (§2.4)."""
+        body = message_deleted_body(auth=self.auth, stream_id=stream_id, message_id=message_id)
         self.outbox.append(wire_item(body))
 
     async def duplicate_send(self, stream_id: str) -> None:

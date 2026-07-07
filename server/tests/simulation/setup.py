@@ -55,6 +55,10 @@ class World:
     #: private-stream message it cannot read was refused (or vacuously, when the
     #: private stream had no message to probe).
     adversary_reaction_forbidden: bool = True
+    #: ENG-98 edit/delete isolation: True once the adversary's attempt to edit AND
+    #: delete a message it did NOT author (a public message it CAN read) was refused
+    #: by the author-or-admin rule (or vacuously, when there was no such message).
+    adversary_edit_forbidden: bool = True
 
     @property
     def shared_streams(self) -> list[str]:

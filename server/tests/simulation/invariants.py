@@ -26,6 +26,10 @@ TruthEvent = dict[str, Any]
 Truth = dict[str, list[TruthEvent]]
 #: A ``reactions_proj`` snapshot: ``(message_id, author_user_id, emoji)`` rows.
 ReactionRows = list[tuple[str, str, str]]
+#: A ``messages_proj`` snapshot row: ``(message_id, stream_id, author_user_id, text,
+#: created_seq, edited_seq, deleted)`` (ENG-98).
+MessageRow = tuple[str, str, str, str, int, int | None, bool]
+MessageRows = list[MessageRow]
 
 
 def assert_idempotency(world: World, truth: Truth) -> None:
@@ -179,6 +183,93 @@ def assert_reaction_convergence(world: World, truth: Truth, reactions: ReactionR
     )
 
 
+def _expected_messages(world: World, truth: Truth) -> dict[str, MessageRow]:
+    """Replay the log's ``message.*`` events → the expected ``messages_proj`` state.
+
+    A pure fold over server truth in ``server_sequence`` order per stream, mirroring
+    the projection apply (ENG-98):
+
+    * ``message.created`` seeds the row (text, created_seq, edited_seq=None,
+      deleted=False).
+    * ``message.edited`` is last-writer-wins by ``server_sequence`` — it overwrites
+      text + edited_seq ONLY when its seq exceeds ``edited_seq or created_seq``, and
+      NEVER on a deleted row (delete is terminal).
+    * ``message.deleted`` tombstones: deleted=True, text='' (content redacted).
+
+    All edits/deletes of a message are homed in that message's stream (ENG-98
+    validation), so a single-stream ordered replay is exact. The result is what a
+    correct ``messages_proj`` MUST equal.
+    """
+    state: dict[str, dict[str, Any]] = {}
+    for stream in world.shared_streams:
+        for event in truth[stream]:  # ascending server_sequence
+            body = event["body"]
+            event_type = body.get("type")
+            seq = event["server_sequence"]
+            payload = body.get("payload") or {}
+            mid = cast("str", payload.get("message_id"))
+            if event_type == "message.created":
+                state[mid] = {
+                    "stream_id": body.get("stream_id"),
+                    "author_user_id": body.get("author_user_id"),
+                    "text": payload.get("text"),
+                    "created_seq": seq,
+                    "edited_seq": None,
+                    "deleted": False,
+                }
+            elif event_type == "message.edited":
+                s = state.get(mid)
+                if s is None or s["deleted"]:
+                    continue  # unknown target (rejected) or terminal tombstone
+                if seq > (s["edited_seq"] or s["created_seq"]):
+                    s["text"] = payload.get("text")
+                    s["edited_seq"] = seq
+            elif event_type == "message.deleted":
+                s = state.get(mid)
+                if s is None:
+                    continue
+                s["deleted"] = True
+                s["text"] = ""  # content redaction
+    return {
+        mid: (
+            mid,
+            s["stream_id"],
+            s["author_user_id"],
+            s["text"],
+            s["created_seq"],
+            s["edited_seq"],
+            s["deleted"],
+        )
+        for mid, s in state.items()
+    }
+
+
+def assert_message_convergence(world: World, truth: Truth, messages: MessageRows) -> None:
+    """§12.2/§2.4 (edits/deletes) — ``messages_proj`` == the state folded from the log.
+
+    Proves at once:
+
+    * **LWW convergence** — every edited row carries the HIGHEST-``server_sequence``
+      edit's text (out-of-order deliveries still converge, since the fold and the
+      apply share the same seq-guarded rule).
+    * **tombstone** — every deleted message is ``deleted=True`` with redacted
+      (empty) ``text``: its content is not observable through the projection, and a
+      later edit did not un-delete it (deleted is terminal).
+    * **rebuild-equivalence** is proved separately by the runner's invariant 6.
+    """
+    projected = {row[0]: row for row in messages}
+    expected = _expected_messages(world, truth)
+    assert projected == expected, (
+        f"messages: messages_proj state != log replay (LWW/tombstone); "
+        f"projected={projected!r} expected={expected!r}"
+    )
+    # Content redaction, stated directly: no deleted row serves non-empty content.
+    for _mid, _stream, _author, text, _cseq, _eseq, deleted in messages:
+        assert not (deleted and text != ""), (
+            "messages: a deleted message still serves content through messages_proj"
+        )
+
+
 def assert_permission_isolation(world: World, reactions: ReactionRows) -> None:
     """§12.4 — the adversary observes ZERO private-stream data (ACCEPTANCE, every run).
 
@@ -216,17 +307,28 @@ def assert_permission_isolation(world: World, reactions: ReactionRows) -> None:
         "isolation: a reaction authored by the adversary landed in reactions_proj"
     )
 
+    # ENG-98 (f): the adversary could NOT edit a PUBLIC message it did not author —
+    # the author-or-admin rule refuses a non-author non-admin edit even on a stream
+    # the adversary can read (so this is NOT merely the stream gate). The refusal
+    # leaves zero projection changes: assert_message_convergence already proves
+    # messages_proj == the log replay, and the refused edit never entered the log.
+    assert world.adversary_edit_forbidden, (
+        "isolation: adversary edited a message it did not author (author-or-admin bypass)"
+    )
 
-def assert_all(world: World, truth: Truth, reactions: ReactionRows) -> None:
-    """Run the invariants after every example (four skeleton + reaction surface).
 
-    The four §12-subset invariants plus reaction convergence/idempotency; the
-    reaction permission-isolation checks are folded into
-    :func:`assert_permission_isolation`. Rebuild ≡ incremental (invariant 6) for
-    both projections is asserted separately by the runner.
+def assert_all(world: World, truth: Truth, reactions: ReactionRows, messages: MessageRows) -> None:
+    """Run the invariants after every example (four skeleton + reaction + message).
+
+    The four §12-subset invariants, reaction convergence/idempotency (ENG-97), and
+    message LWW/tombstone convergence (ENG-98); the reaction + edit/delete
+    permission-isolation checks are folded into :func:`assert_permission_isolation`.
+    Rebuild ≡ incremental (invariant 6) for all projections is asserted separately
+    by the runner.
     """
     assert_idempotency(world, truth)
     assert_convergence(world, truth)
     assert_cursor_integrity(world, truth)
     assert_reaction_convergence(world, truth, reactions)
+    assert_message_convergence(world, truth, messages)
     assert_permission_isolation(world, reactions)
