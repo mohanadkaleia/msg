@@ -34,6 +34,10 @@ export {
   type MessagesListResult,
   type StreamsListResult,
   type MessageGetResult,
+  // ENG-101 mention/channel autocomplete source (zero-network projection read).
+  type DirectoryListResult,
+  type DirectoryUser,
+  type DirectoryChannel,
   // ENG-79 sync status surface (ENG-82 sync indicator + scrollback backfill).
   type SyncStatus,
   type SyncState,

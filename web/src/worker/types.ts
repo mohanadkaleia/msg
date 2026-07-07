@@ -315,6 +315,11 @@ export type QueryParams =
   | { q: 'messages.list'; stream_id: string; before_seq?: number; limit?: number }
   | { q: 'streams.list' }
   | { q: 'message.get'; message_id: string }
+  // ENG-101: the @mention / #channel autocomplete source. Users are folded from
+  // the cached `workspace-meta` events, channels from the `streams` projection —
+  // a LOCAL read (zero network, never the HTTP API), same discipline as the rest
+  // of the query surface.
+  | { q: 'directory.list' }
 
 /**
  * Mutation taxonomy (ENG-81) — durable mutations carried on the existing
@@ -377,8 +382,27 @@ export interface MessageGetResult {
   message: MessageRow | null
 }
 
+/** One `@mention`-able workspace user (ENG-101). */
+export interface DirectoryUser {
+  user_id: string
+  display_name: string
+}
+
+/** One `#channel`-able stream (ENG-101). */
+export interface DirectoryChannel {
+  stream_id: string
+  name: string
+}
+
+/** `directory.list` result — the autocomplete source (users + channels). */
+export interface DirectoryListResult {
+  users: DirectoryUser[]
+  channels: DirectoryChannel[]
+}
+
 /** The union of every projection-query result (RpcResultMap['query']). */
-export type QueryResultUnion = MessagesListResult | StreamsListResult | MessageGetResult
+export type QueryResultUnion =
+  MessagesListResult | StreamsListResult | MessageGetResult | DirectoryListResult
 
 /** Result keyed to the query's `q` discriminant (WorkerClient.query<Q>). */
 export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' }
@@ -387,7 +411,9 @@ export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' 
     ? StreamsListResult
     : Q extends { q: 'message.get' }
       ? MessageGetResult
-      : never
+      : Q extends { q: 'directory.list' }
+        ? DirectoryListResult
+        : never
 export type MutateResult<M extends MutateParams> = M extends { m: 'outbox.send' }
   ? SendResult
   : M extends { m: 'outbox.retry' | 'outbox.delete' }

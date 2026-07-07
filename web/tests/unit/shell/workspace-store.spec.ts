@@ -44,4 +44,28 @@ describe('workspace store', () => {
     expect(store.channels[0]!.unread).toBe(3)
     expect(store.channels[0]!.mention).toBe(true)
   })
+
+  it('loads the @mention/#channel directory via a ZERO-network projection read', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    fake.setDirectory(
+      [
+        { user_id: 'u_dana', display_name: 'Dana' },
+        { user_id: 'u_sam', display_name: 'Sam' },
+      ],
+      [{ stream_id: 's_general', name: 'general' }],
+    )
+    const store = useWorkspaceStore()
+
+    await store.load()
+
+    // Autocomplete candidates are users then channels, mapped from the projection.
+    expect(store.mentionItems).toEqual([
+      { id: 'u_dana', label: 'Dana', kind: 'user' },
+      { id: 'u_sam', label: 'Sam', kind: 'user' },
+      { id: 's_general', label: 'general', kind: 'channel' },
+    ])
+    // The autocomplete source is a projection query — the HTTP escape hatch is untouched.
+    expect(fake.fetch).not.toHaveBeenCalled()
+    expect(fake.querySpy).toHaveBeenCalledWith({ q: 'directory.list' })
+  })
 })

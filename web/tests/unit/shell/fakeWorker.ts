@@ -9,6 +9,8 @@ import { newEventId, newMessageId } from '../../../src/core'
 import { topicKey } from '../../../src/worker/types'
 import type {
   BackfillResult,
+  DirectoryChannel,
+  DirectoryUser,
   MessageRow,
   MutateParams,
   MutateResult,
@@ -33,8 +35,15 @@ export class FakeWorker {
   readonly backfillSpy = vi.fn()
   readonly retrySpy = vi.fn<(eventId: string) => void>()
   readonly deleteSpy = vi.fn<(eventId: string) => void>()
+  /** Captures every `outbox.send` params object (text + mentions assertions). */
+  readonly sendSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.send' }>) => void>()
 
   private streams = new Map<string, SidebarStream>()
+  /** The @mention / #channel autocomplete source a `directory.list` returns. */
+  private directory: { users: DirectoryUser[]; channels: DirectoryChannel[] } = {
+    users: [],
+    channels: [],
+  }
   /** Ascending-by-created_seq message rows per stream. */
   private messages = new Map<string, MessageRow[]>()
   private subs = new Map<string, Set<(p: unknown) => void>>()
@@ -82,6 +91,12 @@ export class FakeWorker {
     list.sort((a, b) => a.created_seq - b.created_seq)
     this.messages.set(streamId, list)
     return row
+  }
+
+  /** Seed the @mention / #channel autocomplete source a `directory.list` returns. */
+  setDirectory(users: DirectoryUser[], channels: DirectoryChannel[]): this {
+    this.directory = { users, channels }
+    return this
   }
 
   /** Mutate a stream's badge, then publish so subscribers re-query. */
@@ -154,6 +169,12 @@ export class FakeWorker {
     if (params.q === 'streams.list') {
       return Promise.resolve({ streams: [...this.streams.values()] } as QueryResult<Q>)
     }
+    if (params.q === 'directory.list') {
+      return Promise.resolve({
+        users: [...this.directory.users],
+        channels: [...this.directory.channels],
+      } as QueryResult<Q>)
+    }
     if (params.q === 'message.get') {
       const found = [...this.messages.values()]
         .flat()
@@ -178,6 +199,7 @@ export class FakeWorker {
 
   private mutate = <M extends MutateParams>(params: M): Promise<MutateResult<M>> => {
     if (params.m === 'outbox.send') {
+      this.sendSpy(params)
       const messageId = newMessageId()
       const eventId = newEventId()
       const createdSeq = Date.now() + this.messages.size + Math.floor(Math.random() * 1000)
@@ -186,6 +208,7 @@ export class FakeWorker {
         author_user_id: this.myUserId,
         text: params.text,
         created_seq: createdSeq,
+        mention_user_ids: params.mentions ?? [],
         state: 'pending',
       })
       this.publishStream(params.stream_id)

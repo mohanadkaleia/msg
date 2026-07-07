@@ -101,6 +101,36 @@ export function metaEvent(streamId: string, seq: number): EventRow {
   }
 }
 
+/** A `workspace-meta` user lifecycle event (ENG-101 directory derivation). */
+export function metaUserEvent(
+  streamId: string,
+  seq: number,
+  type: 'user.joined' | 'user.left' | 'user.profile_updated',
+  payload: { user_id: string; display_name?: string },
+): EventRow {
+  const eventId = `e_${streamId}_${seq}`
+  return {
+    stream_id: streamId,
+    server_sequence: seq,
+    event_id: eventId,
+    type,
+    envelope: {
+      body: {
+        event_id: eventId,
+        workspace_id: 'w_test',
+        stream_id: streamId,
+        type,
+        type_version: 1,
+        author_user_id: payload.user_id,
+        author_device_id: 'd_test',
+        client_created_at: '2026-01-01T00:00:00.000Z',
+        payload,
+      },
+      event_hash: `hash_${eventId}`,
+    },
+  }
+}
+
 /**
  * A structurally-valid `message.created` v1 envelope whose payload is missing a
  * `message_id` — the malformed-known case (skip + warn, never throw).

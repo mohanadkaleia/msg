@@ -60,6 +60,35 @@ describe('messages store', () => {
     expect(settled[0]!.created_seq).toBe(7)
   })
 
+  it('carries resolved @mention ids on the SAME outbox.send contract (ENG-101)', async () => {
+    fake.addStream({ stream_id: 's1' })
+    const store = useMessagesStore()
+    store.setMyUserId('u_me')
+    await store.selectStream('s1')
+
+    await store.send('hey @Dana', ['u_dana'])
+    await flushPromises()
+
+    // Same mutation, unchanged shape — mentions ride the existing optional field.
+    expect(fake.sendSpy).toHaveBeenCalledWith({
+      m: 'outbox.send',
+      stream_id: 's1',
+      text: 'hey @Dana',
+      mentions: ['u_dana'],
+    })
+    // The pending projection row carries the mention (badge derivation input).
+    const pending = store.displayMessages.find((m) => m.text === 'hey @Dana')!
+    expect(pending.mention_user_ids).toEqual(['u_dana'])
+
+    // No mentions → the field is omitted entirely (byte-identical to the M2 send).
+    await store.send('plain message')
+    expect(fake.sendSpy).toHaveBeenLastCalledWith({
+      m: 'outbox.send',
+      stream_id: 's1',
+      text: 'plain message',
+    })
+  })
+
   it('surfaces a failed send with retry/delete wired to the outbox RPCs', async () => {
     fake.addStream({ stream_id: 's1' })
     const store = useMessagesStore()
