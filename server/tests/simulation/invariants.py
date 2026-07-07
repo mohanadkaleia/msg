@@ -30,6 +30,11 @@ ReactionRows = list[tuple[str, str, str]]
 #: created_seq, edited_seq, deleted)`` (ENG-98).
 MessageRow = tuple[str, str, str, str, int, int | None, bool]
 MessageRows = list[MessageRow]
+#: A ``messages_proj`` thread-counter snapshot row: ``(message_id, reply_count,
+#: last_reply_seq)`` (ENG-99).
+ThreadCounterRows = list[tuple[str, int, int | None]]
+#: A ``thread_participants_proj`` snapshot: ``(root_message_id, user_id)`` rows (ENG-99).
+ThreadParticipantRows = list[tuple[str, str]]
 
 
 def assert_idempotency(world: World, truth: Truth) -> None:
@@ -270,7 +275,106 @@ def assert_message_convergence(world: World, truth: Truth, messages: MessageRows
         )
 
 
-def assert_permission_isolation(world: World, reactions: ReactionRows) -> None:
+def _expected_thread_state(
+    world: World, truth: Truth
+) -> tuple[set[str], dict[str, int], dict[str, int], set[tuple[str, str]]]:
+    """Replay the log's ``message.*`` events → the expected thread state (ENG-99).
+
+    A pure fold over server truth per stream, mirroring the recompute reducer:
+
+    * a NON-deleted reply (``message.created`` with ``thread_root_id = R``, and no
+      later ``message.deleted`` for it) contributes +1 to ``R``'s ``reply_count``, its
+      ``server_sequence`` to ``R``'s ``last_reply_seq`` max, and ``(R, author)`` to the
+      participant set;
+    * a DELETED reply contributes nothing (delete-aware — no ghost count/participant);
+    * deleting a ROOT does not change its own thread counters (its replies survive).
+
+    Returns ``(all_created_ids, reply_count_by_root, last_reply_seq_by_root,
+    participant_set)``. All replies of a root are homed in the root's stream (ENG-99
+    validation), so a per-stream replay is exact and order-independent.
+    """
+    deleted: set[str] = set()
+    all_created: set[str] = set()
+    replies: list[tuple[str, str, str, int]] = []  # (message_id, root, author, seq)
+    for stream in world.shared_streams:
+        for event in truth[stream]:  # ascending server_sequence
+            body = event["body"]
+            event_type = body.get("type")
+            payload = body.get("payload") or {}
+            mid = cast("str", payload.get("message_id"))
+            if event_type == "message.created":
+                all_created.add(mid)
+                root = payload.get("thread_root_id")
+                if root is not None:
+                    replies.append(
+                        (
+                            mid,
+                            cast("str", root),
+                            cast("str", body.get("author_user_id")),
+                            event["server_sequence"],
+                        )
+                    )
+            elif event_type == "message.deleted":
+                deleted.add(mid)
+
+    counts: dict[str, int] = {}
+    last_seq: dict[str, int] = {}
+    participants: set[tuple[str, str]] = set()
+    for mid, root, author, seq in replies:
+        if mid in deleted:
+            continue  # a deleted reply neither counts nor keeps a participant
+        counts[root] = counts.get(root, 0) + 1
+        last_seq[root] = max(last_seq.get(root, 0), seq)  # server_sequence >= 1
+        participants.add((root, author))
+    return all_created, counts, last_seq, participants
+
+
+def assert_thread_convergence(
+    world: World,
+    truth: Truth,
+    thread_counters: ThreadCounterRows,
+    thread_participants: ThreadParticipantRows,
+) -> None:
+    """§2.2/D7 (threads) — ``reply_count`` / ``last_reply_seq`` / ``thread_participants_proj``
+    == the delete-aware state folded from the log (ENG-99).
+
+    Proves at once:
+
+    * **counters are a pure function of the log** — each root's ``reply_count`` equals
+      the number of its NON-deleted replies and ``last_reply_seq`` their max
+      ``server_sequence``; every non-root message has ``reply_count = 0`` /
+      ``last_reply_seq = NULL``;
+    * **participants are the distinct non-deleted authors** — no duplicate membership
+      row, and the set equals the folded one;
+    * **delete-aware** — a deleted reply neither inflates a count nor leaves a ghost
+      participant (the fold and the recompute agree on the non-deleted set);
+    * **rebuild-equivalence** is proved separately by the runner's invariant 6.
+    """
+    all_created, counts, last_seq, participants = _expected_thread_state(world, truth)
+
+    # Participants are a genuine set — no duplicate membership row (PK-enforced,
+    # asserted directly so a regression dropping the PK bites here too).
+    assert len(thread_participants) == len(set(thread_participants)), (
+        f"threads: duplicate participant row in thread_participants_proj: {thread_participants}"
+    )
+    projected_participants = set(thread_participants)
+    assert projected_participants == participants, (
+        f"threads: thread_participants_proj set != log replay; "
+        f"projected={projected_participants!r} expected={participants!r}"
+    )
+
+    # Per-message counters: every messages_proj row (root or not) matches the fold.
+    projected_counters = {mid: (rc, lrs) for (mid, rc, lrs) in thread_counters}
+    expected_counters = {mid: (counts.get(mid, 0), last_seq.get(mid)) for mid in all_created}
+    assert projected_counters == expected_counters, (
+        f"threads: reply_count/last_reply_seq != log replay; "
+        f"projected={projected_counters!r} expected={expected_counters!r}"
+    )
+
+
+def assert_permission_isolation(
+    world: World, reactions: ReactionRows, thread_participants: ThreadParticipantRows
+) -> None:
     """§12.4 — the adversary observes ZERO private-stream data (ACCEPTANCE, every run).
 
     The adversary is a workspace member but a non-member of the private channel.
@@ -284,6 +388,11 @@ def assert_permission_isolation(world: World, reactions: ReactionRows) -> None:
     refused, collected during settle), and (e) it authored ZERO ``reactions_proj``
     rows anywhere — a client cannot react to, nor leave any observable reaction on,
     a stream it may not read.
+
+    ENG-99 extends it to threads: (g) the adversary could NOT reply into the private
+    stream it cannot read (the reply upload was refused at the stream gate), and (h)
+    it appears in ZERO ``thread_participants_proj`` rows — a client cannot reply into,
+    nor observe/grow a thread in, a stream it may not read.
     """
     priv = world.private_stream
     assert priv not in world.adversary_visible, (
@@ -316,19 +425,37 @@ def assert_permission_isolation(world: World, reactions: ReactionRows) -> None:
         "isolation: adversary edited a message it did not author (author-or-admin bypass)"
     )
 
+    # ENG-99 (g) the adversary's reply into the unreadable private stream was refused.
+    assert world.adversary_thread_reply_forbidden, (
+        "isolation: adversary replied into the private stream it cannot read"
+    )
+    # ENG-99 (h) the adversary appears in no thread_participants_proj row.
+    adversary_id = world.adversary.user_id
+    assert all(user != adversary_id for (_root, user) in thread_participants), (
+        "isolation: the adversary landed in thread_participants_proj"
+    )
 
-def assert_all(world: World, truth: Truth, reactions: ReactionRows, messages: MessageRows) -> None:
-    """Run the invariants after every example (four skeleton + reaction + message).
 
-    The four §12-subset invariants, reaction convergence/idempotency (ENG-97), and
-    message LWW/tombstone convergence (ENG-98); the reaction + edit/delete
-    permission-isolation checks are folded into :func:`assert_permission_isolation`.
-    Rebuild ≡ incremental (invariant 6) for all projections is asserted separately
-    by the runner.
+def assert_all(
+    world: World,
+    truth: Truth,
+    reactions: ReactionRows,
+    messages: MessageRows,
+    thread_counters: ThreadCounterRows,
+    thread_participants: ThreadParticipantRows,
+) -> None:
+    """Run the invariants after every example (four skeleton + reaction + message + thread).
+
+    The four §12-subset invariants, reaction convergence/idempotency (ENG-97), message
+    LWW/tombstone convergence (ENG-98), and thread reply-count/participant convergence
+    (ENG-99); the reaction + edit/delete + thread permission-isolation checks are folded
+    into :func:`assert_permission_isolation`. Rebuild ≡ incremental (invariant 6) for all
+    projections is asserted separately by the runner.
     """
     assert_idempotency(world, truth)
     assert_convergence(world, truth)
     assert_cursor_integrity(world, truth)
     assert_reaction_convergence(world, truth, reactions)
     assert_message_convergence(world, truth, messages)
-    assert_permission_isolation(world, reactions)
+    assert_thread_convergence(world, truth, thread_counters, thread_participants)
+    assert_permission_isolation(world, reactions, thread_participants)

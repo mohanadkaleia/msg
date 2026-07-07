@@ -120,6 +120,22 @@ class SimClient:
             and ev["body"].get("author_user_id") == self.user_id
         ]
 
+    def known_root_message_ids(self, stream_id: str) -> list[str]:
+        """The ``message_id``s this client PULLED in ``stream_id`` that are NON-reply
+        top-level messages (``thread_root_id`` is null).
+
+        A thread reply may only root on a NON-reply message (flat-channel threads,
+        D7 / ENG-99), so the strategy resolves a reply's root from this list — every
+        generated reply then targets a valid flat root and is Accepted, so the thread
+        counters/participants are actually exercised (not silently rejected).
+        """
+        return [
+            ev["body"]["payload"]["message_id"]
+            for ev in self.pulled.get(stream_id, [])
+            if ev["body"].get("type") == "message.created"
+            and ev["body"]["payload"].get("thread_root_id") is None
+        ]
+
     async def react(
         self, stream_id: str, message_id: str, emoji: str, *, removed: bool = False
     ) -> None:
@@ -155,6 +171,21 @@ class SimClient:
         """Mint a ``message.deleted`` (tombstone) and enqueue it (§2.4)."""
         body = message_deleted_body(auth=self.auth, stream_id=stream_id, message_id=message_id)
         self.outbox.append(wire_item(body))
+
+    async def reply(self, stream_id: str, root_message_id: str, *, text: str = "reply") -> None:
+        """Mint a threaded ``message.created`` (``thread_root_id`` set) and enqueue it.
+
+        A reply IS a ``message.created`` (D7 — no ``thread.created`` type), so it rides
+        the same dumb outbox as :meth:`send` and counts as an INTENDED message (the
+        idempotency invariant must see exactly one stored row for it). Homed in
+        ``stream_id`` (the root's stream — §2.2 same-stream). Does NOT touch
+        ``_last_item`` (``duplicate_send`` keeps replaying the last plain message).
+        """
+        body = message_body(
+            auth=self.auth, stream_id=stream_id, text=text, thread_root_id=root_message_id
+        )
+        self.outbox.append(wire_item(body))
+        self.intended[body["event_id"]] = stream_id
 
     async def duplicate_send(self, stream_id: str) -> None:
         """Re-enqueue the last already-sent item (**same** ``event_id``), forcing a
