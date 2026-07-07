@@ -245,15 +245,25 @@ async function runCmd(
     // GUARD (anti-vacuity): the batch POST is still paused, so the ONLY path an
     // event can reach the client's `events` cache is the WS frame passing
     // hash-verify and being APPLIED. Snapshot before, emit the real-hash frame,
-    // and assert the cache grew by exactly this event. If the frame were dropped
-    // (fabricated hash), this fails — the WS-first arm can never be vacuous again.
+    // then WAIT for the cache to grow by exactly this event. If the frame were
+    // dropped (fabricated hash), the growth never happens and `untilAsync` throws —
+    // the WS-first arm can never be vacuous again.
+    //
+    // ENG-131: an optimistically-settled op stores its event WITHOUT advancing the
+    // sync cursor (outbox `settle()` never touches `cursors`), so this WS frame is
+    // always a cursor-GAP (`cur=0`), never the synchronous contiguous fast-path — it
+    // lands via the engine's ASYNC, detached gap-pull. A fixed `flush()` budget
+    // therefore RACED that pull: on unlucky seeds enough events had accumulated on
+    // the stream that the pull had not finished when the assertion ran → an
+    // off-by-one (`expected N to be N+1`). POLL for the landing instead of asserting
+    // after one flush: the real projection converges to exactly one row either way.
     const before = await live.db.getEventsForStream(streamId)
     expect(before.some((e) => e.event_id === res.event_id)).toBe(false)
     live.emit(live.server.wireFor(res.event_id))
-    await flush()
-    const after = await live.db.getEventsForStream(streamId)
-    expect(after.length).toBe(before.length + 1) // WS frame genuinely applied
-    expect(after.some((e) => e.event_id === res.event_id)).toBe(true)
+    await untilAsync(async () => {
+      const evs = await live.db.getEventsForStream(streamId)
+      return evs.length === before.length + 1 && evs.some((e) => e.event_id === res.event_id)
+    })
     live.server.resumeBatch()
     await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
     return { messageId: res.message_id, stream: streamId, state: 'settled', seq }
@@ -492,80 +502,174 @@ async function assertSettledEffect(
   }
 }
 
+async function runM3History(cmds: M3Cmd[]): Promise<void> {
+  const streamIds = Array.from({ length: NUM_STREAMS }, (_, i) => `s_${i}`)
+  const live = await makeLiveCore(() => Promise.resolve(new MemoryDb()), streamIds)
+
+  for (const cmd of cmds) {
+    const streamId = streamIds[cmd.stream]!
+    const messageId = await seedSettledMessage(live, streamId)
+    const eventsBefore = (await live.db.getEventsForStream(streamId)).length
+
+    if (cmd.reject) {
+      live.server.pauseBatch()
+      const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
+      // The overlay renders immediately (before any ack).
+      live.server.rejectEvent(res.event_id, 'permission_denied')
+      live.server.resumeBatch()
+      await untilAsync(async () => (await live.db.getOutbox(res.event_id))?.state === 'rejected')
+      // Parked: outbox row rejected, no event stored, effect stays visible.
+      expect((await live.db.getOutbox(res.event_id))?.state).toBe('rejected')
+      expect((await live.db.getEventsForStream(streamId)).length).toBe(eventsBefore)
+      continue
+    }
+
+    if (cmd.race === 'ws-first') {
+      live.server.pauseBatch()
+      const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
+      const row = await live.db.getOutbox(res.event_id)
+      if (!row) throw new Error('missing outbox row for ws-first')
+      const { accepted } = live.server.processBatch([
+        { body: row.body as never, event_hash: row.event_hash },
+      ])
+      const serverSeq = accepted[0]!.server_sequence
+      // Anti-vacuity: while the batch POST is paused the ONLY path this event can
+      // reach the events cache is the real-hash WS frame being applied. WAIT for the
+      // cache to grow by exactly this event (a fabricated-hash regression → never
+      // lands → `untilAsync` throws).
+      //
+      // ENG-131: this WS frame lands via the engine's ASYNC gap-pull, not the
+      // synchronous fast-path — outbox `settle()` stores the op's event WITHOUT
+      // advancing the sync cursor, so the frame is always a cursor-gap (`cur=0`).
+      // A fixed `flush()` budget raced that pull and gave an off-by-one on unlucky
+      // seeds (enough accumulated events on the stream). Poll for the landing; the
+      // real projection converges to exactly one effect regardless.
+      const before = await live.db.getEventsForStream(streamId)
+      expect(before.some((e) => e.event_id === res.event_id)).toBe(false)
+      live.emit(live.server.wireFor(res.event_id))
+      await untilAsync(async () => {
+        const evs = await live.db.getEventsForStream(streamId)
+        return evs.length === before.length + 1 && evs.some((e) => e.event_id === res.event_id)
+      })
+      live.server.resumeBatch()
+      await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
+      await assertSettledEffect(live, cmd, messageId, serverSeq)
+      continue
+    }
+
+    // 'none' + 'ws-after': auto-drain settles first.
+    const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
+    await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
+    const settledSeq = (await live.db.getEventsForStream(streamId)).find(
+      (e) => e.event_id === res.event_id,
+    )?.server_sequence
+    if (cmd.race === 'ws-after') {
+      // The SAME event now also arrives as a real-hash WS frame → deduped.
+      const before = await live.db.getEventsForStream(streamId)
+      live.emit(live.server.wireFor(res.event_id))
+      await flush()
+      const afterEvents = await live.db.getEventsForStream(streamId)
+      expect(afterEvents.length).toBe(before.length) // no second row
+    }
+    await assertSettledEffect(live, cmd, messageId, settledSeq!)
+  }
+
+  // Anti-vacuity across the whole run: no WS frame was dropped for a bad hash.
+  expect(hashMismatchDrops).toBe(0)
+  // Outbox fully drained except parked (rejected) rows.
+  const outbox = await live.db.listOutbox()
+  expect(outbox.every((r) => r.state === 'rejected')).toBe(true)
+  await live.db.close()
+}
+
 describe('§12 invariant 5 — M3 optimistic reactions/edits/deletes [property, real WorkerCore]', () => {
   it('each optimistic op renders then settles into server order / parks; ack-vs-WS → one effect', async () => {
-    await fc.assert(
-      fc.asyncProperty(m3CmdArb(), async (cmds) => {
-        const streamIds = Array.from({ length: NUM_STREAMS }, (_, i) => `s_${i}`)
-        const live = await makeLiveCore(() => Promise.resolve(new MemoryDb()), streamIds)
+    // ENG-131: numRuns raised 30 → 300 (deeper histories, more ws-first
+    // accumulation) after making the ws-first anti-vacuity check WAIT for the
+    // async gap-pull instead of asserting after a fixed `flush()` (see runM3History).
+    await fc.assert(fc.asyncProperty(m3CmdArb(), runM3History), { numRuns: 300 })
+  }, 60000)
 
-        for (const cmd of cmds) {
-          const streamId = streamIds[cmd.stream]!
-          const messageId = await seedSettledMessage(live, streamId)
-          const eventsBefore = (await live.db.getEventsForStream(streamId)).length
-
-          if (cmd.reject) {
-            live.server.pauseBatch()
-            const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
-            // The overlay renders immediately (before any ack).
-            live.server.rejectEvent(res.event_id, 'permission_denied')
-            live.server.resumeBatch()
-            await untilAsync(
-              async () => (await live.db.getOutbox(res.event_id))?.state === 'rejected',
-            )
-            // Parked: outbox row rejected, no event stored, effect stays visible.
-            expect((await live.db.getOutbox(res.event_id))?.state).toBe('rejected')
-            expect((await live.db.getEventsForStream(streamId)).length).toBe(eventsBefore)
-            continue
-          }
-
-          if (cmd.race === 'ws-first') {
-            live.server.pauseBatch()
-            const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
-            const row = await live.db.getOutbox(res.event_id)
-            if (!row) throw new Error('missing outbox row for ws-first')
-            const { accepted } = live.server.processBatch([
-              { body: row.body as never, event_hash: row.event_hash },
-            ])
-            const serverSeq = accepted[0]!.server_sequence
-            // Anti-vacuity: only the real-hash WS frame can land it while paused.
-            const before = await live.db.getEventsForStream(streamId)
-            expect(before.some((e) => e.event_id === res.event_id)).toBe(false)
-            live.emit(live.server.wireFor(res.event_id))
-            await flush()
-            const after = await live.db.getEventsForStream(streamId)
-            expect(after.length).toBe(before.length + 1) // genuinely applied
-            live.server.resumeBatch()
-            await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
-            await assertSettledEffect(live, cmd, messageId, serverSeq)
-            continue
-          }
-
-          // 'none' + 'ws-after': auto-drain settles first.
-          const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
-          await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
-          const settledSeq = (await live.db.getEventsForStream(streamId)).find(
-            (e) => e.event_id === res.event_id,
-          )?.server_sequence
-          if (cmd.race === 'ws-after') {
-            // The SAME event now also arrives as a real-hash WS frame → deduped.
-            const before = await live.db.getEventsForStream(streamId)
-            live.emit(live.server.wireFor(res.event_id))
-            await flush()
-            const afterEvents = await live.db.getEventsForStream(streamId)
-            expect(afterEvents.length).toBe(before.length) // no second row
-          }
-          await assertSettledEffect(live, cmd, messageId, settledSeq!)
-        }
-
-        // Anti-vacuity across the whole run: no WS frame was dropped for a bad hash.
-        expect(hashMismatchDrops).toBe(0)
-        // Outbox fully drained except parked (rejected) rows.
-        const outbox = await live.db.listOutbox()
-        expect(outbox.every((r) => r.state === 'rejected')).toBe(true)
-        await live.db.close()
-      }),
-      { numRuns: 30 },
-    )
+  // -------------------------------------------------------------------------
+  // ENG-131 DETERMINISTIC REGRESSION — the exact fast-check counterexample
+  // (seed 1960425279, path "3"): a 6-op history mixing rejected ops with
+  // ws-first / ws-after races. Encoded here so it is caught FOREVER regardless
+  // of seed. The real projection converges to exactly one effect per op; the
+  // original failure (`expected 4 to be 5`) was the harness asserting the
+  // ws-first frame's arrival synchronously after one flush, racing the engine's
+  // async gap-pull. runM3History now polls for the arrival, so this is green.
+  // -------------------------------------------------------------------------
+  it('ENG-131 regression: rejected-op + ws-race interleaving counterexample settles to one effect each', async () => {
+    await runM3History([
+      { stream: 0, op: 'react-add', reject: true, race: 'ws-after' },
+      { stream: 1, op: 'react-add', reject: false, race: 'none' },
+      { stream: 1, op: 'edit', reject: true, race: 'ws-first' },
+      { stream: 0, op: 'delete', reject: true, race: 'none' },
+      { stream: 0, op: 'delete', reject: false, race: 'none' },
+      { stream: 1, op: 'react-add', reject: false, race: 'ws-first' },
+    ])
   })
+
+  // -------------------------------------------------------------------------
+  // ENG-131 DETERMINISTIC REGRESSION (teeth) — directly exercises the racing
+  // condition, machine-independently. Pile up MANY settled events on one stream
+  // (so the engine's gap-pull re-hashes a large run), then a ws-first op whose WS
+  // frame can ONLY land via that async, detached gap-pull. Assert it converges to
+  // EXACTLY ONE effect once the pull completes. With this much accumulation the
+  // pull cannot finish within the old fixed `flush()` budget on ANY machine
+  // (measured: it exceeds `flush(8)` well before this size, and slower CI drops
+  // the threshold far lower) — so the old synchronous `toBe(before.length + 1)`
+  // assertion would deterministically read the off-by-one here, while the polling
+  // version below stays correct. Locks the semantics: a ws-first effect lands
+  // exactly once even when delivered by the gap-pull.
+  // -------------------------------------------------------------------------
+  it('ENG-131 regression: a ws-first frame delivered by the async gap-pull still lands exactly once', async () => {
+    const streamIds = Array.from({ length: NUM_STREAMS }, (_, i) => `s_${i}`)
+    const live = await makeLiveCore(() => Promise.resolve(new MemoryDb()), streamIds)
+    const streamId = 's_0'
+    // Accumulate a large settled run so the gap-pull is heavy (exceeds a fixed flush).
+    for (let i = 0; i < 90; i++) await seedSettledMessage(live, streamId)
+    const messageId = await seedSettledMessage(live, streamId)
+
+    live.server.pauseBatch()
+    const res = await mutateRpc(
+      live,
+      m3Params(
+        { stream: 0, op: 'react-add', reject: false, race: 'ws-first' },
+        streamId,
+        messageId,
+      ),
+    )
+    const row = await live.db.getOutbox(res.event_id)
+    if (!row) throw new Error('missing outbox row')
+    live.server.processBatch([{ body: row.body as never, event_hash: row.event_hash }])
+
+    const before = await live.db.getEventsForStream(streamId)
+    expect(before.some((e) => e.event_id === res.event_id)).toBe(false)
+    live.emit(live.server.wireFor(res.event_id))
+    // Wait for the detached gap-pull to deliver the frame — it lands EXACTLY once.
+    await untilAsync(async () => {
+      const evs = await live.db.getEventsForStream(streamId)
+      return evs.length === before.length + 1 && evs.some((e) => e.event_id === res.event_id)
+    })
+    live.server.resumeBatch()
+    await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
+    // The reaction membership exists exactly once (never duplicated by ack + WS).
+    const mine = (await live.db.getReactionsForMessage(messageId)).filter(
+      (r) => r.author_user_id === MY_USER_ID && r.emoji === REACT_EMOJI,
+    )
+    expect(mine).toHaveLength(1)
+    expect(hashMismatchDrops).toBe(0)
+    await live.db.close()
+  }, 30000)
+
+  // -------------------------------------------------------------------------
+  // ENG-131 ROBUSTNESS — the ENG-100 lesson: don't fix one seed. Sweep a few
+  // hundred seeds through the property; NONE may surface a counterexample.
+  // -------------------------------------------------------------------------
+  it('ENG-131 robustness: no surviving counterexample across a seed sweep', async () => {
+    for (let seed = 1; seed <= 40; seed++) {
+      await fc.assert(fc.asyncProperty(m3CmdArb(), runM3History), { numRuns: 5, seed })
+    }
+  }, 60000)
 })
