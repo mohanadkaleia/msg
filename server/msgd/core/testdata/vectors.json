@@ -261,6 +261,55 @@
       "hash": "sha256:02d0ad1d98f1a78063677fade9e0ecfd42d11a906714b4fc10299e1e3c53593d"
     },
     {
+      "id": "reaction-added-canonical",
+      "desc": "reaction.added body; single multi-byte emoji (U+1F44D, 4 UTF-8 bytes).",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"reaction.added\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"emoji\":\"\ud83d\udc4d\"}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZW1vamkiOiLwn5GNIiwibWVzc2FnZV9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEYifSwic3RyZWFtX2lkIjoic18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQyIsInR5cGUiOiJyZWFjdGlvbi5hZGRlZCIsInR5cGVfdmVyc2lvbiI6MSwid29ya3NwYWNlX2lkIjoid18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQiJ9",
+      "hash": "sha256:ef5b28f1f434fac299cdc51d079f5c9510592caf56b02626c74a9a332a0349ac"
+    },
+    {
+      "id": "reaction-added-emoji-bmp-vs16",
+      "desc": "reaction.added with a BMP emoji + variation selector (U+2764 U+FE0F, 6 UTF-8 bytes) \u2014 a multi-code-point grapheme, emitted as raw UTF-8.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"reaction.added\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"emoji\":\"\u2764\ufe0f\"}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZW1vamkiOiLinaTvuI8iLCJtZXNzYWdlX2lkIjoibV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRiJ9LCJzdHJlYW1faWQiOiJzXzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBDIiwidHlwZSI6InJlYWN0aW9uLmFkZGVkIiwidHlwZV92ZXJzaW9uIjoxLCJ3b3Jrc3BhY2VfaWQiOiJ3XzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBCIn0=",
+      "hash": "sha256:f18abee4d153e03fd3d2355cdb302e2010167900e692a535b0c4801a1bc03489"
+    },
+    {
+      "id": "reaction-added-emoji-max-64-bytes",
+      "desc": "reaction.added at the emoji domain boundary: 16 x U+1F600 = exactly 64 UTF-8 bytes (MAX_EMOJI_BYTES). Pins the accept edge of the locked emoji domain; canonicalization is byte-identical cross-language.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"reaction.added\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"emoji\":\"\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\"}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZW1vamkiOiLwn5iA8J+YgPCfmIDwn5iA8J+YgPCfmIDwn5iA8J+YgPCfmIDwn5iA8J+YgPCfmIDwn5iA8J+YgPCfmIDwn5iAIiwibWVzc2FnZV9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEYifSwic3RyZWFtX2lkIjoic18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQyIsInR5cGUiOiJyZWFjdGlvbi5hZGRlZCIsInR5cGVfdmVyc2lvbiI6MSwid29ya3NwYWNlX2lkIjoid18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQiJ9",
+      "hash": "sha256:5a95f9e5ffa854f0f55849760a6eceba2d474e75c72276aa14f79e9a1e0231df"
+    },
+    {
+      "id": "reaction-removed-canonical",
+      "desc": "reaction.removed body; single multi-byte emoji (U+1F389).",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"reaction.removed\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"emoji\":\"\ud83c\udf89\"}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZW1vamkiOiLwn46JIiwibWVzc2FnZV9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEYifSwic3RyZWFtX2lkIjoic18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQyIsInR5cGUiOiJyZWFjdGlvbi5yZW1vdmVkIiwidHlwZV92ZXJzaW9uIjoxLCJ3b3Jrc3BhY2VfaWQiOiJ3XzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBCIn0=",
+      "hash": "sha256:017bce9371c670d3f03d74a93a82e72d78343832e8ea4f5e3f2ceddd4a9cef74"
+    },
+    {
+      "id": "message-edited-markdown",
+      "desc": "message.edited body with the replacement text and format=markdown.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"message.edited\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"text\":\"edited body\",\"format\":\"markdown\"}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZm9ybWF0IjoibWFya2Rvd24iLCJtZXNzYWdlX2lkIjoibV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRiIsInRleHQiOiJlZGl0ZWQgYm9keSJ9LCJzdHJlYW1faWQiOiJzXzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBDIiwidHlwZSI6Im1lc3NhZ2UuZWRpdGVkIiwidHlwZV92ZXJzaW9uIjoxLCJ3b3Jrc3BhY2VfaWQiOiJ3XzAxSlo3TjZBNE02WThXNUsySDdER0tYNFBCIn0=",
+      "hash": "sha256:5a7719387aae5d953b128b5078adb313ebac5852e3a3aa09ffdd45582c30d4ad"
+    },
+    {
+      "id": "message-edited-plain",
+      "desc": "message.edited body with format=plain (the other locked format value).",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"message.edited\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"text\":\"plain edit\",\"format\":\"plain\"}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsiZm9ybWF0IjoicGxhaW4iLCJtZXNzYWdlX2lkIjoibV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRiIsInRleHQiOiJwbGFpbiBlZGl0In0sInN0cmVhbV9pZCI6InNfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEMiLCJ0eXBlIjoibWVzc2FnZS5lZGl0ZWQiLCJ0eXBlX3ZlcnNpb24iOjEsIndvcmtzcGFjZV9pZCI6IndfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEIifQ==",
+      "hash": "sha256:b2848513f500ad132bdbe873cd0017dfaa611e3e2eff7be0d1389a41396c33d0"
+    },
+    {
+      "id": "message-deleted-canonical",
+      "desc": "message.deleted tombstone body; payload is just the target message_id.",
+      "input_json": "{\"event_id\":\"01JZ7N6A4M6Y8W5K2H7DGKX4PA\",\"workspace_id\":\"w_01JZ7N6A4M6Y8W5K2H7DGKX4PB\",\"stream_id\":\"s_01JZ7N6A4M6Y8W5K2H7DGKX4PC\",\"type\":\"message.deleted\",\"type_version\":1,\"author_user_id\":\"u_01JZ7N6A4M6Y8W5K2H7DGKX4PD\",\"author_device_id\":\"d_01JZ7N6A4M6Y8W5K2H7DGKX4PE\",\"client_created_at\":\"2026-07-04T18:22:10.123Z\",\"payload\":{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\"}}",
+      "canonical_b64": "eyJhdXRob3JfZGV2aWNlX2lkIjoiZF8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRSIsImF1dGhvcl91c2VyX2lkIjoidV8wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQRCIsImNsaWVudF9jcmVhdGVkX2F0IjoiMjAyNi0wNy0wNFQxODoyMjoxMC4xMjNaIiwiZXZlbnRfaWQiOiIwMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQSIsInBheWxvYWQiOnsibWVzc2FnZV9pZCI6Im1fMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEYifSwic3RyZWFtX2lkIjoic18wMUpaN042QTRNNlk4VzVLMkg3REdLWDRQQyIsInR5cGUiOiJtZXNzYWdlLmRlbGV0ZWQiLCJ0eXBlX3ZlcnNpb24iOjEsIndvcmtzcGFjZV9pZCI6IndfMDFKWjdONkE0TTZZOFc1SzJIN0RHS1g0UEIifQ==",
+      "hash": "sha256:9db8962097245b284f702fee8ed3f7cb83303e1474168bb1f1ebc3ecc6ca64a5"
+    },
+    {
       "id": "depth-at-cap-list",
       "desc": "List nested exactly MAX_DEPTH deep; accepted. Pins the acceptance boundary.",
       "input_json": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
@@ -314,6 +363,15 @@
       "id": "reject-surrogate-value",
       "desc": "Lone-surrogate string value (\\ud800).",
       "input_json": "{\"x\":\"\\ud800\"}",
+      "error": {
+        "kind": "lone_surrogate",
+        "stage": "canonicalize"
+      }
+    },
+    {
+      "id": "reject-reaction-emoji-lone-surrogate",
+      "desc": "reaction.added whose emoji carries a lone surrogate (\\ud800). The new payload types ride the SAME canonicalization: an unpaired surrogate in emoji must reject cross-language, never produce a hash.",
+      "input_json": "{\"message_id\":\"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF\",\"emoji\":\"\\ud800\"}",
       "error": {
         "kind": "lone_surrogate",
         "stage": "canonicalize"

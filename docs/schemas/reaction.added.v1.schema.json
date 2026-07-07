@@ -1,0 +1,22 @@
+{
+  "$id": "https://msg.dev/schemas/reaction.added.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Payload for ``reaction.added`` v1 (\u00a72.2).\n\nIdempotent-add on ``(message_id, author_user_id, emoji)`` at projection time\n(\u00a72.4); this model only validates the event shape (see the module docstring).",
+  "properties": {
+    "emoji": {
+      "title": "Emoji",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "emoji"
+  ],
+  "title": "msg reaction.added payload (v1)",
+  "type": "object"
+}

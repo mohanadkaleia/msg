@@ -75,3 +75,71 @@ export function buildMessageCreatedPayload(
     mentions: mentions,
   }
 }
+
+/**
+ * Payload for `message.edited` v1 (§2.2 / §2.4).
+ *
+ * The new body of an existing message: the target `message_id` plus the
+ * replacement `text` and `format`. `text`/`format` reuse the `message.created`
+ * rules exactly — `format` is the same locked `'markdown' | 'plain'` domain.
+ */
+export type MessageEditedV1 = {
+  message_id: string
+  text: string
+  format: 'markdown' | 'plain'
+}
+
+/** Options for {@link buildMessageEditedPayload}; defaults mirror the Python model. */
+export interface BuildMessageEditedPayloadOptions {
+  message_id: string
+  text: string
+  format?: 'markdown' | 'plain'
+}
+
+/**
+ * Format-validate a `message.edited` v1 payload.
+ *
+ * @throws {Error} on a malformed `message_id`.
+ */
+export function buildMessageEditedPayload(
+  options: BuildMessageEditedPayloadOptions,
+): MessageEditedV1 {
+  if (!isValidTypedId(options.message_id, IdKind.MESSAGE)) {
+    throw new Error(`message_id is not a valid m_ id: ${options.message_id}`)
+  }
+  return {
+    message_id: options.message_id,
+    text: options.text,
+    format: options.format ?? 'markdown',
+  }
+}
+
+/**
+ * Payload for `message.deleted` v1 (§2.2 / §2.4).
+ *
+ * A tombstone naming the target `message_id`; the projection hides the message.
+ */
+export type MessageDeletedV1 = {
+  message_id: string
+}
+
+/** Options for {@link buildMessageDeletedPayload}. */
+export interface BuildMessageDeletedPayloadOptions {
+  message_id: string
+}
+
+/**
+ * Format-validate a `message.deleted` v1 payload.
+ *
+ * @throws {Error} on a malformed `message_id`.
+ */
+export function buildMessageDeletedPayload(
+  options: BuildMessageDeletedPayloadOptions,
+): MessageDeletedV1 {
+  if (!isValidTypedId(options.message_id, IdKind.MESSAGE)) {
+    throw new Error(`message_id is not a valid m_ id: ${options.message_id}`)
+  }
+  return {
+    message_id: options.message_id,
+  }
+}

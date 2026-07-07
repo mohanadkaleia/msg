@@ -167,7 +167,9 @@ All flow through the same envelope; `payload` schemas are Pydantic models in `co
 | `pin.added` / `pin.removed` | `message_id` | |
 | `file.uploaded` | `file_id`, `sha256`, `name`, `mime_type`, `size_bytes` | Emitted after blob upload confirmed (§6) |
 
-> **`message.created.format` domain (locked at `type_version` 1):** `format` is exactly `"markdown"` or `"plain"`. New format values arrive via a `type_version` bump (§2.3), **not** an additive enum widening — an older reader must never receive a `format` it cannot render. (ENG-54 ruling.)
+> **`message.created.format` domain (locked at `type_version` 1):** `format` is exactly `"markdown"` or `"plain"`. New format values arrive via a `type_version` bump (§2.3), **not** an additive enum widening — an older reader must never receive a `format` it cannot render. (ENG-54 ruling.) **`message.edited.format` shares this exact locked domain** (ENG-96).
+
+> **`reaction.*.emoji` domain (locked at `type_version` 1):** `emoji` is a bounded **Unicode string** — non-empty and at most **64 bytes** when UTF-8 encoded — validated in the payload model. There is deliberately **no server-side emoji whitelist**: any non-empty ≤64-byte Unicode grapheme (base emoji, ZWJ sequence, skin-tone modifier, keycap, or even a short non-emoji string) is accepted; the byte bound is the only gate. Widening or narrowing this domain later (adding a whitelist, changing the byte cap) is a breaking change under D9 and must arrive via a `type_version` bump, exactly like `format`. The idempotency key `(message_id, author_user_id, emoji)` (§2.4) is enforced at projection time (ENG-97), not in the payload model. (ENG-96 ruling.)
 
 **`workspace-meta` stream** (one per workspace; every **non-guest** member is subscribed):
 

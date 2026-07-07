@@ -315,6 +315,96 @@ CASES: list[_Case] = [
         ),
         "valid": True,
     },
+    # Valid — M3 new payload types (reaction.added/removed, message.edited/deleted).
+    # These prove the new payload *bodies* canonicalize + hash byte-identically in
+    # Python and TS. Payload-shape *validation* (empty/oversized emoji, bad ULID,
+    # missing message_id) is model-level — it hashes fine, so it lives in the
+    # payload model unit tests, not this JCS+hash suite. The only new-type reject
+    # that belongs here is a JCS-level one (lone surrogate in emoji), below.
+    {
+        "id": "reaction-added-canonical",
+        "desc": "reaction.added body; single multi-byte emoji (U+1F44D, 4 UTF-8 bytes).",
+        "input_json": _compact(
+            _body(
+                type="reaction.added",
+                payload={"message_id": _MSG, "emoji": "\U0001f44d"},
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "reaction-added-emoji-bmp-vs16",
+        "desc": (
+            "reaction.added with a BMP emoji + variation selector (U+2764 U+FE0F, "
+            "6 UTF-8 bytes) — a multi-code-point grapheme, emitted as raw UTF-8."
+        ),
+        "input_json": _compact(
+            _body(
+                type="reaction.added",
+                payload={"message_id": _MSG, "emoji": "❤️"},
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "reaction-added-emoji-max-64-bytes",
+        "desc": (
+            "reaction.added at the emoji domain boundary: 16 x U+1F600 = exactly "
+            "64 UTF-8 bytes (MAX_EMOJI_BYTES). Pins the accept edge of the locked "
+            "emoji domain; canonicalization is byte-identical cross-language."
+        ),
+        "input_json": _compact(
+            _body(
+                type="reaction.added",
+                payload={"message_id": _MSG, "emoji": "\U0001f600" * 16},
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "reaction-removed-canonical",
+        "desc": "reaction.removed body; single multi-byte emoji (U+1F389).",
+        "input_json": _compact(
+            _body(
+                type="reaction.removed",
+                payload={"message_id": _MSG, "emoji": "\U0001f389"},
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "message-edited-markdown",
+        "desc": "message.edited body with the replacement text and format=markdown.",
+        "input_json": _compact(
+            _body(
+                type="message.edited",
+                payload={"message_id": _MSG, "text": "edited body", "format": "markdown"},
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "message-edited-plain",
+        "desc": "message.edited body with format=plain (the other locked format value).",
+        "input_json": _compact(
+            _body(
+                type="message.edited",
+                payload={"message_id": _MSG, "text": "plain edit", "format": "plain"},
+            )
+        ),
+        "valid": True,
+    },
+    {
+        "id": "message-deleted-canonical",
+        "desc": "message.deleted tombstone body; payload is just the target message_id.",
+        "input_json": _compact(
+            _body(
+                type="message.deleted",
+                payload={"message_id": _MSG},
+            )
+        ),
+        "valid": True,
+    },
     # Valid — depth cap acceptance boundary (MAX_DEPTH)
     {
         "id": "depth-at-cap-list",
@@ -357,6 +447,16 @@ CASES: list[_Case] = [
         "id": "reject-surrogate-value",
         "desc": "Lone-surrogate string value (\\ud800).",
         "input_json": '{"x":"\\ud800"}',
+        "error": {"kind": "lone_surrogate", "stage": "canonicalize"},
+    },
+    {
+        "id": "reject-reaction-emoji-lone-surrogate",
+        "desc": (
+            "reaction.added whose emoji carries a lone surrogate (\\ud800). The new "
+            "payload types ride the SAME canonicalization: an unpaired surrogate in "
+            "emoji must reject cross-language, never produce a hash."
+        ),
+        "input_json": '{"message_id":"m_01JZ7N6A4M6Y8W5K2H7DGKX4PF","emoji":"\\ud800"}',
         "error": {"kind": "lone_surrogate", "stage": "canonicalize"},
     },
     {

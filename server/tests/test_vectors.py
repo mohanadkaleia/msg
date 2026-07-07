@@ -29,7 +29,7 @@ from msgd.core.jcs import JCSError, canonicalize
 #: file — that would be self-referential). Emitted by generate_vectors.py; update it in
 #: lock-step whenever the frozen suite legitimately changes. The two-place edit IS the
 #: "edits require a deliberate decision" acceptance criterion.
-VECTORS_SHA256 = "41f7017eeb674013d2a939944312148e15e1266996695915ee7f446c641b79d7"
+VECTORS_SHA256 = "be4c2dcbb2e68299e63adc656251609786a48227480e63a8c3783bef8ce7cdc0"
 
 #: The §2.1 anchor hash, independently computed during planning and pinned here so the
 #: golden file is not purely self-referential.

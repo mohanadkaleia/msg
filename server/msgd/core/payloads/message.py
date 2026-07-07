@@ -8,7 +8,13 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from msgd.core import ids
 
-__all__ = ["MessageCreatedV1"]
+__all__ = ["MessageCreatedV1", "MessageEditedV1", "MessageDeletedV1"]
+
+
+def _require_message_id(value: str) -> str:
+    if not ids.is_valid_typed_id(value, ids.IdKind.MESSAGE):
+        raise ValueError(f"message_id is not a valid m_ id: {value!r}")
+    return value
 
 
 class MessageCreatedV1(BaseModel):
@@ -38,9 +44,7 @@ class MessageCreatedV1(BaseModel):
     @field_validator("message_id")
     @classmethod
     def _check_message_id(cls, value: str) -> str:
-        if not ids.is_valid_typed_id(value, ids.IdKind.MESSAGE):
-            raise ValueError(f"message_id is not a valid m_ id: {value!r}")
-        return value
+        return _require_message_id(value)
 
     @field_validator("thread_root_id")
     @classmethod
@@ -64,3 +68,47 @@ class MessageCreatedV1(BaseModel):
             if not ids.is_valid_typed_id(uid, ids.IdKind.USER):
                 raise ValueError(f"mentions contains an invalid u_ id: {uid!r}")
         return value
+
+
+class MessageEditedV1(BaseModel):
+    """Payload for ``message.edited`` v1 (§2.2 / §2.4).
+
+    Carries the *new* body of an existing message: the target ``message_id``
+    plus the replacement ``text`` and ``format``.  ``text``/``format`` reuse
+    exactly the ``message.created`` rules — ``format`` is the same locked
+    ``"markdown" | "plain"`` domain (a new value ⇒ ``type_version`` bump).
+
+    Edits are last-write-wins by ``server_sequence`` (§2.4); prior payloads
+    remain in the log for the edit-history UI.  Ordering/LWW is a server
+    projection concern, not enforced here — this model validates shape only.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    message_id: str
+    text: str
+    #: Same locked domain as ``message.created.format`` (§2.2); a new value
+    #: arrives via a ``type_version`` bump, never an additive enum widening.
+    format: Literal["markdown", "plain"] = "markdown"
+
+    @field_validator("message_id")
+    @classmethod
+    def _check_message_id(cls, value: str) -> str:
+        return _require_message_id(value)
+
+
+class MessageDeletedV1(BaseModel):
+    """Payload for ``message.deleted`` v1 (§2.2 / §2.4).
+
+    A tombstone naming the target ``message_id``; the projection hides the
+    message (§2.4).  No other fields — the deletion carries no new content.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    message_id: str
+
+    @field_validator("message_id")
+    @classmethod
+    def _check_message_id(cls, value: str) -> str:
+        return _require_message_id(value)
