@@ -243,3 +243,33 @@ async def test_sync_after_setup_returns_meta_and_general(
     assert general["visibility"] == "public"
     assert general["member"] is True
     assert general["head_seq"] == 0
+
+
+async def test_sync_after_accept_invite_returns_general_as_member(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """An invitee's sync lists #general with member:true right after accept (ENG-112).
+
+    Mirrors ``test_sync_after_setup_returns_meta_and_general`` for the OWNER: without
+    the accept-invite channel.member_added, the invitee would see #general in the
+    public browser but member:false (empty sidebar). The self-join makes it true.
+    """
+    o = await do_setup(client)
+    invitee = await _invited_user(client, o["token"], role="member", email="joiner@example.com")
+    meta = await _meta_id(db_session, o["workspace_id"])
+
+    body = await _sync(client, invitee["token"])
+    streams = _by_id(body)
+
+    # The invitee sees the same two streams as the owner: workspace-meta + #general.
+    assert meta in streams
+    assert streams[meta]["kind"] == "workspace-meta"
+    kinds = {s["kind"] for s in body["streams"]}
+    assert kinds == {"workspace-meta", "channel"}
+
+    # #general: public and member:true for the invitee (the sidebar is populated).
+    general = next(s for s in body["streams"] if s["kind"] == "channel")
+    assert general["name"] == "general"
+    assert general["visibility"] == "public"
+    assert general["member"] is True
+    assert general["head_seq"] == 0

@@ -13,6 +13,16 @@ const inviteToken = computed(() =>
   typeof route.params.token === 'string' ? route.params.token : '',
 )
 
+// ENG-112: an already-signed-in user landing on /join/:token must NOT see the
+// create-account form (they'd be creating a second, unrelated account). The route
+// is public (the guard lets authenticated users stay), so we branch here on
+// auth.phase and offer "go to app" or "log out to accept as a new user".
+const isAuthenticated = computed(() => auth.phase === 'authenticated')
+// AuthStatus carries no display_name (worker/types.ts), so surface the stable
+// user id as the best-available identity for the "signed in as" line.
+const signedInAs = computed(() => auth.myUserId ?? 'your account')
+const loggingOut = ref(false)
+
 const displayName = ref('')
 const email = ref('')
 const password = ref('')
@@ -52,11 +62,62 @@ async function onSubmit(): Promise<void> {
     submitting.value = false
   }
 }
+
+function goToApp(): void {
+  void router.push('/')
+}
+
+// Log out in place so the create-account form appears for this SAME /join/:token
+// — letting the current user accept the invite as a different, new account.
+async function logoutToSwitch(): Promise<void> {
+  loggingOut.value = true
+  try {
+    await auth.logout()
+  } finally {
+    loggingOut.value = false
+  }
+}
 </script>
 
 <template>
   <main class="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+    <!-- ENG-112: already-signed-in state — never the create-account form. -->
+    <section
+      v-if="isAuthenticated"
+      class="w-full max-w-sm space-y-5 rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
+      data-test="already-signed-in"
+    >
+      <div class="space-y-1">
+        <h1 class="text-xl font-semibold text-slate-900">You're already signed in</h1>
+        <p class="text-sm text-slate-500">
+          You're already signed in as
+          <span class="font-medium text-slate-700" data-test="signed-in-as">{{ signedInAs }}</span
+          >.
+        </p>
+      </div>
+
+      <button
+        type="button"
+        class="w-full rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white"
+        data-test="go-to-app"
+        @click="goToApp"
+      >
+        Go to app
+      </button>
+
+      <button
+        type="button"
+        :disabled="loggingOut"
+        class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+        data-test="logout"
+        @click="logoutToSwitch"
+      >
+        {{ loggingOut ? 'Logging out…' : 'Log out to accept this invite as a new user' }}
+      </button>
+    </section>
+
     <form
+      v-else
       class="w-full max-w-sm space-y-5 rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
       @submit.prevent="onSubmit"
     >

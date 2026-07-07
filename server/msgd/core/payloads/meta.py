@@ -42,6 +42,7 @@ __all__ = [
     "build_workspace_created_body",
     "build_user_joined_body",
     "build_channel_created_body",
+    "build_channel_member_added_body",
 ]
 
 
@@ -311,6 +312,45 @@ def build_channel_created_body(
         workspace_id=workspace_id,
         stream_id=stream_id,
         type="channel.created",
+        type_version=1,
+        author_user_id=author_user_id,
+        author_device_id=author_device_id,
+        client_created_at=client_created_at,
+        payload=payload.model_dump(mode="json"),
+    )
+    dumped: dict[str, Any] = body.model_dump(mode="json")
+    return dumped
+
+
+def build_channel_member_added_body(
+    *,
+    workspace_id: str,
+    stream_id: str,
+    author_user_id: str,
+    author_device_id: str,
+    client_created_at: str,
+    channel_stream_id: str,
+    user_id: str,
+    event_id: str | None = None,
+) -> dict[str, Any]:
+    """Assemble a ``channel.member_added`` v1 body dict (§2.2).
+
+    Mirrors :func:`build_channel_created_body`: §2.2 homing is the CALLER's choice
+    — ``stream_id`` is the *home* stream (``workspace-meta`` for a public channel,
+    the channel's own stream for a private one; validated by ``validate.py`` on the
+    upload path), while ``payload.channel_stream_id`` is the channel whose
+    ``stream_members`` the reducer grows and ``payload.user_id`` is the added
+    member.  Used by ``/v1/auth/accept-invite`` to self-join the invitee to the
+    default ``#general`` channel (server-authored, ungated).  The model is the
+    source of truth, so ``hash_event(returned dict) == event_hash`` holds by
+    construction (D2).
+    """
+    payload = ChannelMemberAddedV1(channel_stream_id=channel_stream_id, user_id=user_id)
+    body = Body(
+        event_id=event_id if event_id is not None else ids.new_event_id(),
+        workspace_id=workspace_id,
+        stream_id=stream_id,
+        type="channel.member_added",
         type_version=1,
         author_user_id=author_user_id,
         author_device_id=author_device_id,
