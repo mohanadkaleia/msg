@@ -36,9 +36,20 @@ export {
   buildReactionRemovedBody,
   buildMessageEditedBody,
   buildMessageDeletedBody,
+  buildChannelCreatedBody,
+  buildChannelRenamedBody,
+  buildChannelArchivedBody,
+  buildChannelMemberAddedBody,
+  buildChannelMemberRemovedBody,
+  buildDmCreatedBody,
   finalizeEnvelope,
 } from './envelope'
-export type { Body, Envelope, BuildMessageCreatedBodyOptions } from './envelope'
+export type {
+  Body,
+  Envelope,
+  BuildMessageCreatedBodyOptions,
+  BuildMetaBodyOptions,
+} from './envelope'
 
 export {
   buildMessageCreatedPayload,
@@ -64,3 +75,18 @@ export type {
   ReactionRemovedV1,
   BuildReactionPayloadOptions,
 } from './payloads/reaction'
+
+export {
+  buildChannelCreatedPayload,
+  buildChannelRenamedPayload,
+  buildChannelArchivedPayload,
+  buildChannelMemberPayload,
+  buildDmCreatedPayload,
+} from './payloads/meta'
+export type {
+  ChannelCreatedV1,
+  ChannelRenamedV1,
+  ChannelArchivedV1,
+  ChannelMemberV1,
+  DmCreatedV1,
+} from './payloads/meta'

@@ -753,6 +753,21 @@ export class SyncEngine {
     return { events: rows.length, has_more: res.value.has_more, oldest_loaded_seq: newOldest }
   }
 
+  /**
+   * Re-fetch `GET /v1/sync` and upsert the `streams` table (ENG-104). Called after
+   * the client AUTHORS a workspace-meta event (channel create/rename/archive/
+   * member, DM create) so the new/changed stream row + its authoritative
+   * `member` / `archived` / `head_seq` land immediately — the sidebar's push
+   * subscription then re-queries. A no-op on a failed fetch (the next bootstrap /
+   * new-channel trigger reconciles). Does NOT touch cursors or pull events; those
+   * ride the normal WS/new-channel path.
+   */
+  async refreshStreams(): Promise<void> {
+    const res = await this.http.get<SyncResponse>('/v1/sync')
+    if (!res.ok) return
+    await this.db.putStreams(res.value.streams.map(toStreamRow))
+  }
+
   // -- internals -----------------------------------------------------------
 
   private withStreamLock<T>(streamId: string, fn: () => Promise<T>): Promise<T> {
@@ -817,6 +832,7 @@ function toStreamRow(stream: SyncStreamMeta): StreamRow {
     kind: stream.kind,
     head_seq: stream.head_seq,
     member: stream.member,
+    archived: stream.archived === true,
   }
   if (stream.name !== null) row.name = stream.name
   if (stream.visibility !== null) row.visibility = stream.visibility

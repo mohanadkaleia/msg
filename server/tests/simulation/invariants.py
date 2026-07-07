@@ -393,6 +393,11 @@ def assert_permission_isolation(
     stream it cannot read (the reply upload was refused at the stream gate), and (h)
     it appears in ZERO ``thread_participants_proj`` rows — a client cannot reply into,
     nor observe/grow a thread in, a stream it may not read.
+
+    ENG-104 extends it to DMs: (i) the adversary is NOT a participant of the DM
+    (owner <-> actors[1]) and so cannot see it in sync, read it directly (404), nor
+    write into it (refused at the stream gate) — a user cannot access, observe, or
+    post to a DM they are not part of.
     """
     priv = world.private_stream
     assert priv not in world.adversary_visible, (
@@ -429,6 +434,16 @@ def assert_permission_isolation(
     assert world.adversary_thread_reply_forbidden, (
         "isolation: adversary replied into the private stream it cannot read"
     )
+
+    # ENG-104 (i) the adversary (a non-participant) could neither see, read, nor
+    # write the DM between owner and actors[1]: absent from sync, direct read 404,
+    # and the write refused — a user cannot access a DM they are not part of.
+    assert world.adversary_dm_forbidden, (
+        "isolation: adversary accessed a DM it is not a participant of"
+    )
+    assert world.dm_stream not in world.adversary.pulled or not world.adversary.pulled.get(
+        world.dm_stream
+    ), "isolation: a DM event reached the adversary's pulled log"
     # ENG-99 (h) the adversary appears in no thread_participants_proj row.
     adversary_id = world.adversary.user_id
     assert all(user != adversary_id for (_root, user) in thread_participants), (

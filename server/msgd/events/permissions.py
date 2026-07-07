@@ -101,7 +101,11 @@ async def can_write(db: AsyncSession, *, ctx: AuthContext, stream_id: str, event
       per-channel creator role, so "creator may archive" is deferred) |
     | ``channel.member_added`` / ``channel.member_removed`` | owner/admin only
       (member-initiated private-channel invites are a deferred product call) |
-    | ``dm.created`` | deferred with the DM endpoint (M3); no M1 caller |
+    | ``dm.created`` | any non-guest member (owner/admin/member) — a member opens a
+      DM with other member(s). Guests are scoped (§3.6) and cannot create DMs. The
+      author-is-a-participant + genesis/homing rules are enforced in
+      ``validate._check_referential`` (which has the payload). Enabled in M3
+      (ENG-104); the reducer + predicate were already ready from M1 |
     | ``reaction.added`` / ``reaction.removed`` | any member who can WRITE the
       target message's stream — and a reaction is a write to the same stream the
       message lives in (§2.4), so write access == read access, identical to
@@ -129,8 +133,12 @@ async def can_write(db: AsyncSession, *, ctx: AuthContext, stream_id: str, event
         # edits/deletes this is only the FIRST gate: the author-or-admin rule is
         # applied in validate._check_referential, which has the message row.
         return await can_read(db, ctx=ctx, stream_id=stream_id)
-    if event_type == "channel.created":
-        # Any non-guest member may create a channel; guests cannot.
+    if event_type in ("channel.created", "dm.created"):
+        # Any non-guest member may create a channel OR open a DM; guests are scoped
+        # (§3.6) and cannot. ``stream_id`` here is the genesis home (a not-yet-
+        # existing self-homed stream for a private channel / DM), so this is a pure
+        # role gate — the author-is-a-participant + genesis-collision + homing rules
+        # live in ``validate._check_referential`` (which has the payload).
         return ctx.role != "guest"
     if event_type in (
         "channel.renamed",
@@ -139,9 +147,5 @@ async def can_write(db: AsyncSession, *, ctx: AuthContext, stream_id: str, event
         "channel.member_removed",
     ):
         return ctx.role in _ADMINISH
-    if event_type == "dm.created":
-        # Deferred with the DM endpoint (M3). Reducer + predicate are ready; there
-        # is no M1 caller, so this is a documented deferral (not writable in M1).
-        return False
     # Out of ENG-65 scope — ENG-66+ owns these rules.
     return False

@@ -90,6 +90,11 @@ class SyncStream(BaseModel):
     visibility: str | None
     head_seq: int
     member: bool
+    #: ``True`` iff the channel has been archived (``streams.archived_at`` set).
+    #: Archived channels stay READABLE (history access, D13) so they remain in the
+    #: listing; the flag lets the client gate writes/UI (ENG-104). Always ``False``
+    #: for non-channel kinds (they cannot be archived).
+    archived: bool = False
 
 
 class SyncResponse(BaseModel):

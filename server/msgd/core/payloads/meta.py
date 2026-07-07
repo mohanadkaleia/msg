@@ -43,6 +43,7 @@ __all__ = [
     "build_user_joined_body",
     "build_channel_created_body",
     "build_channel_member_added_body",
+    "build_dm_created_body",
 ]
 
 
@@ -351,6 +352,45 @@ def build_channel_member_added_body(
         workspace_id=workspace_id,
         stream_id=stream_id,
         type="channel.member_added",
+        type_version=1,
+        author_user_id=author_user_id,
+        author_device_id=author_device_id,
+        client_created_at=client_created_at,
+        payload=payload.model_dump(mode="json"),
+    )
+    dumped: dict[str, Any] = body.model_dump(mode="json")
+    return dumped
+
+
+def build_dm_created_body(
+    *,
+    workspace_id: str,
+    author_user_id: str,
+    author_device_id: str,
+    client_created_at: str,
+    dm_stream_id: str,
+    member_user_ids: list[str],
+    event_id: str | None = None,
+) -> dict[str, Any]:
+    """Assemble a ``dm.created`` v1 body dict (§2.2, ENG-104).
+
+    A DM is a private stream whose members are the participant set; the genesis
+    event is **self-homed** in the DM's own stream (``stream_id == dm_stream_id``)
+    — a DM is never homed in workspace-meta (which every non-guest member can read,
+    §3.6). The server enforces that ``author_user_id`` is one of ``member_user_ids``
+    (:func:`msgd.events.validate._check_referential`); the builder does not, so a
+    caller can construct a body and let the server reject a bad participant set. The
+    model is the source of truth, so ``hash_event(returned dict) == event_hash``
+    holds by construction (D2), and this one shared builder gives the server and the
+    web client a single hash-honest body shape (the frozen cross-language vector is
+    deferred to ENG-110).
+    """
+    payload = DmCreatedV1(dm_stream_id=dm_stream_id, member_user_ids=member_user_ids)
+    body = Body(
+        event_id=event_id if event_id is not None else ids.new_event_id(),
+        workspace_id=workspace_id,
+        stream_id=dm_stream_id,
+        type="dm.created",
         type_version=1,
         author_user_id=author_user_id,
         author_device_id=author_device_id,

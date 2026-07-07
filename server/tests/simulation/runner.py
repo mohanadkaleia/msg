@@ -235,6 +235,19 @@ async def _settle(world: World) -> None:
             resp.status_code == 200 and len(resp.json()["accepted"]) == 0
         )
 
+    # ENG-104 DM isolation probe: the adversary is NOT a participant of the DM
+    # (owner <-> actors[1]). Three non-disclosure checks: (i) the DM is absent from
+    # its sync, (ii) a direct read of the DM is a 404, and (iii) an attempt to WRITE
+    # a message into the DM is refused (can_write(dm) == can_read(dm) == False → no
+    # membership row), collapsing to the same permission_denied as an absent stream.
+    dm_absent = world.dm_stream not in world.adversary_visible
+    dm_read_forbidden = not await world.adversary.catchup_pull(world.dm_stream)
+    dm_write_forbidden = True
+    body = message_body(auth=world.adversary.auth, stream_id=world.dm_stream, text="adversary-dm")
+    resp = await post_batch(world.adversary.http, world.adversary.token, [wire_item(body)])
+    dm_write_forbidden = resp.status_code == 200 and len(resp.json()["accepted"]) == 0
+    world.adversary_dm_forbidden = dm_absent and dm_read_forbidden and dm_write_forbidden
+
     # ENG-98 edit/delete isolation probe: the adversary tries to edit a PUBLIC
     # message it did NOT author. Unlike the reaction/private probe (blocked at the
     # stream gate), the adversary CAN read the public stream — so this specifically

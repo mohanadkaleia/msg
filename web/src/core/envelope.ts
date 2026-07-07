@@ -18,6 +18,13 @@ import { hashEvent } from './hashing'
 import { newEventId } from './ids'
 import type { JSONValue } from './jcs'
 import {
+  buildChannelArchivedPayload,
+  buildChannelCreatedPayload,
+  buildChannelMemberPayload,
+  buildChannelRenamedPayload,
+  buildDmCreatedPayload,
+} from './payloads/meta'
+import {
   buildMessageCreatedPayload,
   buildMessageDeletedPayload,
   buildMessageEditedPayload,
@@ -185,6 +192,135 @@ export function buildMessageDeletedBody(
 ): Body {
   const payload = buildMessageDeletedPayload({ message_id: options.message_id })
   return buildRefBody('message.deleted', payload, options)
+}
+
+/**
+ * Shared envelope options for the M3 client-emitted workspace-meta event bodies
+ * (ENG-104): channel create/rename/archive, member add/remove, DM create. Unlike
+ * the message ops these carry NO `message_id`; `stream_id` is the §2.2 HOME (the
+ * caller's choice: workspace-meta for a public-channel event, the channel's own
+ * stream for a private one, the DM's own stream for `dm.created`).
+ */
+export interface BuildMetaBodyOptions {
+  workspace_id: string
+  stream_id: string
+  author_user_id: string
+  author_device_id: string
+  client_created_at: string
+  event_id?: string
+}
+
+/** Assemble a §2.1 {@link Body} for a client-emitted workspace-meta event. */
+function buildMetaBody(type: string, payload: JSONValue, options: BuildMetaBodyOptions): Body {
+  return {
+    event_id: options.event_id ?? newEventId(),
+    workspace_id: options.workspace_id,
+    stream_id: options.stream_id,
+    type,
+    type_version: 1,
+    author_user_id: options.author_user_id,
+    author_device_id: options.author_device_id,
+    client_created_at: options.client_created_at,
+    payload,
+  }
+}
+
+/**
+ * Mint and assemble a `channel.created` v1 {@link Body} (ENG-104). §2.2 homing is
+ * the caller's choice via `stream_id` (workspace-meta for public, the channel's
+ * own stream for private); `channel_stream_id` is the channel's own stream id the
+ * server reducer creates.
+ *
+ * @throws {Error} on a malformed `channel_stream_id` or bad `visibility`.
+ */
+export function buildChannelCreatedBody(
+  options: BuildMetaBodyOptions & {
+    channel_stream_id: string
+    name: string
+    visibility: 'public' | 'private'
+  },
+): Body {
+  const payload = buildChannelCreatedPayload({
+    channel_stream_id: options.channel_stream_id,
+    name: options.name,
+    visibility: options.visibility,
+  })
+  return buildMetaBody('channel.created', payload, options)
+}
+
+/**
+ * Mint and assemble a `channel.renamed` v1 {@link Body} (ENG-104).
+ *
+ * @throws {Error} on a malformed `channel_stream_id`.
+ */
+export function buildChannelRenamedBody(
+  options: BuildMetaBodyOptions & { channel_stream_id: string; name: string },
+): Body {
+  const payload = buildChannelRenamedPayload({
+    channel_stream_id: options.channel_stream_id,
+    name: options.name,
+  })
+  return buildMetaBody('channel.renamed', payload, options)
+}
+
+/**
+ * Mint and assemble a `channel.archived` v1 {@link Body} (ENG-104).
+ *
+ * @throws {Error} on a malformed `channel_stream_id`.
+ */
+export function buildChannelArchivedBody(
+  options: BuildMetaBodyOptions & { channel_stream_id: string },
+): Body {
+  const payload = buildChannelArchivedPayload({ channel_stream_id: options.channel_stream_id })
+  return buildMetaBody('channel.archived', payload, options)
+}
+
+/**
+ * Mint and assemble a `channel.member_added` v1 {@link Body} (ENG-104).
+ *
+ * @throws {Error} on a malformed `channel_stream_id` or `user_id`.
+ */
+export function buildChannelMemberAddedBody(
+  options: BuildMetaBodyOptions & { channel_stream_id: string; user_id: string },
+): Body {
+  const payload = buildChannelMemberPayload({
+    channel_stream_id: options.channel_stream_id,
+    user_id: options.user_id,
+  })
+  return buildMetaBody('channel.member_added', payload, options)
+}
+
+/**
+ * Mint and assemble a `channel.member_removed` v1 {@link Body} (ENG-104).
+ *
+ * @throws {Error} on a malformed `channel_stream_id` or `user_id`.
+ */
+export function buildChannelMemberRemovedBody(
+  options: BuildMetaBodyOptions & { channel_stream_id: string; user_id: string },
+): Body {
+  const payload = buildChannelMemberPayload({
+    channel_stream_id: options.channel_stream_id,
+    user_id: options.user_id,
+  })
+  return buildMetaBody('channel.member_removed', payload, options)
+}
+
+/**
+ * Mint and assemble a `dm.created` v1 {@link Body} (ENG-104). A DM is a private
+ * stream whose members are the participant set; the genesis event is SELF-HOMED in
+ * the DM's own stream (`stream_id === dm_stream_id`). The server enforces the
+ * author is one of `member_user_ids`.
+ *
+ * @throws {Error} on a malformed `dm_stream_id` / participant, or an empty set.
+ */
+export function buildDmCreatedBody(
+  options: BuildMetaBodyOptions & { dm_stream_id: string; member_user_ids: string[] },
+): Body {
+  const payload = buildDmCreatedPayload({
+    dm_stream_id: options.dm_stream_id,
+    member_user_ids: options.member_user_ids,
+  })
+  return buildMetaBody('dm.created', payload, options)
 }
 
 /**

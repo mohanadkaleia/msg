@@ -29,9 +29,12 @@ pull/search/fanout reuse — no divergent second implementation, no union):
   so every stream a guest sees is ``member:true``. A guest is a member with
   restricted scope; giving guests meta would leak the full channel/member roster.
 
-DM ``member_user_ids`` (the §3.2 example field for DMs) is **deferred**: no
-DM-creation path ships in M1, so DMs do not appear via sync yet; the field
-re-enters with the M3 DM endpoint.
+DMs (ENG-104, M3): a DM is a stream whose participants have an explicit
+``stream_members`` row, so the shared predicate's membership branch already
+returns it to each participant as ``member:true`` — DMs appear via sync with no
+extra query. A per-DM ``member_user_ids`` projection (the §3.2 example field) is
+still deferred; the client derives the participant set from the DM's own
+``dm.created`` event.
 
 Cold-start protocol (§3.2):  a fresh device pulls this endpoint, then for each
 visible stream fetches the **newest page** (``GET /v1/events?before=head_seq+1``),
@@ -82,6 +85,7 @@ async def get_sync(ctx: CurrentAuth, db: DbSession) -> SyncResponse:
             Stream.visibility,
             Stream.head_seq,
             mem.user_id.isnot(None).label("member"),
+            Stream.archived_at.isnot(None).label("archived"),
         )
         .select_from(Stream)
         .outerjoin(
@@ -102,6 +106,7 @@ async def get_sync(ctx: CurrentAuth, db: DbSession) -> SyncResponse:
                 visibility=row.visibility,
                 head_seq=row.head_seq,
                 member=bool(row.member),
+                archived=bool(row.archived),
             )
             for row in rows
         ]

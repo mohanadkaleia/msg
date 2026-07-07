@@ -118,6 +118,45 @@ def lifecycle_body(
     }
 
 
+def dm_created_body(
+    *,
+    auth: Auth,
+    dm_stream_id: str | None = None,
+    member_user_ids: Any = None,
+    home_stream_id: str | None = None,
+    type_version: int = 1,
+    include_dm_stream_id: bool = True,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """A ``dm.created`` body (ENG-104), self-homed in the DM stream by default.
+
+    §2.2: a DM genesis is self-homed in the DM's own stream. ``home_stream_id``
+    overrides the home so tests can probe the homing gate; ``member_user_ids`` /
+    ``type_version`` / ``include_dm_stream_id`` are deliberately open so security
+    tests can build malformed / unknown-version payloads. ``member_user_ids``
+    defaults to ``[auth's user]`` (the author is a participant).
+    """
+    dm_stream_id = dm_stream_id if dm_stream_id is not None else ids.new_stream_id()
+    if member_user_ids is None:
+        member_user_ids = [auth["user_id"]]
+    payload: dict[str, Any] = {"member_user_ids": member_user_ids}
+    if include_dm_stream_id:
+        payload["dm_stream_id"] = dm_stream_id
+    body: dict[str, Any] = {
+        "event_id": ids.new_event_id(),
+        "workspace_id": auth["workspace_id"],
+        "stream_id": home_stream_id if home_stream_id is not None else dm_stream_id,
+        "type": "dm.created",
+        "type_version": type_version,
+        "author_user_id": auth["user_id"],
+        "author_device_id": auth["device_id"],
+        "client_created_at": now_rfc3339(),
+        "payload": payload,
+    }
+    body.update(overrides)
+    return body
+
+
 def reaction_body(
     *,
     auth: Auth,

@@ -16,6 +16,7 @@ from msgd.core.payloads import (
     DmCreatedV1,
     UserJoinedV1,
     WorkspaceCreatedV1,
+    build_dm_created_body,
     build_user_joined_body,
     build_workspace_created_body,
     get_payload_model,
@@ -118,5 +119,29 @@ def test_build_user_joined_body_author_is_joiner() -> None:
     assert body["type"] == "user.joined"
     assert body["author_user_id"] == user
     assert body["payload"] == {"user_id": user, "display_name": "Dana"}
+    env = Envelope(body=Body(**body), event_hash=hash_event(body))
+    assert verify_hash(env)
+
+
+def test_build_dm_created_body_self_homed_and_hash_discipline() -> None:
+    """``dm.created`` is self-homed in its DM stream and hashes honestly (D2, ENG-104)."""
+    ws = ids.new_workspace_id()
+    author = ids.new_user_id()
+    other = ids.new_user_id()
+    device = ids.new_device_id()
+    dm = ids.new_stream_id()
+    body = build_dm_created_body(
+        workspace_id=ws,
+        author_user_id=author,
+        author_device_id=device,
+        client_created_at=now_rfc3339(),
+        dm_stream_id=dm,
+        member_user_ids=[author, other],
+    )
+    assert body["type"] == "dm.created"
+    assert body["type_version"] == 1
+    # Self-homed: the genesis event lands in the DM's own stream (never meta).
+    assert body["stream_id"] == dm
+    assert body["payload"] == {"dm_stream_id": dm, "member_user_ids": [author, other]}
     env = Envelope(body=Body(**body), event_hash=hash_event(body))
     assert verify_hash(env)

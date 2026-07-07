@@ -26,8 +26,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from authutil import accept_invite, create_invite, do_setup, join_token
-from eventsutil import bootstrap_channel, lifecycle_body, post_batch, wire_item
+from eventsutil import bootstrap_channel, dm_created_body, lifecycle_body, post_batch, wire_item
 from httpx import AsyncClient
+from msgd.core import ids
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from simulation.client import SimClient
@@ -48,9 +49,17 @@ class World:
     adversary: SimClient
     public_stream: str
     private_stream: str
+    #: a DM between owner and actors[1], created via a real dm.created (ENG-104).
+    #: The adversary is deliberately NOT a participant — the DM isolation probe.
+    dm_stream: str = ""
     #: filled in during settle for the permission-isolation invariant.
     adversary_visible: set[str] = field(default_factory=set)
     adversary_private_forbidden: bool = False
+    #: ENG-104 DM isolation: True once the adversary's attempt to WRITE into a DM it
+    #: is not a participant of was refused (permission_denied) AND the DM was absent
+    #: from its sync + a direct read was a 404 (non-disclosure). Vacuously True when
+    #: no DM was created (no second actor).
+    adversary_dm_forbidden: bool = True
     #: ENG-97 reaction isolation: True once the adversary's attempt to react to a
     #: private-stream message it cannot read was refused (or vacuously, when the
     #: private stream had no message to probe).
@@ -134,6 +143,11 @@ async def build_world(http: AsyncClient, engine: AsyncEngine, *, n_members: int)
             continue
         await _add_private_member(http, owner_auth, private_stream, actor.user_id)
 
+    # A DM between owner and actors[1] (ENG-104). n_members >= 2 always (MIN_MEMBERS),
+    # so a second actor exists. The adversary is NOT a participant — the DM isolation
+    # probe. The DM genesis is authored by the owner (a participant), self-homed.
+    dm_stream = await _create_dm(http, owner_auth, participant_user_id=actors[1].user_id)
+
     return World(
         http=http,
         engine=engine,
@@ -142,4 +156,20 @@ async def build_world(http: AsyncClient, engine: AsyncEngine, *, n_members: int)
         adversary=adversary,
         public_stream=public_stream,
         private_stream=private_stream,
+        dm_stream=dm_stream,
     )
+
+
+async def _create_dm(
+    http: AsyncClient, owner_auth: dict[str, Any], *, participant_user_id: str
+) -> str:
+    """Owner opens a 1:1 DM with ``participant_user_id`` via a real ``dm.created``."""
+    dm_stream_id = ids.new_stream_id()
+    body = dm_created_body(
+        auth=owner_auth,
+        dm_stream_id=dm_stream_id,
+        member_user_ids=[owner_auth["user_id"], participant_user_id],
+    )
+    resp = await post_batch(http, owner_auth["token"], [wire_item(body)])
+    assert resp.status_code == 200 and len(resp.json()["accepted"]) == 1, resp.text
+    return dm_stream_id

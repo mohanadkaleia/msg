@@ -174,10 +174,14 @@ async def _reduce_channel_member_removed(db: AsyncSession, body: dict[str, Any])
 
 
 async def _reduce_dm_created(db: AsyncSession, body: dict[str, Any]) -> None:
-    """Create the DM stream + one member row per participant (reducer ready, D3).
+    """Create the DM stream + one member row per participant (D3).
 
-    No DM-creation endpoint ships in ENG-65 (M3 lazy-on-first-message); the
-    reducer + predicate support exist so the machinery is ready.
+    Enabled in M3 (ENG-104): ``can_write`` admits ``dm.created`` for non-guest
+    members and ``validate`` enforces the author-is-a-participant + genesis/homing
+    rules. The DM stream is created lazily on ``dm.created`` (kind ``dm``,
+    visibility private-by-absence — a ``dm`` stream needs an explicit
+    ``stream_members`` row to be readable, see ``readable_streams_predicate``);
+    messages then flow into it via the normal ``message.created`` path.
 
     SECURITY (round 1): the member-adds are gated on the stream insert actually
     creating the row — a ``dm_stream_id`` colliding with an existing stream must

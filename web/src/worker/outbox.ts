@@ -53,6 +53,33 @@ import {
 /** Server batch cap (ENG-66) — one drain sends at most this many events. */
 export const MAX_BATCH = 100
 
+/** The worker-owned identity snapshot every authored event is stamped with. */
+export interface WorkerIdentity {
+  my_user_id: string
+  workspace_id: string
+  deviceId: string
+}
+
+/**
+ * Read the worker-owned identity (workspace/user/device) — NEVER from a tab. Used
+ * by the outbox send arms AND the ENG-104 meta author. Throws `not_authenticated`
+ * (coded) when there is no session.
+ */
+export async function resolveWorkerIdentity(
+  db: MsgDb,
+  authStatus: () => AuthStatus,
+): Promise<WorkerIdentity> {
+  const status = authStatus()
+  if (!status.authenticated || !status.my_user_id || !status.workspace_id) {
+    throw new RpcCodedError(
+      'not_authenticated',
+      'a durable mutation requires an authenticated session',
+    )
+  }
+  const deviceId = (await db.metaGet<string>(META_DEVICE_ID)) ?? ''
+  return { my_user_id: status.my_user_id, workspace_id: status.workspace_id, deviceId }
+}
+
 /** One accepted event in a `POST /v1/events/batch` 200 (ENG-66). */
 interface AcceptedEvent {
   event_id: string
@@ -205,20 +232,8 @@ export class Outbox {
   }
 
   /** Worker-side identity snapshot for the send arms (never from a tab). */
-  private async identity(): Promise<{
-    my_user_id: string
-    workspace_id: string
-    deviceId: string
-  }> {
-    const status = this.authStatus()
-    if (!status.authenticated || !status.my_user_id || !status.workspace_id) {
-      throw new RpcCodedError(
-        'not_authenticated',
-        'a durable mutation requires an authenticated session',
-      )
-    }
-    const deviceId = (await this.db.metaGet<string>(META_DEVICE_ID)) ?? ''
-    return { my_user_id: status.my_user_id, workspace_id: status.workspace_id, deviceId }
+  private identity(): Promise<WorkerIdentity> {
+    return resolveWorkerIdentity(this.db, this.authStatus)
   }
 
   /**

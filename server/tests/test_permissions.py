@@ -212,8 +212,13 @@ async def test_can_write_matrix(db_session: AsyncSession) -> None:
         db_session, ctx=owner, stream_id=w.priv, event_type="message.created"
     )  # owner not a member of priv
 
-    # dm.created — deferred (M3); no M1 caller.
-    assert not await can_write(db_session, ctx=owner, stream_id=w.dm, event_type="dm.created")
+    # dm.created (ENG-104, M3) — any non-guest may open a DM; guests are scoped.
+    # ``stream_id`` is the not-yet-existing self-homed DM stream, so this is a pure
+    # role gate (author-is-participant + genesis/homing enforced in validate).
+    fresh_dm = ids.new_stream_id()
+    assert await can_write(db_session, ctx=owner, stream_id=fresh_dm, event_type="dm.created")
+    assert await can_write(db_session, ctx=member, stream_id=fresh_dm, event_type="dm.created")
+    assert not await can_write(db_session, ctx=guest, stream_id=fresh_dm, event_type="dm.created")
 
     # reaction.added / reaction.removed (ENG-97) — write access == read access,
     # identical to message.created (a reaction is a write to the message's stream).

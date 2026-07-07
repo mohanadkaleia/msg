@@ -554,17 +554,82 @@ async def _check_referential(
         return None
 
     if event_type == "dm.created":
-        # Home totality: UNREACHABLE. ``dm.created`` is rejected at step iii for
-        # EVERY version (``can_write`` keys on the type string -> False ->
-        # permission_denied), so control never reaches this function for it. This
-        # explicit reject is defense-in-depth in case that ever changes: a
-        # dm.created that somehow arrives here is refused rather than accepted with
-        # an unconstrained home (§2.2 dm homing is deferred with the DM endpoint).
-        return Rejected(
-            event_id="",
-            code="invalid_schema",
-            detail="dm.created is not accepted in M1",
-        )
+        # DM genesis (ENG-104, M3). §2.2: a DM is a private stream whose members are
+        # the participant set; visibility is private (no public branch). The genesis
+        # event is SELF-HOMED in the DM's own stream (mirrors a private channel) — a
+        # DM is never homed in workspace-meta, which is readable by every non-guest
+        # member and would leak the DM's existence + roster (§3.6).
+        #
+        # Home totality: an accept here is only reachable with
+        # body.stream_id == dm_stream_id, and that id is proven not to pre-exist
+        # ANYWHERE (global genesis-collision check) so the reducer creates it fresh
+        # inside ctx.workspace_id. Every other path rejects.
+        dm_stream_id = payload.get("dm_stream_id")
+        member_user_ids = payload.get("member_user_ids")
+
+        # Enforce the genesis payload shape HERE, regardless of type_version — the
+        # step-iv payload model is SKIPPED for an unknown version
+        # (get_payload_model("dm.created", 2) -> None), and the version-agnostic
+        # reducer reads both fields unconditionally (a KeyError there would 500).
+        if not isinstance(dm_stream_id, str) or not ids.is_valid_typed_id(
+            dm_stream_id, ids.IdKind.STREAM
+        ):
+            return Rejected(
+                event_id="",
+                code="invalid_schema",
+                detail="dm.created payload.dm_stream_id must be a stream id",
+            )
+        if (
+            not isinstance(member_user_ids, list)
+            or not member_user_ids
+            or not all(
+                isinstance(uid, str) and ids.is_valid_typed_id(uid, ids.IdKind.USER)
+                for uid in member_user_ids
+            )
+        ):
+            return Rejected(
+                event_id="",
+                code="invalid_schema",
+                detail="dm.created payload.member_user_ids must be a non-empty list of user ids",
+            )
+
+        # The author MUST be one of the participants — you cannot open a DM you are
+        # not part of (which would create a private stream between OTHERS and grant
+        # them membership you chose, without any read access yourself). This also
+        # keeps the isolation model simple: a DM's members are exactly the set the
+        # author placed themselves into. Referential existence of the OTHER
+        # participants is deferred (D8d) exactly like channel.member_added — a
+        # cross-tenant user id is harmless (readable_streams_predicate filters on
+        # Stream.workspace_id, so a foreign user's own queries never match this
+        # workspace's DM stream).
+        if ctx.user_id not in member_user_ids:
+            return Rejected(
+                event_id="",
+                code="permission_denied",
+                detail="dm.created author must be a participant",
+            )
+
+        # Genesis collision (mirrors channel.created): a genesis event may not adopt
+        # an already-existing stream (cross-stream read grant). GLOBAL (all
+        # workspaces) for the same F1 reason — scoping it to the caller's workspace
+        # would let a DM genesis adopt a stream id existing in workspace B and home
+        # (mutate) B's log.
+        if await _stream_exists(db, dm_stream_id):
+            return Rejected(
+                event_id="",
+                code="invalid_schema",
+                detail="dm_stream_id already exists",
+            )
+
+        # TOTAL homing: a DM genesis is always self-homed in its own stream. There
+        # is NO fall-through accept with an unconstrained home.
+        if body_model.stream_id != dm_stream_id:
+            return Rejected(
+                event_id="",
+                code="invalid_schema",
+                detail="dm.created must be self-homed in the DM stream",
+            )
+        return None
 
     if event_type in _LIFECYCLE_TYPES:
         # Home totality: an accept here is only reachable with the target resolved

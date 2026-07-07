@@ -5,7 +5,7 @@
 // mirrors how the worker layer is tested: everything injected, no SharedWorker.
 import { vi } from 'vitest'
 
-import { newEventId, newMessageId } from '../../../src/core'
+import { newEventId, newMessageId, newStreamId } from '../../../src/core'
 import { topicKey } from '../../../src/worker/types'
 import type {
   BackfillResult,
@@ -39,6 +39,8 @@ export class FakeWorker {
   readonly deleteSpy = vi.fn<(eventId: string) => void>()
   /** Captures every `outbox.send` params object (text + mentions assertions). */
   readonly sendSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.send' }>) => void>()
+  /** Captures every ENG-104 meta mutation (create/rename/archive/member/dm). */
+  readonly metaSpy = vi.fn<(params: MutateParams) => void>()
   /** ENG-102 M3 optimistic-op spies. */
   readonly reactSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.react' }>) => void>()
   readonly editSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.edit' }>) => void>()
@@ -341,6 +343,34 @@ export class FakeWorker {
     }
     if (params.m === 'outbox.delete') {
       this.deleteSpy(params.event_id)
+      return Promise.resolve({ ok: true } as MutateResult<M>)
+    }
+    // ENG-104 channel/DM management. The fake records the params (tests assert the
+    // right event is authored — never direct HTTP) and mints/echoes a stream id for
+    // create ops so the shell can switch to the new stream. It also mirrors the
+    // optimistic streams-projection effect (create adds a member:true row) so the
+    // sidebar round-trips as it would against the real worker.
+    if (params.m === 'channel.create') {
+      this.metaSpy(params)
+      const streamId = newStreamId()
+      this.addStream({ stream_id: streamId, name: params.name, visibility: params.visibility })
+      this.publishStream(streamId)
+      return Promise.resolve({ stream_id: streamId } as MutateResult<M>)
+    }
+    if (params.m === 'dm.create') {
+      this.metaSpy(params)
+      const streamId = newStreamId()
+      this.addStream({ stream_id: streamId, kind: 'dm', name: 'dm' })
+      this.publishStream(streamId)
+      return Promise.resolve({ stream_id: streamId } as MutateResult<M>)
+    }
+    if (
+      params.m === 'channel.rename' ||
+      params.m === 'channel.archive' ||
+      params.m === 'channel.addMember' ||
+      params.m === 'channel.removeMember'
+    ) {
+      this.metaSpy(params)
       return Promise.resolve({ ok: true } as MutateResult<M>)
     }
     // ENG-100/102 M3 optimistic ops — the fake applies the projection effect the

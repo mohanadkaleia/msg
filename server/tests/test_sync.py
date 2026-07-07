@@ -109,6 +109,29 @@ async def test_sync_shape_member_flags_and_public_browser(
     # private the caller does NOT belong to: absent entirely.
     assert priv_other not in streams
 
+    # archived flag: a fresh channel is not archived.
+    assert streams[pub_joined]["archived"] is False
+
+
+async def test_sync_reports_archived_flag(client: AsyncClient, db_session: AsyncSession) -> None:
+    """An archived channel stays READABLE in the listing but carries ``archived:true`` (ENG-104)."""
+    from msgd.auth.sessions import utcnow
+
+    o = await do_setup(client)
+    ws, uid = o["workspace_id"], o["user_id"]
+    chan = _add_stream(db_session, ws=ws, kind="channel", name="old", visibility="public")
+    await db_session.flush()
+    db_session.add(StreamMember(stream_id=chan, user_id=uid))
+    row = await db_session.get(Stream, chan)
+    assert row is not None
+    row.archived_at = utcnow()
+    await db_session.flush()
+
+    streams = _by_id(await _sync(client, o["token"]))
+    # Still present (archival gates writes/UI, not history access — D13) + flagged.
+    assert chan in streams
+    assert streams[chan]["archived"] is True
+
 
 # --- guest exclusion (FLAGGED DEVIATION) --------------------------------------
 

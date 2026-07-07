@@ -28,6 +28,7 @@ from eventsutil import (
     bootstrap_channel,
     channel_created_body,
     custom_body,
+    dm_created_body,
     lifecycle_body,
     message_body,
     post_batch,
@@ -317,6 +318,90 @@ async def test_guest_channel_created_denied(client: AsyncClient, db_session: Asy
     assert meta is not None
     body = channel_created_body(auth=guest, home_stream_id=meta)
     resp = await post_batch(client, guest["token"], [wire_item(body)])
+    (entry,) = resp.json()["rejected"]
+    assert entry["code"] == "permission_denied"
+
+
+async def test_dm_created_end_to_end(client: AsyncClient, db_session: AsyncSession) -> None:
+    """ENG-104: a member opens a DM; both participants can read/write it, an outsider cannot.
+
+    Drives the real endpoint: dm.created accept → the DM stream + participant
+    membership rows are created by the reducer → each participant may post a
+    message → a non-participant member sees the DM as absent (404-equivalent
+    permission_denied, D13 non-disclosure).
+    """
+    owner = await do_setup(client)
+    member = await _invite_user(client, owner, role="member")
+    outsider = await _invite_user(client, owner, role="member")
+
+    dm = ids.new_stream_id()
+    genesis = dm_created_body(
+        auth=member,
+        dm_stream_id=dm,
+        member_user_ids=[member["user_id"], owner["user_id"]],
+    )
+    resp = await post_batch(client, member["token"], [wire_item(genesis)])
+    assert len(resp.json()["accepted"]) == 1, resp.text
+
+    # The reducer created the DM stream (kind dm) + one membership row per participant.
+    stream_row = await fetch_stream(db_session, dm)
+    assert stream_row is not None and stream_row.kind == "dm" and stream_row.visibility is None
+    members = (
+        (await db_session.execute(select(StreamMember.user_id).where(StreamMember.stream_id == dm)))
+        .scalars()
+        .all()
+    )
+    assert set(members) == {member["user_id"], owner["user_id"]}
+
+    # Both participants may post into the DM.
+    for participant in (member, owner):
+        resp = await post_batch(
+            client, participant["token"], [wire_item(message_body(auth=participant, stream_id=dm))]
+        )
+        assert len(resp.json()["accepted"]) == 1, resp.text
+
+    # An outsider (workspace member, non-participant) cannot write — and the DM is
+    # non-disclosed: identical code+detail to a never-existed stream (D13).
+    to_dm = message_body(auth=outsider, stream_id=dm)
+    to_absent = message_body(auth=outsider, stream_id=ids.new_stream_id())
+    resp = await post_batch(client, outsider["token"], [wire_item(to_dm), wire_item(to_absent)])
+    forbidden, absent = resp.json()["rejected"]
+    assert forbidden["code"] == "permission_denied"
+    assert (forbidden["code"], forbidden["detail"]) == (absent["code"], absent["detail"])
+
+
+async def test_dm_created_author_not_participant_denied(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """ENG-104: a member cannot open a DM that excludes themselves → permission_denied."""
+    owner = await do_setup(client)
+    member = await _invite_user(client, owner, role="member")
+    other = await _invite_user(client, owner, role="member")
+
+    dm = ids.new_stream_id()
+    genesis = dm_created_body(
+        auth=member,
+        dm_stream_id=dm,
+        member_user_ids=[owner["user_id"], other["user_id"]],  # author omitted
+    )
+    resp = await post_batch(client, member["token"], [wire_item(genesis)])
+    (entry,) = resp.json()["rejected"]
+    assert entry["code"] == "permission_denied"
+    # No DM stream leaked into existence.
+    assert await fetch_stream(db_session, dm) is None
+
+
+async def test_guest_dm_created_denied(client: AsyncClient, db_session: AsyncSession) -> None:
+    """ENG-104/§3.6: a guest cannot open a DM (scoped) → permission_denied."""
+    owner = await do_setup(client)
+    guest = await _invite_user(client, owner, role="guest")
+    dm = ids.new_stream_id()
+    genesis = dm_created_body(
+        auth=guest,
+        dm_stream_id=dm,
+        member_user_ids=[guest["user_id"], owner["user_id"]],
+    )
+    resp = await post_batch(client, guest["token"], [wire_item(genesis)])
     (entry,) = resp.json()["rejected"]
     assert entry["code"] == "permission_denied"
 

@@ -236,6 +236,8 @@ export interface StreamRow {
   visibility?: string
   head_seq: number
   member: boolean
+  /** `true` iff an archived channel (ENG-104): gates writes/UI, stays readable (D13). */
+  archived?: boolean
 }
 
 /** Per-stream cursor row (derived echo of pull progress). */
@@ -501,6 +503,17 @@ export type MutateParams =
   | { m: 'outbox.remove'; stream_id: string; message_id: string }
   | { m: 'outbox.retry'; event_id: string }
   | { m: 'outbox.delete'; event_id: string }
+  // ENG-104 (M3) channel & member management + DM creation. These author
+  // workspace-meta events (channel.created/renamed/archived, channel.member_*,
+  // dm.created) worker-side: build+hash the body from the worker-owned identity,
+  // POST /v1/events/batch, then refresh /v1/sync so the new/changed stream lands
+  // in the sidebar. `channel.create` / `dm.create` return the new stream id.
+  | { m: 'channel.create'; name: string; visibility: 'public' | 'private' }
+  | { m: 'channel.rename'; stream_id: string; name: string }
+  | { m: 'channel.archive'; stream_id: string }
+  | { m: 'channel.addMember'; stream_id: string; user_id: string }
+  | { m: 'channel.removeMember'; stream_id: string; user_id: string }
+  | { m: 'dm.create'; user_ids: string[] }
 
 /** `outbox.send` result — enough for the tab to locate its optimistic row. */
 export interface SendResult {
@@ -509,13 +522,18 @@ export interface SendResult {
   created_seq: number
 }
 
-/** `outbox.retry` / `outbox.delete` result. */
+/** `outbox.retry` / `outbox.delete` / member-op result. */
 export interface OutboxActionResult {
   ok: true
 }
 
+/** `channel.create` / `dm.create` result — the new stream id (for instant switch). */
+export interface StreamCreatedResult {
+  stream_id: string
+}
+
 /** The union of every mutation result (RpcResultMap['mutate']). */
-export type MutateResultUnion = SendResult | OutboxActionResult
+export type MutateResultUnion = SendResult | OutboxActionResult | StreamCreatedResult
 
 /** A stream's unread count + mention badge (§3.5), derived at query time. */
 export interface StreamBadge {
@@ -656,9 +674,19 @@ export type MutateResult<M extends MutateParams> = M extends {
   m: 'outbox.send' | 'outbox.react' | 'outbox.edit' | 'outbox.remove'
 }
   ? SendResult
-  : M extends { m: 'outbox.retry' | 'outbox.delete' }
-    ? OutboxActionResult
-    : never
+  : M extends { m: 'channel.create' | 'dm.create' }
+    ? StreamCreatedResult
+    : M extends {
+          m:
+            | 'outbox.retry'
+            | 'outbox.delete'
+            | 'channel.rename'
+            | 'channel.archive'
+            | 'channel.addMember'
+            | 'channel.removeMember'
+        }
+      ? OutboxActionResult
+      : never
 
 export interface RpcError {
   code: string
@@ -706,6 +734,8 @@ export interface SyncStreamMeta {
   visibility: string | null
   head_seq: number
   member: boolean
+  /** `true` iff the channel is archived (ENG-104); absent on older servers → false. */
+  archived?: boolean
 }
 
 /** The full `GET /v1/sync` snapshot (server `SyncResponse`). */

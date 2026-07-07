@@ -7,6 +7,7 @@ from typing import Any
 from eventsutil import (
     channel_created_body,
     custom_body,
+    dm_created_body,
     lifecycle_body,
     message_body,
     wire_item,
@@ -212,18 +213,92 @@ async def test_member_lifecycle_denied(db_session: AsyncSession) -> None:
     )
 
 
-async def test_dm_created_denied_in_m1(db_session: AsyncSession) -> None:
-    """dm.created has no M1 caller: can_write=False → permission_denied (homing unreached)."""
+async def test_dm_created_accepted_for_participant(db_session: AsyncSession) -> None:
+    """dm.created by a member who is a participant, self-homed in a fresh DM stream → Accepted."""
     w = await _seed(db_session)
     dm_id = ids.new_stream_id()
-    body = lifecycle_body(
+    body = dm_created_body(
         auth=w.auth(w.member),
-        home_stream_id=dm_id,
-        type="dm.created",
-        payload={"dm_stream_id": dm_id, "member_user_ids": [w.member.user_id]},
+        dm_stream_id=dm_id,
+        member_user_ids=[w.member.user_id, w.owner.user_id],
+    )
+    out = await validate_event(db_session, ctx=w.member, item=wire_item(body))
+    assert isinstance(out, Accepted), out
+    assert out.home_stream_id == dm_id
+
+
+async def test_dm_created_denied_for_guest(db_session: AsyncSession) -> None:
+    """dm.created by a guest → permission_denied (guests are scoped, §3.6)."""
+    w = await _seed(db_session)
+    dm_id = ids.new_stream_id()
+    body = dm_created_body(
+        auth=w.auth(w.guest),
+        dm_stream_id=dm_id,
+        member_user_ids=[w.guest.user_id, w.member.user_id],
+    )
+    _expect_rejected(
+        await validate_event(db_session, ctx=w.guest, item=wire_item(body)), "permission_denied"
+    )
+
+
+async def test_dm_created_author_must_be_participant(db_session: AsyncSession) -> None:
+    """dm.created whose member_user_ids omit the author → permission_denied.
+
+    A user cannot open a DM they are not part of (grafting membership onto others).
+    """
+    w = await _seed(db_session)
+    dm_id = ids.new_stream_id()
+    body = dm_created_body(
+        auth=w.auth(w.member),
+        dm_stream_id=dm_id,
+        member_user_ids=[w.owner.user_id],  # author (member) omitted
     )
     _expect_rejected(
         await validate_event(db_session, ctx=w.member, item=wire_item(body)), "permission_denied"
+    )
+
+
+async def test_dm_created_collision_and_homing_rejected(db_session: AsyncSession) -> None:
+    """dm.created adopting an existing stream id → invalid_schema; wrong home → invalid_schema."""
+    w = await _seed(db_session)
+    auth = w.auth(w.member)
+    # collision: dm_stream_id is an EXISTING stream (the seeded public channel).
+    body = dm_created_body(
+        auth=auth,
+        dm_stream_id=w.pub,
+        member_user_ids=[w.member.user_id, w.owner.user_id],
+        home_stream_id=w.pub,
+    )
+    _expect_rejected(
+        await validate_event(db_session, ctx=w.member, item=wire_item(body)), "invalid_schema"
+    )
+    # wrong home: a fresh DM stream homed somewhere other than itself.
+    fresh = ids.new_stream_id()
+    body = dm_created_body(
+        auth=auth,
+        dm_stream_id=fresh,
+        member_user_ids=[w.member.user_id, w.owner.user_id],
+        home_stream_id=w.meta,  # not self-homed
+    )
+    _expect_rejected(
+        await validate_event(db_session, ctx=w.member, item=wire_item(body)), "invalid_schema"
+    )
+
+
+async def test_dm_created_bad_payload_rejected(db_session: AsyncSession) -> None:
+    """dm.created with an empty member_user_ids (unknown version skips model) → invalid_schema."""
+    w = await _seed(db_session)
+    auth = w.auth(w.member)
+    dm_id = ids.new_stream_id()
+    # unknown version + empty participant list → the referential shape gate fires.
+    body = dm_created_body(
+        auth=auth,
+        dm_stream_id=dm_id,
+        member_user_ids=[],
+        type_version=2,
+    )
+    _expect_rejected(
+        await validate_event(db_session, ctx=w.member, item=wire_item(body)), "invalid_schema"
     )
 
 
@@ -505,32 +580,48 @@ async def test_channel_created_home_neither_meta_nor_self_rejected(
     )
 
 
-async def test_dm_created_branch_is_total_reject(db_session: AsyncSession) -> None:
-    """dm.created is refused (defense-in-depth) — never accepted with an unconstrained home.
+async def test_dm_created_branch_is_total_homed(db_session: AsyncSession) -> None:
+    """The dm.created referential branch never accepts with an unconstrained home.
 
-    In the normal pipeline it is rejected at step iii (permission_denied); the
-    referential branch itself must also refuse it rather than fall through.
+    A valid self-homed participant DM passes; a DM homed anywhere but its own stream
+    is refused (invalid_schema) rather than falling through to accept.
     """
     w = await _seed(db_session)
     dm_id = ids.new_stream_id()
-    body_model = Body.model_validate(
-        {
-            "event_id": ids.new_event_id(),
-            "workspace_id": w.ws,
-            "stream_id": dm_id,
-            "type": "dm.created",
-            "type_version": 1,
-            "author_user_id": w.member.user_id,
-            "author_device_id": w.member.device_id,
-            "client_created_at": "2026-07-05T00:00:00.000Z",
-            "payload": {"dm_stream_id": dm_id, "member_user_ids": [w.member.user_id]},
-        }
+
+    def _model(home: str) -> Body:
+        return Body.model_validate(
+            {
+                "event_id": ids.new_event_id(),
+                "workspace_id": w.ws,
+                "stream_id": home,
+                "type": "dm.created",
+                "type_version": 1,
+                "author_user_id": w.member.user_id,
+                "author_device_id": w.member.device_id,
+                "client_created_at": "2026-07-05T00:00:00.000Z",
+                "payload": {
+                    "dm_stream_id": dm_id,
+                    "member_user_ids": [w.member.user_id, w.owner.user_id],
+                },
+            }
+        )
+
+    # self-homed → passes (returns None).
+    ok = await _check_referential(
+        db_session,
+        ctx=w.member,
+        body_model=(m := _model(dm_id)),
+        raw_body=m.model_dump(mode="json"),
     )
+    assert ok is None, ok
+
+    # homed at workspace-meta (a DM must never leak into meta) → invalid_schema.
     out = await _check_referential(
         db_session,
         ctx=w.member,
-        body_model=body_model,
-        raw_body=body_model.model_dump(mode="json"),
+        body_model=(m := _model(w.meta)),
+        raw_body=m.model_dump(mode="json"),
     )
     assert isinstance(out, Rejected) and out.code == "invalid_schema"
 

@@ -8,6 +8,7 @@
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
 import { createHttpClient, type HttpClient } from './http'
+import { MetaAuthor } from './meta'
 import { Outbox } from './outbox'
 import {
   applyEventsToProjection,
@@ -115,6 +116,8 @@ export class WorkerCore {
   private readonly sync: SyncEngine
   /** The optimistic send + drain loop (ENG-81). */
   private readonly outbox: Outbox
+  /** Channel & member management + DM creation authoring (ENG-104). */
+  private readonly meta: MetaAuthor
   /** Latest sync state — gates the outbox drain to `live` + detects the rising edge. */
   private syncLive = false
 
@@ -164,6 +167,15 @@ export class WorkerCore {
       // Only drain when the sync engine is live (§4): an offline/degraded compose
       // sits `queued`; the rising-edge-into-`live` kick (onSyncStatus) sends it.
       canDrain: () => this.syncLive,
+    })
+    this.meta = new MetaAuthor({
+      db,
+      http,
+      authStatus: () => this.auth.status(),
+      refreshStreams: () => this.sync.refreshStreams(),
+      // A `{kind:'sync'}` fan makes the sidebar re-query streams.list — which is
+      // how a NEW stream (no per-stream subscription yet) first appears (ENG-104).
+      onStreamsChanged: () => this.publish({ kind: 'sync' }, this.sync.status()),
     })
     this.registerDefaults()
     this.registerAuth()
@@ -317,6 +329,18 @@ export class WorkerCore {
         return this.outbox.retry(params.event_id)
       case 'outbox.delete':
         return this.outbox.delete(params.event_id)
+      case 'channel.create':
+        return this.meta.createChannel(params)
+      case 'channel.rename':
+        return this.meta.renameChannel(params)
+      case 'channel.archive':
+        return this.meta.archiveChannel(params)
+      case 'channel.addMember':
+        return this.meta.addMember(params)
+      case 'channel.removeMember':
+        return this.meta.removeMember(params)
+      case 'dm.create':
+        return this.meta.createDm(params)
       default:
         // Exhaustive: a new MutateParams member without a case is a COMPILE error
         // (params narrows to `never`); an out-of-contract `m` throws a coded error.
