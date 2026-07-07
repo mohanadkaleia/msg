@@ -22,19 +22,25 @@ from msgd.db.models import MessageProj, ReactionProj
 
 __all__ = ["dump_messages_proj", "dump_reactions_proj"]
 
-#: The dumped columns, in fixed order (never ``SELECT *``).  The M1-relevant
-#: subset the apply actually writes.
+#: The dumped columns, in fixed order (never ``SELECT *``).  The subset the apply
+#: actually writes.
 #:
-#: EXCLUDED and why: the later-milestone columns (``edited_seq``, ``deleted``,
-#: ``reply_count``, ``last_reply_seq``) are constant defaults at M1 — dumping
-#: them proves nothing about the apply logic and would couple the gate to those
-#: defaults.  ``search_tsv`` is GENERATED (a pure function of ``text``), not part
-#: of the equivalence surface.  ``messages_proj`` has NO ``format`` column (§4.2
-#: drops it — a deliberate difference from M0's SQLite ``messages`` table), so,
-#: unlike M0's dump, ``format`` is not dumped.
+#: INCLUDED by ENG-98: ``edited_seq`` and ``deleted`` — the ``message.edited`` (LWW)
+#: and ``message.deleted`` (tombstone) reducers now WRITE them, and ``text`` is
+#: mutated by both (edit overwrite / delete redaction), so all three are part of the
+#: equivalence surface — the gate must prove rebuild reproduces the LWW winner and
+#: the tombstone byte-for-byte.
 #:
-#: When later milestones land edit/delete/thread-counter reducers, EXTEND this
-#: list to cover the columns they write so the gate keeps proving those too.
+#: EXCLUDED and why: ``reply_count`` / ``last_reply_seq`` are still constant defaults
+#: (thread counters are a later milestone) — dumping them proves nothing about the
+#: apply logic and would couple the gate to those defaults.  ``search_tsv`` is
+#: GENERATED (a pure function of ``text``), not part of the equivalence surface.
+#: ``messages_proj`` has NO ``format`` column (§4.2 drops it — a deliberate
+#: difference from M0's SQLite ``messages`` table), so, unlike M0's dump, ``format``
+#: is not dumped.
+#:
+#: When later milestones land thread-counter reducers, EXTEND this list to cover the
+#: columns they write so the gate keeps proving those too.
 _DUMP_COLUMNS: Final = (
     "message_id",
     "stream_id",
@@ -42,6 +48,8 @@ _DUMP_COLUMNS: Final = (
     "author_user_id",
     "text",
     "created_seq",
+    "edited_seq",
+    "deleted",
 )
 
 
@@ -61,6 +69,8 @@ async def dump_messages_proj(session: AsyncSession) -> str:
             MessageProj.author_user_id,
             MessageProj.text,
             MessageProj.created_seq,
+            MessageProj.edited_seq,
+            MessageProj.deleted,
         ).order_by(MessageProj.stream_id, MessageProj.created_seq, MessageProj.message_id)
     )
     return "\n".join(

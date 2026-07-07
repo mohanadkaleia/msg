@@ -17,8 +17,8 @@ from __future__ import annotations
 import asyncio
 
 from authutil import committing_app, truncate_auth_tables
-from eventsutil import post_batch, reaction_body, wire_item
-from msgd.db.models import Event, ReactionProj
+from eventsutil import message_edited_body, post_batch, reaction_body, wire_item
+from msgd.db.models import Event, MessageProj, ReactionProj
 from msgd.projections.dump import dump_messages_proj, dump_reactions_proj
 from msgd.projections.rebuild import rebuild_projections
 from msgd.settings import Settings
@@ -26,14 +26,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from simulation.client import SimClient
-from simulation.invariants import ReactionRows, Truth, assert_all
+from simulation.invariants import MessageRows, ReactionRows, Truth, assert_all
 from simulation.setup import World, build_world
 from simulation.strategies import (
     REACT_EMOJIS,
     ConcurrentReactBurst,
     ConcurrentSendBurst,
+    Delete,
     DisconnectMidFlush,
     DuplicateSend,
+    Edit,
     Op,
     Plan,
     React,
@@ -84,6 +86,20 @@ async def _apply_op(world: World, op: Op) -> None:
         )
         if actor.connected:
             await actor.flush()
+    elif isinstance(op, (Edit, Delete)):
+        actor = world.actors[op.actor]
+        stream = world.stream_id(op.stream)
+        if actor.connected:
+            await actor.catchup_pull(stream)  # learn the actor's own messages first
+        message_id = _resolve_own_message(actor, stream, op.msg)
+        if message_id is None:
+            return  # the actor has authored no message here yet → a no-op
+        if isinstance(op, Edit):
+            await actor.edit(stream, message_id, op.text)
+        else:
+            await actor.delete(stream, message_id)
+        if actor.connected:
+            await actor.flush()
     elif isinstance(op, ConcurrentReactBurst):
         stream = world.stream_id(op.stream)
         participants = [a for a in world.actors if a.connected]
@@ -108,6 +124,19 @@ def _resolve_message(actor: SimClient, stream: str, msg_index: int) -> str | Non
     """The ``message_id`` a reaction op targets: ``msg_index`` modulo the messages
     the actor knows in ``stream`` (or ``None`` when it knows none yet)."""
     known = actor.known_message_ids(stream)
+    if not known:
+        return None
+    return known[msg_index % len(known)]
+
+
+def _resolve_own_message(actor: SimClient, stream: str, msg_index: int) -> str | None:
+    """The ``message_id`` an edit/delete op targets: ``msg_index`` modulo the
+    messages the actor AUTHORED in ``stream`` (or ``None`` when it authored none).
+
+    Edits/deletes target only own messages (the author-or-admin rule) so every
+    generated edit/delete is a legitimately-writable event that sequences normally.
+    """
+    known = actor.known_own_message_ids(stream)
     if not known:
         return None
     return known[msg_index % len(known)]
@@ -151,6 +180,30 @@ async def _settle(world: World) -> None:
             resp.status_code == 200 and len(resp.json()["accepted"]) == 0
         )
 
+    # ENG-98 edit/delete isolation probe: the adversary tries to edit a PUBLIC
+    # message it did NOT author. Unlike the reaction/private probe (blocked at the
+    # stream gate), the adversary CAN read the public stream — so this specifically
+    # exercises the author-or-admin rule: a non-author non-admin edit is refused
+    # (permission_denied) even on a readable stream, and lands zero projection
+    # changes. The target is an OWNER-authored public message the adversary pulled.
+    pub_msgs = [
+        ev["body"]["payload"]["message_id"]
+        for ev in world.adversary.pulled.get(world.public_stream, [])
+        if ev["body"].get("type") == "message.created"
+        and ev["body"].get("author_user_id") == world.owner.user_id
+    ]
+    if pub_msgs:
+        edit = message_edited_body(
+            auth=world.adversary.auth,
+            stream_id=world.public_stream,
+            message_id=pub_msgs[0],
+            text="adversary-was-here",
+        )
+        resp = await post_batch(world.adversary.http, world.adversary.token, [wire_item(edit)])
+        world.adversary_edit_forbidden = (
+            resp.status_code == 200 and len(resp.json()["accepted"]) == 0
+        )
+
 
 async def _snapshot_truth(world: World) -> Truth:
     """Read the stored event set per shared stream via a fresh committing session."""
@@ -180,6 +233,27 @@ async def _snapshot_truth(world: World) -> Truth:
                 for row in rows
             ]
     return truth
+
+
+async def _snapshot_messages(world: World) -> MessageRows:
+    """Read ``messages_proj`` as ``(message_id, stream_id, author, text, created_seq,
+    edited_seq, deleted)`` rows — the surface the LWW + tombstone invariants fold the
+    log against (ENG-98).
+    """
+    maker = async_sessionmaker(world.engine, expire_on_commit=False)
+    async with maker() as db:
+        rows = await db.execute(
+            select(
+                MessageProj.message_id,
+                MessageProj.stream_id,
+                MessageProj.author_user_id,
+                MessageProj.text,
+                MessageProj.created_seq,
+                MessageProj.edited_seq,
+                MessageProj.deleted,
+            )
+        )
+        return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows.all()]
 
 
 async def _snapshot_reactions(world: World) -> ReactionRows:
@@ -238,7 +312,8 @@ async def run_plan(settings: Settings, plan: Plan) -> None:
             await _settle(world)
             truth = await _snapshot_truth(world)
             reaction_rows = await _snapshot_reactions(world)
-            assert_all(world, truth, reaction_rows)
+            message_rows = await _snapshot_messages(world)
+            assert_all(world, truth, reaction_rows, message_rows)
             # §12 invariant 6 (reactions + messages): rebuild ≡ incremental. Run
             # last — it TRUNCATEs + replays the committed log (reproducing identical
             # state), which the finally-block truncation then clears.

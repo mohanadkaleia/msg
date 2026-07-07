@@ -113,6 +113,37 @@ class ConcurrentReactBurst:
     count: int
 
 
+@dataclass(frozen=True)
+class Edit:
+    """``actor`` edits its OWN message in ``stream`` with new ``text`` (ENG-98).
+
+    ``msg`` selects among the messages the actor AUTHORED in that stream (resolved
+    modulo at apply time; a no-op if it authored none yet). Repeated ``Edit`` ops
+    on the same message exercise last-writer-wins by ``server_sequence`` (§2.4).
+    Only own-message edits are generated — the author-or-admin rule makes editing
+    another's message a refusal (covered by the permission-isolation probe).
+    """
+
+    actor: int
+    stream: int
+    msg: int
+    text: str
+
+
+@dataclass(frozen=True)
+class Delete:
+    """``actor`` deletes its OWN message in ``stream`` (ENG-98).
+
+    ``msg`` selects among the actor's authored messages (resolved modulo; a no-op
+    if none). A delete is terminal: a later edit does not un-delete (§2.4). Only
+    own-message deletes are generated (see :class:`Edit`).
+    """
+
+    actor: int
+    stream: int
+    msg: int
+
+
 Op = (
     Send
     | DuplicateSend
@@ -122,6 +153,8 @@ Op = (
     | React
     | Unreact
     | ConcurrentReactBurst
+    | Edit
+    | Delete
 )
 
 #: Reaction emoji domain sampled by the strategy. Deliberately exercises the
@@ -187,6 +220,8 @@ def _op(n: int) -> st.SearchStrategy[Op]:
             emoji=emoji,
             count=st.integers(min_value=2, max_value=MAX_BURST),
         ),
+        st.builds(Edit, actor=actor, stream=stream, msg=msg, text=text),
+        st.builds(Delete, actor=actor, stream=stream, msg=msg),
     )
 
 

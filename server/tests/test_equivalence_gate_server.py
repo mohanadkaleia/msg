@@ -8,21 +8,28 @@ M1 exit gate (TDD §5) and gets its own named CI step; keep both.
 Three parts, mirroring ENG-61:
 
 1. **Property test — rebuild ≡ incremental + D9 skip.** A hypothesis plan of
-   interleaved ``message.created`` v1 (~50%), unknown-type (~10%), and
-   ``reaction.added``/``reaction.removed`` v1 (~40%) events is driven **through**
+   interleaved ``message.created`` v1 (~40%), unknown-type (~10%),
+   ``reaction.added``/``reaction.removed`` v1 (~30%), and ``message.edited`` /
+   ``message.deleted`` v1 (~20%, ENG-98) events is driven **through**
    ``insert_event`` directly (the exact accept-path hook, without the per-example
    auth/stream-bootstrap overhead of the HTTP path — the ENG-61 in-process
    discipline). Incremental dumps == rebuilt dumps, byte for byte, for BOTH
    first-class projections (``messages_proj`` AND ``reactions_proj``, ENG-97); the
    message row count equals the number of ``message.created`` actions (unknown
-   types + reactions leave zero ``messages_proj`` rows); a second rebuild is
-   idempotent. Reactions target real prior messages with a small emoji/msg pool,
-   so duplicate adds + absent removes exercise the idempotent set semantics.
+   types + reactions leave zero ``messages_proj`` rows; edits/deletes MUTATE
+   existing rows but add none); a second rebuild is idempotent. Reactions +
+   edits/deletes target real prior messages with a small emoji/msg pool, so
+   duplicate adds + absent removes, repeated edits (LWW), and edit-after-delete
+   (terminality) are exercised. The ``messages_proj`` dump now carries
+   ``edited_seq`` + ``deleted`` (ENG-98), so the gate proves the LWW winner + the
+   tombstone/redaction rebuild byte-for-byte.
 2. **Mutation / teeth test.** A positive control (unpatched rebuild matches),
    then a one-sided corruption of the rebuild pass only, asserting the dumps now
    differ — proving the gate's ``==`` has teeth. One for ``messages_proj`` (corrupt
-   a row) and one for ``reactions_proj`` (skip a ``reaction.removed``), both via
-   the same ``monkeypatch.setitem(apply_mod._HANDLERS, …)`` mechanism.
+   a row), one for ``reactions_proj`` (skip a ``reaction.removed``), and one for the
+   edit/delete side (skip a ``message.deleted`` so a tombstone's content wrongly
+   survives the rebuild) — all via the same
+   ``monkeypatch.setitem(apply_mod._HANDLERS, …)`` mechanism.
 3. **Real-upload smoke.** A true ``POST /v1/events/batch`` batch through the
    ``client`` fixture, proving the ``insert.py`` hook fires on the real accept
    path end to end.
@@ -95,16 +102,19 @@ _GATE_EMOJIS = ("\U0001f44d", "\U0001f44d\U0001f3fd", "x", "\u0001")
 
 @dataclass(frozen=True)
 class _Action:
-    """One randomized event: a message, an unknown-type injection, or a reaction.
+    """One randomized event: a message, unknown type, reaction, edit, or delete.
 
-    ``react_add`` / ``react_remove`` target a message previously created in the
-    same stream (resolved modulo ``msg`` at apply time; a no-op if the stream has
-    no message yet), so the reaction log builds and tears down the ``reactions_proj``
-    set with duplicate adds + absent removes — the idempotent set semantics the
-    permanent gate must keep proving rebuild-equivalent (ENG-97).
+    ``react_add`` / ``react_remove`` / ``edited`` / ``deleted`` target a message
+    previously created in the same stream (resolved modulo ``msg`` at apply time; a
+    no-op if the stream has no message yet). Reactions build/tear down the
+    ``reactions_proj`` set (ENG-97); ``edited`` (LWW ``text``/``edited_seq``) and
+    ``deleted`` (tombstone + ``text`` redaction) MUTATE ``messages_proj`` rows —
+    the interleaved edit/delete coverage the permanent gate must keep proving
+    rebuild-equivalent (ENG-98), with a small ``msg`` pool so repeated edits on the
+    same message exercise LWW and edit-after-delete exercises terminality.
     """
 
-    kind: str  # "created" | "unknown" | "react_add" | "react_remove"
+    kind: str  # "created" | "unknown" | "react_add" | "react_remove" | "edited" | "deleted"
     stream: str
     text: str = ""
     format: str = "markdown"
@@ -148,18 +158,33 @@ def _send_plan(draw: st.DrawFn) -> list[_Action]:
     react_remove = st.builds(
         _Action, kind=st.just("react_remove"), stream=st.sampled_from(streams), emoji=emoji, msg=msg
     )
+    edited = st.builds(
+        _Action,
+        kind=st.just("edited"),
+        stream=st.sampled_from(streams),
+        text=st.text(
+            st.characters(codec="utf-8", exclude_characters="\x00"), min_size=0, max_size=200
+        ),
+        msg=msg,
+    )
+    deleted = st.builds(_Action, kind=st.just("deleted"), stream=st.sampled_from(streams), msg=msg)
 
     def _pick(n: int) -> st.SearchStrategy[_Action]:
-        # ~10% unknown, ~20% react_add, ~20% react_remove, ~50% created — created
-        # stays the majority (messages_proj coverage intact) while reactions build
-        # and tear down the set, with a small emoji/msg pool forcing duplicate adds
-        # and absent removes (the idempotency the rebuild must reproduce).
+        # ~10% unknown, ~20% react_add, ~10% react_remove, ~10% edited, ~10% deleted,
+        # ~40% created — created stays the plurality (rows to mutate) while reactions
+        # build/tear down the set and edits/deletes mutate messages_proj rows, with a
+        # small emoji/msg pool forcing duplicate adds, absent removes, repeated edits
+        # (LWW), and edit-after-delete (terminality) the rebuild must reproduce.
         if n == 0:
             return unknown
         if n in (1, 2):
             return react_add
-        if n in (3, 4):
+        if n == 3:
             return react_remove
+        if n == 4:
+            return edited
+        if n == 5:
+            return deleted
         return created
 
     action = st.integers(min_value=0, max_value=9).flatmap(_pick)
@@ -222,6 +247,51 @@ def _reaction_body(
     ).model_dump(mode="json")
 
 
+def _edited_body(
+    *,
+    workspace_id: str,
+    stream_id: str,
+    author: str,
+    device: str,
+    message_id: str,
+    text: str,
+) -> dict[str, Any]:
+    """A ``message.edited`` v1 body (server-trusted, ENG-98)."""
+    return Body(
+        event_id=ids.new_event_id(),
+        workspace_id=workspace_id,
+        stream_id=stream_id,
+        type="message.edited",
+        type_version=1,
+        author_user_id=author,
+        author_device_id=device,
+        client_created_at=now_rfc3339(),
+        payload={"message_id": message_id, "text": text, "format": "markdown"},
+    ).model_dump(mode="json")
+
+
+def _deleted_body(
+    *,
+    workspace_id: str,
+    stream_id: str,
+    author: str,
+    device: str,
+    message_id: str,
+) -> dict[str, Any]:
+    """A ``message.deleted`` v1 body (server-trusted, ENG-98)."""
+    return Body(
+        event_id=ids.new_event_id(),
+        workspace_id=workspace_id,
+        stream_id=stream_id,
+        type="message.deleted",
+        type_version=1,
+        author_user_id=author,
+        author_device_id=device,
+        client_created_at=now_rfc3339(),
+        payload={"message_id": message_id},
+    ).model_dump(mode="json")
+
+
 async def _one_example(database_url: str, plan: list[_Action]) -> None:
     """Run one hypothesis example hermetically over its own short-lived engine."""
     engine = create_async_engine(database_url)
@@ -276,6 +346,28 @@ async def _one_example(database_url: str, plan: list[_Action]) -> None:
                         body = _unknown_body(
                             workspace_id=ws, stream_id=sid, author=author, device=device
                         )
+                    elif action.kind in ("edited", "deleted"):
+                        known = created_by_stream.get(action.stream, [])
+                        if not known:
+                            continue  # no message to edit/delete yet → a no-op
+                        target = known[action.msg % len(known)]
+                        if action.kind == "edited":
+                            body = _edited_body(
+                                workspace_id=ws,
+                                stream_id=sid,
+                                author=author,
+                                device=device,
+                                message_id=target,
+                                text=action.text,
+                            )
+                        else:
+                            body = _deleted_body(
+                                workspace_id=ws,
+                                stream_id=sid,
+                                author=author,
+                                device=device,
+                                message_id=target,
+                            )
                     else:  # react_add / react_remove
                         known = created_by_stream.get(action.stream, [])
                         if not known:
@@ -462,6 +554,80 @@ async def test_gate_detects_reaction_divergence(db_session: AsyncSession, monkey
     monkeypatch.undo()
 
     assert await dump_reactions_proj(db_session) != dump_incremental
+
+
+async def test_gate_detects_edit_delete_divergence(
+    db_session: AsyncSession, monkeypatch: Any
+) -> None:
+    """Teeth for the edit/delete side: a rebuild that SKIPS ``message.deleted`` (so a
+    tombstone's redacted content wrongly survives) OR SKIPS ``message.edited`` (so
+    the LWW winner reverts to the original body) must turn the ``messages_proj``
+    rebuild-equivalence assertion RED (green by default).
+
+    Same one-sided ``monkeypatch.setitem`` mechanism as the reaction teeth — patch
+    the REBUILD pass ONLY (a global patch would mutate both sides identically and
+    prove nothing). Because the ``messages_proj`` dump now carries ``text`` +
+    ``edited_seq`` + ``deleted`` (ENG-98), either skipped mutation diverges the dump.
+    """
+    ws, stream = ids.new_workspace_id(), ids.new_stream_id()
+    await _seed_stream(db_session, workspace_id=ws, stream_id=stream)
+    author, device = ids.new_user_id(), ids.new_device_id()
+
+    def _created(text: str) -> tuple[str, dict[str, Any]]:
+        mid = ids.new_message_id()
+        return mid, build_message_created_body(
+            workspace_id=ws,
+            stream_id=stream,
+            author_user_id=author,
+            author_device_id=device,
+            client_created_at=now_rfc3339(),
+            text=text,
+            message_id=mid,
+        ).model_dump(mode="json")
+
+    m_edit, edit_created = _created("orig")
+    m_del, del_created = _created("secret")
+    await insert_event(db_session, stream_id=stream, body=edit_created)
+    await insert_event(db_session, stream_id=stream, body=del_created)
+    await insert_event(
+        db_session,
+        stream_id=stream,
+        body=_edited_body(
+            workspace_id=ws,
+            stream_id=stream,
+            author=author,
+            device=device,
+            message_id=m_edit,
+            text="final",
+        ),
+    )
+    await insert_event(
+        db_session,
+        stream_id=stream,
+        body=_deleted_body(
+            workspace_id=ws, stream_id=stream, author=author, device=device, message_id=m_del
+        ),
+    )
+    dump_incremental = await dump_messages_proj(db_session)
+
+    # Positive control: unpatched rebuild reproduces the LWW winner + tombstone.
+    await rebuild_projections(db_session)
+    assert await dump_messages_proj(db_session) == dump_incremental
+
+    async def _skip(db: AsyncSession, *, body: dict[str, Any], server_sequence: int) -> None:
+        return None
+
+    # Buggy rebuild #1: message.deleted does nothing → the redacted 'secret' survives.
+    monkeypatch.setitem(apply_mod._HANDLERS, ("message.deleted", 1), _skip)
+    await rebuild_projections(db_session)
+    monkeypatch.undo()
+    assert await dump_messages_proj(db_session) != dump_incremental
+
+    # Buggy rebuild #2: message.edited does nothing → 'final' reverts to 'orig'.
+    monkeypatch.setitem(apply_mod._HANDLERS, ("message.edited", 1), _skip)
+    await rebuild_projections(db_session)
+    monkeypatch.undo()
+    assert await dump_messages_proj(db_session) != dump_incremental
 
 
 # --- honest end-to-end wiring: real upload smoke -----------------------------

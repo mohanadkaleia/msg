@@ -68,6 +68,8 @@ _WRITE_MATRIX_TYPES = frozenset(
         "message.created",
         "reaction.added",
         "reaction.removed",
+        "message.edited",
+        "message.deleted",
         "channel.created",
         "channel.renamed",
         "channel.archived",
@@ -80,6 +82,14 @@ _WRITE_MATRIX_TYPES = frozenset(
 #: ``reaction.*`` types — gated by ``can_write`` (== read access, ENG-97) at step
 #: iii and by the §3.2 message-referential check at step vi (:func:`_check_referential`).
 _REACTION_TYPES = frozenset({"reaction.added", "reaction.removed"})
+
+#: ``message.edited`` / ``message.deleted`` (ENG-98) — gated by ``can_write`` (==
+#: read access to the homed stream) at step iii, then by a message-referential +
+#: **author-or-admin** check at step vi (:func:`_check_referential`).
+_EDIT_DELETE_TYPES = frozenset({"message.edited", "message.deleted"})
+
+#: Workspace roles that may edit/delete ANY message (not only their own), §2.4.
+_ADMINISH = frozenset({"owner", "admin"})
 
 #: Lifecycle events whose ``payload.channel_stream_id`` must reference an existing
 #: stream — the one non-confidential ``unknown_stream`` producer (D5 vi / D13-safe:
@@ -197,6 +207,30 @@ async def _resolve_message_stream(db: AsyncSession, message_id: str) -> str | No
         select(MessageProj.stream_id).where(MessageProj.message_id == message_id)
     )
     return stream_id
+
+
+async def _resolve_message_home_and_author(
+    db: AsyncSession, message_id: str
+) -> tuple[str, str] | None:
+    """The ``(stream_id, author_user_id)`` of a message, or ``None`` if unknown.
+
+    The edit/delete referential oracle (ENG-98): the target must exist (a
+    committed ``messages_proj`` row) so it can be homed and its ORIGINAL author
+    checked for the author-or-admin rule. A **deleted** (tombstoned) message still
+    has its row — ``stream_id``/``author_user_id`` are never cleared on delete — so
+    a later edit/delete of a deleted message still resolves and sequences normally
+    (deleted is terminal only in the projection, not in validation).
+    """
+    row = (
+        await db.execute(
+            select(MessageProj.stream_id, MessageProj.author_user_id).where(
+                MessageProj.message_id == message_id
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    return row[0], row[1]
 
 
 async def validate_event(db: AsyncSession, *, ctx: AuthContext, item: Any) -> Accepted | Rejected:
@@ -389,8 +423,9 @@ async def _check_referential(
     Returns a :class:`Rejected` (its ``event_id`` filled in by the caller) or
     ``None`` to pass. ``reaction.*`` adds a message-referential branch (ENG-97):
     the target ``message_id`` must exist in the stream the reaction is homed in.
-    ``thread_root_id`` / ``file_ids`` / ``mentions`` existence are still deferred
-    (D8d).
+    ``message.edited`` / ``message.deleted`` add the same message-referential check
+    plus an **author-or-admin** authorization gate (ENG-98). ``thread_root_id`` /
+    ``file_ids`` / ``mentions`` existence are still deferred (D8d).
 
     TOTALITY (security round 2): every ``return None`` accept path leaves the
     effective home stream id (``body.stream_id``, which reaches ``insert_event``'s
@@ -616,6 +651,54 @@ async def _check_referential(
         home_message_stream = await _resolve_message_stream(db, message_id)
         if home_message_stream is None or home_message_stream != body_model.stream_id:
             return Rejected(event_id="", code="unknown_message", detail=_UNKNOWN_MESSAGE_DETAIL)
+        return None
+
+    if event_type in _EDIT_DELETE_TYPES:
+        # §3.2 edit/delete referential + author-or-admin (ENG-98). Home totality: an
+        # accept here is only reachable when the target message resolves to
+        # body.stream_id, and step iii already gated can_write(body.stream_id) ==
+        # can_read (workspace-scoped readable_streams_predicate), so the only
+        # accepted home is a stream in ctx.workspace_id — cross-tenant home
+        # injection is dead upstream.
+        #
+        # message_id shape guard (500-proof + D9): for the known v1 the step-iv
+        # payload model already forced a valid m_ id, but an unknown version
+        # (get_payload_model("message.edited", 2) -> None) SKIPS it, so a
+        # garbage/absent message_id must be handled here — it references no real
+        # message, so the same non-disclosing unknown_message.
+        message_id = payload.get("message_id")
+        if not isinstance(message_id, str) or not ids.is_valid_typed_id(
+            message_id, ids.IdKind.MESSAGE
+        ):
+            return Rejected(event_id="", code="unknown_message", detail=_UNKNOWN_MESSAGE_DETAIL)
+
+        # Referential existence + §2.4 homing FIRST (before the author check, so
+        # existence is never disclosed): the message must live in the exact stream
+        # the edit/delete is homed in. A message that never existed (None) and one
+        # in a DIFFERENT stream — a private stream the author cannot read, or another
+        # workspace — both fail this equality and collapse to the identical
+        # unknown_message (no cross-stream/cross-tenant existence oracle, D13).
+        resolved = await _resolve_message_home_and_author(db, message_id)
+        if resolved is None or resolved[0] != body_model.stream_id:
+            return Rejected(event_id="", code="unknown_message", detail=_UNKNOWN_MESSAGE_DETAIL)
+
+        # Author-or-admin (§2.4): only the ORIGINAL author or a workspace admin/owner
+        # may edit/delete a message. A non-author non-admin who CAN see the message
+        # (it resolved in a stream they can read/write) gets permission_denied — the
+        # existence was already (legitimately) disclosed by their read access, so
+        # this is an honest authorization fault, not a non-disclosure concern. This
+        # is reachable only AFTER the referential check passes, so a cross-stream /
+        # unreadable target never reaches here (it is unknown_message above).
+        author_user_id = resolved[1]
+        if author_user_id != ctx.user_id and ctx.role not in _ADMINISH:
+            return Rejected(
+                event_id="",
+                code="permission_denied",
+                detail="only the message author or a workspace admin may edit or delete it",
+            )
+        # Multiple edits, edit-after-delete, and delete-after-delete are all VALID
+        # events that sequence normally — convergence (LWW / terminal tombstone) is
+        # a projection concern (ENG-98 apply.py), never a reject here.
         return None
 
     # message.created and unknown D9 types: no referential branch. Home totality is
