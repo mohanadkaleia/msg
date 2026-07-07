@@ -55,113 +55,69 @@ msg/
   .github/workflows/  # CI: ruff, mypy (strict), equivalence gate, pytest (incl. integration E2E), simulation suite
 ```
 
-## Quickstart (M0: local workspace via `msgctl`)
+## Quickstart
 
-The offline story — no server. Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
+Run everything — Postgres, the sync server, and the web client — with one command, then use it from your browser. Requires **Docker**, plus **Python 3.12 + [uv](https://docs.astral.sh/uv/)** for the `msgctl` admin CLI (used once, to create the first account).
+
+**1. Start the server.** One container serves the API *and* the web client from a single origin — the image bakes the built SPA in, so there's no separate web host, CDN, or CORS to configure:
+
+```bash
+cp .env.example .env            # set MSG_SECRET_KEY + POSTGRES_PASSWORD
+docker compose up -d --build    # Postgres + migrations + API + web client
+curl -fsS http://localhost:8080/healthz   # -> {"status":"ok"}
+```
+
+The server binds to **`127.0.0.1:8080`** (loopback only, deliberately — Docker port-publishing bypasses host firewalls, so a `0.0.0.0` bind would expose the plain-HTTP API on every interface). For anything beyond localhost, front it with the TLS reverse proxy in [`docs/deploy.md`](docs/deploy.md).
+
+**2. Create the workspace + owner.** There is no self-serve signup — the first account is minted from the CLI:
 
 ```bash
 uv sync
-
-# Create a workspace folder
-uv run msgctl init ./demo
-
-# Append messages (envelope built, hashed, sequenced, fsync'd — one NDJSON line per event)
-uv run msgctl send ./demo --stream general --text "hello, world"
-uv run msgctl send ./demo --stream general --text "second message"
-
-# Materialize the SQLite projection incrementally (idempotent — run it twice)
-uv run msgctl project ./demo
-
-# Drop the projection and replay the whole log (temp DB + atomic swap)
-uv run msgctl rebuild ./demo
-
-# Recompute every hash, check gapless sequences, validate schemas
-uv run msgctl verify ./demo            # human report
-uv run msgctl verify ./demo --json     # machine-readable, CI-friendly exit codes
-```
-
-The workspace is just a folder: `workspace.json` plus `streams/<stream_id>/<YYYY-MM>.ndjson` — the same tree the M4 export format uses. `verify` is the ownership pitch made testable: it re-derives every `event_hash` from the stored bytes and proves per-stream sequence contiguity.
-
-## Quickstart (M1: self-hosted server + `msgctl` remote)
-
-The client-server story — one operator self-hosts the sync server; each teammate binds a local workspace to it and syncs.
-
-**1. Bring up the server** (Postgres + the sync daemon) via Docker Compose. See [`docs/deploy.md`](docs/deploy.md) for the full guide.
-
-```bash
-cp .env.example .env          # fill in MSG_SECRET_KEY and the Postgres password
-docker compose up -d          # starts Postgres + runs migrations + serves the API
-curl -fsS http://localhost:8080/healthz   # -> {"status":"ok"}
-```
-
-Compose binds the API to **`127.0.0.1:8080`** (loopback only, deliberately — Docker port-publishing bypasses host firewalls, so a `0.0.0.0` bind would expose the plain-HTTP API on every interface; front it with the TLS reverse proxy in [`docs/deploy.md`](docs/deploy.md)).
-
-**2. The owner sets up the workspace** and mints an invite for a teammate:
-
-```bash
-# First run: create the workspace + owner account (also creates the public `general`)
-uv run msgctl login ./acme --setup \
-  --server-url http://localhost:8080 \
-  --email owner@example.com --password '…' \
-  --workspace-name Acme --display-name Owner
-
-uv run msgctl send ./acme --stream general --text "hello from the owner"
-uv run msgctl push ./acme                       # upload queued events to the server
-
-uv run msgctl invite ./acme --role member       # prints a single-use join URL
-```
-
-**3. A teammate joins** with the invite token and syncs:
-
-```bash
-uv run msgctl login ./bob --invite-token <token-from-the-join-url> \
-  --server-url http://localhost:8080 \
-  --email bob@example.com --password '…' --display-name Bob
-
-uv run msgctl pull ./bob                          # mirror the server's streams locally
-uv run msgctl send ./bob --stream general --text "hi, owner"
-uv run msgctl push ./bob
-uv run msgctl pull ./acme                          # owner sees Bob's message
-```
-
-`push` is only a hint that new events are queued; **cursors are the truth** — `pull` is idempotent and drives every client to the same gapless per-stream sequence the server assigned. Run `verify` on any synced workspace to re-derive every `event_hash` from the stored bytes, exactly as in M0. These are the same commands the M1 exit-gate E2E drives to prove two clients converge over the real server.
-
-## Quickstart (M2: the web client, single-origin)
-
-The browser story — the same self-hosted server now **serves the web client from its own origin**. The Docker image bakes the built SPA into the runtime, so no separate web host, CDN, or CORS config is needed: the API and the client share `http://localhost:8080`.
-
-**1. Bring up the server *with the SPA baked in*.** The `--build` is what compiles the client into the image (a fresh multi-stage Node build → `/app/web/dist`, served at `/`):
-
-```bash
-cp .env.example .env               # fill in MSG_SECRET_KEY + POSTGRES_PASSWORD (as in M1)
-docker compose up -d --build       # builds the SPA into the image, migrates, serves
-curl -fsS http://localhost:8080/healthz   # -> {"status":"ok"}
-curl -fsS http://localhost:8080/           # -> the SPA index.html (single-origin)
-```
-
-**2. Bootstrap the owner + workspace** with the M1 `msgctl … --setup` flow (the server has no self-serve signup — the owner is minted from the CLI):
-
-```bash
 uv run msgctl login ./acme --setup \
   --server-url http://localhost:8080 \
   --email owner@example.com --password '…' \
   --workspace-name Acme --display-name Owner
 ```
 
-**3. Open the client** at **http://localhost:8080** and log in as `owner@example.com`. You land in `#general`; send a message — it renders **optimistically** the instant you hit send (the outbox holds it as *pending*), then settles to *acked* once the server sequences it. Reads are instant because they come from the local Dexie projection, not a round-trip.
+**3. Open the web client** at **http://localhost:8080** and log in as `owner@example.com`. You land in `#general`; send a message — it renders **optimistically** the instant you hit send and settles once the server sequences it. Reads are instant (served from the local projection, not a round-trip). Press <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>K</kbd> to fuzzy-jump between channels.
 
-**4. Prove live sync across two browsers.** Mint an invite and hand the join URL to a second user:
+**4. Invite a teammate.** Mint an invite and hand over the join URL:
 
 ```bash
 uv run msgctl invite ./acme --role member
 # -> {"url": "http://localhost:8080/join/<token>", "expires_at": "..."}
 ```
 
-Open the printed **join URL** (`http://localhost:8080/join/<token>`) in a second browser or an incognito window — it loads the accept-invite page, where the teammate sets a display name, email, and password to create their account and join the workspace. (Opening the bare `http://localhost:8080` would just redirect to the login page — a brand-new teammate has no account yet, so the `/join/<token>` link is what registers them.) Now post from either side — the other browser receives it **live via WebSocket fanout** (no reload), on uvicorn's default WS backend. Kill the network mid-send and the outbox holds your message as pending; restore it and the drain loop flushes it — reads stay instant and local throughout.
+Open that **join URL** in another browser (or an incognito window) — it loads the accept-invite page, where the teammate sets a display name, email, and password to register and join. (The bare `http://localhost:8080` just redirects to login; a brand-new teammate has no account yet, so the `/join/<token>` link is what registers them.) Now post from either side and the other browser receives it **live via WebSocket fanout**, no reload. Drop the network mid-send and the outbox holds the message as pending; restore it and it flushes — reads stay instant and local throughout.
 
-**The Cmd+K switcher.** Press <kbd>Cmd</kbd>+<kbd>K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd>) to fuzzy-jump between channels/workspaces without leaving the keyboard.
+> msg is **online-first** in the browser (full browser offline is desktop, M6). "Offline-ish" means the outbox survives a transient disconnect and drains on reconnect, and every read is served from the local projection — not that the app runs fully offline.
 
-> The M2 build is an **online-first** web client (full browser NDJSON/offline is desktop M6, D4). "Offline-ish" means the outbox survives a transient disconnect and drains on reconnect, and every read is served from the local projection — not that the app runs fully offline.
+## The `msgctl` CLI
+
+`msgctl` is the admin tool you used above (bootstrap + invites) — and also a scriptable sync client and a standalone offline workspace tool. It has two modes.
+
+**Remote** — drive a running server. `push` is only a hint that new events are queued; **cursors are the truth** — `pull` is idempotent and converges every client to the same gapless per-stream sequence the server assigned.
+
+```bash
+uv run msgctl login ./bob --invite-token <token-from-the-join-url> \
+  --server-url http://localhost:8080 \
+  --email bob@example.com --password '…' --display-name Bob
+uv run msgctl send ./bob --stream general --text "hi, owner"
+uv run msgctl push ./bob      # upload queued events to the server
+uv run msgctl pull ./bob      # mirror the server's streams locally
+```
+
+**Offline / local** — no server. A workspace is just a folder (`workspace.json` + `streams/<stream_id>/<YYYY-MM>.ndjson`, the same tree the M4 export format uses):
+
+```bash
+uv run msgctl init ./demo
+uv run msgctl send ./demo --stream general --text "hello, world"
+uv run msgctl project ./demo   # materialize the SQLite projection (idempotent)
+uv run msgctl rebuild ./demo   # drop it + replay the whole log (temp DB + atomic swap)
+uv run msgctl verify ./demo    # recompute every hash, check gapless sequences (--json for CI)
+```
+
+`verify` is the ownership pitch made testable — on any workspace, local or synced, it re-derives every `event_hash` from the stored bytes and proves per-stream sequence contiguity.
 
 ## Development
 
