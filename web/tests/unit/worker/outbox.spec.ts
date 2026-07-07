@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { newMessageId } from '../../../src/core'
 import { WorkerCore } from '../../../src/worker/core'
 import { MemoryDb } from '../../../src/worker/db'
 import type { ApiResult, HttpClient } from '../../../src/worker/http'
@@ -457,6 +458,180 @@ describe('ack-vs-WS-frame dedup race — exactly one row in either order', () =>
     expect(await db.count('events')).toBe(1)
     expect(await db.count('outbox')).toBe(0)
     await db.close()
+  })
+})
+
+// ===========================================================================
+// 9b. ENG-100 M3 optimistic ops: react / edit / delete pending overlay + settle
+//     + reject-parks-but-keeps-effect + delete-reverts (outbox.delete).
+// ===========================================================================
+
+/**
+ * Seed a settled message row (the target of an M3 optimistic op); returns its id.
+ * Also registers the created event on the FakeSyncServer so subsequent M3 events
+ * are assigned server sequences ABOVE the seed's `created_seq` (real ordering).
+ */
+async function seedMessage(
+  db: MemoryDb,
+  server: FakeSyncServer,
+  streamId: string,
+): Promise<string> {
+  const messageId = newMessageId()
+  const createdBody = {
+    event_id: `e_${messageId}`,
+    workspace_id: 'w_me',
+    stream_id: streamId,
+    type: 'message.created',
+    type_version: 1,
+    author_user_id: 'u_me',
+    author_device_id: 'd_me',
+    client_created_at: '2026-01-01T00:00:00.000Z',
+    payload: {
+      message_id: messageId,
+      text: 'original',
+      format: 'markdown',
+      thread_root_id: null,
+      file_ids: [],
+      mentions: [],
+    },
+  }
+  server.processBatch([{ body: createdBody, event_hash: `sha256:e_${messageId}` }])
+  await db.putMessages([
+    {
+      message_id: messageId,
+      stream_id: streamId,
+      created_seq: 1,
+      author_user_id: 'u_me',
+      text: 'original',
+      format: 'markdown',
+      mention_user_ids: [],
+    },
+  ])
+  // A matching settled event so the target is rebuildable / recompute-able.
+  await db.putEvents([
+    {
+      stream_id: streamId,
+      server_sequence: 1,
+      event_id: `e_${messageId}`,
+      type: 'message.created',
+      envelope: {
+        body: createdBody,
+        event_hash: `sha256:e_${messageId}`,
+      },
+    },
+  ])
+  return messageId
+}
+
+describe('M3 optimistic react/edit/delete: overlay renders instantly then settles', () => {
+  it('react adds a membership overlay immediately, then settles idempotently', async () => {
+    const { db, server, outbox } = makeOutbox()
+    const mId = await seedMessage(db, server, 's_1')
+    server.pauseBatch()
+
+    const res = await outbox.react({
+      m: 'outbox.react',
+      stream_id: 's_1',
+      message_id: mId,
+      emoji: '👍',
+    })
+    // Overlay: membership present before any ack.
+    expect(await db.getReactionsForMessage(mId)).toEqual([
+      { message_id: mId, author_user_id: 'u_me', emoji: '👍' },
+    ])
+
+    server.resumeBatch()
+    await untilAsync(async () => (await db.getOutbox(res.event_id)) === undefined)
+    // Settled: still exactly one membership (the ack upsert is idempotent).
+    expect(await db.getReactionsForMessage(mId)).toHaveLength(1)
+    expect(await db.count('events')).toBe(2) // seed + the reaction event
+  })
+
+  it('edit forces text/format overlay, then settle stamps the real edited_seq (LWW)', async () => {
+    const { db, server, outbox } = makeOutbox()
+    const mId = await seedMessage(db, server, 's_1')
+    server.pauseBatch()
+
+    const res = await outbox.edit({
+      m: 'outbox.edit',
+      stream_id: 's_1',
+      message_id: mId,
+      text: 'new body',
+      format: 'plain',
+    })
+    // Overlay: text/format changed instantly; edited_seq left for the settle.
+    let row = await db.getMessage(mId)
+    expect(row?.text).toBe('new body')
+    expect(row?.format).toBe('plain')
+    expect(row?.edited_seq).toBeUndefined()
+
+    server.resumeBatch()
+    await untilAsync(async () => (await db.getOutbox(res.event_id)) === undefined)
+    row = await db.getMessage(mId)
+    expect(row?.text).toBe('new body')
+    expect(row?.edited_seq).toBe(2) // the settle applied LWW with the real server seq
+  })
+
+  it('delete tombstones + redacts overlay immediately, then settles', async () => {
+    const { db, server, outbox } = makeOutbox()
+    const mId = await seedMessage(db, server, 's_1')
+    server.pauseBatch()
+
+    const res = await outbox.remove({ m: 'outbox.remove', stream_id: 's_1', message_id: mId })
+    let row = await db.getMessage(mId)
+    expect(row?.deleted).toBe(true)
+    expect(row?.text).toBe('') // redacted before the ack
+
+    server.resumeBatch()
+    await untilAsync(async () => (await db.getOutbox(res.event_id)) === undefined)
+    row = await db.getMessage(mId)
+    expect(row?.deleted).toBe(true)
+    expect(row?.text).toBe('')
+  })
+
+  it('a rejected edit PARKS (outbox rejected) but keeps the optimistic effect', async () => {
+    const { db, server, outbox } = makeOutbox()
+    const mId = await seedMessage(db, server, 's_1')
+    server.pauseBatch()
+
+    const res = await outbox.edit({
+      m: 'outbox.edit',
+      stream_id: 's_1',
+      message_id: mId,
+      text: 'optimistic',
+    })
+    server.rejectEvent(res.event_id, 'permission_denied')
+    server.resumeBatch()
+    await untilAsync(async () => (await db.getOutbox(res.event_id))?.state === 'rejected')
+
+    // Parked: outbox row rejected; the optimistic edit stays visible (re-derivable).
+    expect((await db.getOutbox(res.event_id))?.state).toBe('rejected')
+    expect((await db.getMessage(mId))?.text).toBe('optimistic')
+    expect(await db.count('events')).toBe(1) // only the seed — the edit never settled
+  })
+
+  it('outbox.delete of a rejected reaction REVERTS the overlay (recompute from settled state)', async () => {
+    const { db, server, outbox } = makeOutbox()
+    const mId = await seedMessage(db, server, 's_1')
+    server.pauseBatch()
+
+    const res = await outbox.react({
+      m: 'outbox.react',
+      stream_id: 's_1',
+      message_id: mId,
+      emoji: '🎉',
+    })
+    server.rejectEvent(res.event_id, 'permission_denied')
+    server.resumeBatch()
+    await untilAsync(async () => (await db.getOutbox(res.event_id))?.state === 'rejected')
+    expect(await db.getReactionsForMessage(mId)).toHaveLength(1) // overlay present
+
+    // Discard it → the membership is reverted (the settled state had no reaction).
+    await outbox.delete(res.event_id)
+    expect(await db.getOutbox(res.event_id)).toBeUndefined()
+    expect(await db.getReactionsForMessage(mId)).toEqual([])
+    // The base message itself is untouched by the revert.
+    expect((await db.getMessage(mId))?.text).toBe('original')
   })
 })
 

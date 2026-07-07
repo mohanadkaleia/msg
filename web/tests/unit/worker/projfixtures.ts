@@ -140,3 +140,65 @@ export function malformedMessageEvent(streamId: string, seq: number): EventRow {
   ;(ev.envelope!.body.payload as Record<string, unknown>) = { text: 'orphan', format: 'plain' }
   return ev
 }
+
+// ---------------------------------------------------------------------------
+// ENG-100 (M3) event builders — reactions, edits, deletes. All share the §2.1
+// envelope shape; `type_version` is 1. `author_user_id` is the reactor/editor.
+// ---------------------------------------------------------------------------
+
+interface RefEventOpts {
+  streamId: string
+  seq: number
+  messageId: string
+  authorUserId?: string
+}
+
+function refEvent(type: string, payload: Record<string, unknown>, opts: RefEventOpts): EventRow {
+  const eventId = `e_${opts.streamId}_${opts.seq}`
+  return {
+    stream_id: opts.streamId,
+    server_sequence: opts.seq,
+    event_id: eventId,
+    type,
+    envelope: {
+      body: {
+        event_id: eventId,
+        workspace_id: 'w_test',
+        stream_id: opts.streamId,
+        type,
+        type_version: 1,
+        author_user_id: opts.authorUserId ?? 'u_author',
+        author_device_id: 'd_test',
+        client_created_at: '2026-01-01T00:00:00.000Z',
+        payload,
+      },
+      event_hash: `hash_${eventId}`,
+    },
+  }
+}
+
+/** A `reaction.added` v1 event (reactor = `authorUserId`, exact-byte `emoji`). */
+export function reactionAddedEvent(opts: RefEventOpts & { emoji: string }): EventRow {
+  return refEvent('reaction.added', { message_id: opts.messageId, emoji: opts.emoji }, opts)
+}
+
+/** A `reaction.removed` v1 event. */
+export function reactionRemovedEvent(opts: RefEventOpts & { emoji: string }): EventRow {
+  return refEvent('reaction.removed', { message_id: opts.messageId, emoji: opts.emoji }, opts)
+}
+
+/** A `message.edited` v1 event (new `text`+`format` for `messageId`). */
+export function messageEditedEvent(
+  opts: RefEventOpts & { text: string; format?: 'markdown' | 'plain' },
+): EventRow {
+  return refEvent(
+    'message.edited',
+    { message_id: opts.messageId, text: opts.text, format: opts.format ?? 'markdown' },
+    opts,
+  )
+}
+
+/** A `message.deleted` v1 tombstone event for `messageId`. */
+export function messageDeletedEvent(opts: RefEventOpts): EventRow {
+  return refEvent('message.deleted', { message_id: opts.messageId }, opts)
+}

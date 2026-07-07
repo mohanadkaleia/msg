@@ -160,17 +160,21 @@ async function makeLiveCore(makeDb: () => Promise<MsgDb>, streams: string[]): Pr
   }
 }
 
-async function sendRpc(live: LiveCore, streamId: string, text: string): Promise<SendResult> {
+async function mutateRpc(live: LiveCore, params: unknown): Promise<SendResult> {
   const id = `rpc${++rpcId}`
   await live.core.handle('c1', {
     t: 'req',
     id,
     clientId: 'c1',
-    req: { method: 'mutate', params: { m: 'outbox.send', stream_id: streamId, text } } as never,
+    req: { method: 'mutate', params } as never,
   })
   const found = [...live.frames].reverse().find((f) => f.msg.t === 'res' && f.msg.id === id)?.msg
-  if (!found || found.t !== 'res' || !found.ok) throw new Error(`send rpc failed for ${id}`)
+  if (!found || found.t !== 'res' || !found.ok) throw new Error(`mutate rpc failed for ${id}`)
   return found.result as SendResult
+}
+
+function sendRpc(live: LiveCore, streamId: string, text: string): Promise<SendResult> {
+  return mutateRpc(live, { m: 'outbox.send', stream_id: streamId, text })
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +412,160 @@ describe('§12 invariant 5 — pending settling [property, real WorkerCore]', ()
         await live.db.close()
       }),
       { numRuns: 5 },
+    )
+  })
+})
+
+// ===========================================================================
+// §12 invariant 5 — M3 optimistic reactions / edits / deletes (ENG-100).
+//
+// The pending-settling invariant EXTENDED to the M3 optimistic ops. Each cmd
+// creates a fresh SETTLED base message, then applies ONE optimistic op
+// (react-add / edit / delete) with a drawn outcome (accept / reject) and, for
+// accepts, a drawn ack-vs-WS-frame race in both orders — driving the REAL
+// WorkerCore end to end. The op renders instantly (overlay), then either settles
+// into server order (ack) or parks (reject); the ack-vs-WS race for the same
+// event converges to EXACTLY ONE effect (the events cache never grows past the
+// one settled op, and the projection reflects it once). Non-vacuous: the WS arm
+// emits the REAL-hash wire (guarded by `hashMismatchDrops === 0`).
+// ===========================================================================
+
+const MY_USER_ID = 'u_me'
+const REACT_EMOJI = '👍'
+
+interface M3Cmd {
+  stream: number
+  op: 'react-add' | 'edit' | 'delete'
+  reject: boolean
+  race: 'none' | 'ws-first' | 'ws-after'
+}
+
+function m3CmdArb(): fc.Arbitrary<M3Cmd[]> {
+  const one: fc.Arbitrary<M3Cmd> = fc.record({
+    stream: fc.integer({ min: 0, max: NUM_STREAMS - 1 }),
+    op: fc.constantFrom('react-add', 'edit', 'delete'),
+    reject: fc.boolean(),
+    race: fc.constantFrom('none', 'ws-first', 'ws-after'),
+  })
+  return fc.array(one, { minLength: 1, maxLength: 6 })
+}
+
+/** Create a settled base message in `streamId` and return its id. */
+async function seedSettledMessage(live: LiveCore, streamId: string): Promise<string> {
+  const res = await sendRpc(live, streamId, `base-${rpcId}`)
+  await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
+  return res.message_id
+}
+
+/** The optimistic-op RPC params for a cmd against a target message. */
+function m3Params(cmd: M3Cmd, streamId: string, messageId: string): unknown {
+  switch (cmd.op) {
+    case 'react-add':
+      return { m: 'outbox.react', stream_id: streamId, message_id: messageId, emoji: REACT_EMOJI }
+    case 'edit':
+      return { m: 'outbox.edit', stream_id: streamId, message_id: messageId, text: 'edited!' }
+    case 'delete':
+      return { m: 'outbox.remove', stream_id: streamId, message_id: messageId }
+  }
+}
+
+/** Assert the settled effect of an accepted op landed exactly once. */
+async function assertSettledEffect(
+  live: LiveCore,
+  cmd: M3Cmd,
+  messageId: string,
+  serverSeq: number,
+): Promise<void> {
+  if (cmd.op === 'react-add') {
+    const reactions = await live.db.getReactionsForMessage(messageId)
+    const mine = reactions.filter((r) => r.author_user_id === MY_USER_ID && r.emoji === REACT_EMOJI)
+    expect(mine).toHaveLength(1) // one membership, never duplicated by ack+WS
+  } else if (cmd.op === 'edit') {
+    const row = await live.db.getMessage(messageId)
+    expect(row?.text).toBe('edited!')
+    expect(row?.edited_seq).toBe(serverSeq) // LWW stamped with the real server seq
+    expect(row?.deleted).not.toBe(true)
+  } else {
+    const row = await live.db.getMessage(messageId)
+    expect(row?.deleted).toBe(true)
+    expect(row?.text).toBe('') // redacted
+  }
+}
+
+describe('§12 invariant 5 — M3 optimistic reactions/edits/deletes [property, real WorkerCore]', () => {
+  it('each optimistic op renders then settles into server order / parks; ack-vs-WS → one effect', async () => {
+    await fc.assert(
+      fc.asyncProperty(m3CmdArb(), async (cmds) => {
+        const streamIds = Array.from({ length: NUM_STREAMS }, (_, i) => `s_${i}`)
+        const live = await makeLiveCore(() => Promise.resolve(new MemoryDb()), streamIds)
+
+        for (const cmd of cmds) {
+          const streamId = streamIds[cmd.stream]!
+          const messageId = await seedSettledMessage(live, streamId)
+          const eventsBefore = (await live.db.getEventsForStream(streamId)).length
+
+          if (cmd.reject) {
+            live.server.pauseBatch()
+            const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
+            // The overlay renders immediately (before any ack).
+            live.server.rejectEvent(res.event_id, 'permission_denied')
+            live.server.resumeBatch()
+            await untilAsync(
+              async () => (await live.db.getOutbox(res.event_id))?.state === 'rejected',
+            )
+            // Parked: outbox row rejected, no event stored, effect stays visible.
+            expect((await live.db.getOutbox(res.event_id))?.state).toBe('rejected')
+            expect((await live.db.getEventsForStream(streamId)).length).toBe(eventsBefore)
+            continue
+          }
+
+          if (cmd.race === 'ws-first') {
+            live.server.pauseBatch()
+            const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
+            const row = await live.db.getOutbox(res.event_id)
+            if (!row) throw new Error('missing outbox row for ws-first')
+            const { accepted } = live.server.processBatch([
+              { body: row.body as never, event_hash: row.event_hash },
+            ])
+            const serverSeq = accepted[0]!.server_sequence
+            // Anti-vacuity: only the real-hash WS frame can land it while paused.
+            const before = await live.db.getEventsForStream(streamId)
+            expect(before.some((e) => e.event_id === res.event_id)).toBe(false)
+            live.emit(live.server.wireFor(res.event_id))
+            await flush()
+            const after = await live.db.getEventsForStream(streamId)
+            expect(after.length).toBe(before.length + 1) // genuinely applied
+            live.server.resumeBatch()
+            await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
+            await assertSettledEffect(live, cmd, messageId, serverSeq)
+            continue
+          }
+
+          // 'none' + 'ws-after': auto-drain settles first.
+          const res = await mutateRpc(live, m3Params(cmd, streamId, messageId))
+          await untilAsync(async () => (await live.db.getOutbox(res.event_id)) === undefined)
+          const settledSeq = (await live.db.getEventsForStream(streamId)).find(
+            (e) => e.event_id === res.event_id,
+          )?.server_sequence
+          if (cmd.race === 'ws-after') {
+            // The SAME event now also arrives as a real-hash WS frame → deduped.
+            const before = await live.db.getEventsForStream(streamId)
+            live.emit(live.server.wireFor(res.event_id))
+            await flush()
+            const afterEvents = await live.db.getEventsForStream(streamId)
+            expect(afterEvents.length).toBe(before.length) // no second row
+          }
+          await assertSettledEffect(live, cmd, messageId, settledSeq!)
+        }
+
+        // Anti-vacuity across the whole run: no WS frame was dropped for a bad hash.
+        expect(hashMismatchDrops).toBe(0)
+        // Outbox fully drained except parked (rejected) rows.
+        const outbox = await live.db.listOutbox()
+        expect(outbox.every((r) => r.state === 'rejected')).toBe(true)
+        await live.db.close()
+      }),
+      { numRuns: 30 },
     )
   })
 })
