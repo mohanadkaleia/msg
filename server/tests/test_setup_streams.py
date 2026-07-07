@@ -88,10 +88,17 @@ async def test_setup_emits_meta_events_and_seeds_general_channel(
     assert meta_row is not None and meta_row.head_seq == 3
 
 
-async def test_accept_invite_emits_user_joined_for_invitee(
+async def test_accept_invite_emits_user_joined_and_general_membership(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """Accepting an invite homes a user.joined for the invitee at the next meta seq."""
+    """Accepting an invite homes user.joined(4) + channel.member_added(5) for the invitee.
+
+    ENG-112: after the invitee's ``user.joined``, accept-invite emits a
+    server-authored ``channel.member_added`` self-joining the invitee to the
+    default ``#general`` channel (homed in workspace-meta, like setup's public
+    ``channel.created``), so their sidebar isn't empty. The ``user.joined`` seq (4)
+    is unchanged — the membership event appends after it at seq 5.
+    """
     owner = await do_setup(client)
     invite = await create_invite(client, owner["token"], role="member")
     raw = join_token(invite.json()["url"])
@@ -104,18 +111,42 @@ async def test_accept_invite_emits_user_joined_for_invitee(
     assert meta is not None
     events = await fetch_stream_events(db_session, meta)
 
-    # setup(1,2,3 — ws.created, owner join, #general) then the invitee's join at seq 4.
+    # setup(1,2,3 — ws.created, owner join, #general), then the invitee's join at
+    # seq 4, then their #general membership at seq 5 (both homed in meta).
     assert [e.type for e in events] == [
         "workspace.created",
         "user.joined",
         "channel.created",
         "user.joined",
+        "channel.member_added",
     ]
-    invitee_join = events[-1]
-    assert invitee_join.server_sequence == 4
+    invitee_join = events[3]
+    assert invitee_join.server_sequence == 4  # user.joined ordering unchanged (ENG-112)
     assert invitee_join.author_user_id == joiner["user_id"]  # the joiner authors (D2)
     assert invitee_join.author_device_id == joiner["device_id"]
     assert invitee_join.body["payload"]["user_id"] == joiner["user_id"]
 
-    assert hash_event(invitee_join.body) == invitee_join.event_hash
-    assert verify_hash(Envelope(body=Body(**invitee_join.body), event_hash=invitee_join.event_hash))
+    # The default channel's own stream id (from setup's channel.created payload).
+    channel_created = events[2]
+    general_stream_id = channel_created.body["payload"]["channel_stream_id"]
+
+    member_added = events[4]
+    assert member_added.server_sequence == 5
+    assert member_added.author_user_id == joiner["user_id"]  # self-join (D2, like user.joined)
+    assert member_added.author_device_id == joiner["device_id"]
+    assert member_added.body["payload"]["channel_stream_id"] == general_stream_id
+    assert member_added.body["payload"]["user_id"] == joiner["user_id"]
+
+    # The reducer grew the #general stream_members with the invitee's row.
+    invitee_membership = await db_session.scalar(
+        select(StreamMember).where(
+            StreamMember.stream_id == general_stream_id,
+            StreamMember.user_id == joiner["user_id"],
+        )
+    )
+    assert invitee_membership is not None
+
+    # Raw-hash discipline holds for both new invitee events.
+    for e in (invitee_join, member_added):
+        assert hash_event(e.body) == e.event_hash
+        assert verify_hash(Envelope(body=Body(**e.body), event_hash=e.event_hash))

@@ -42,6 +42,7 @@ from msgd.auth.tokens import hash_token
 from msgd.core.ids import new_stream_id, new_user_id, new_workspace_id
 from msgd.core.payloads import (
     build_channel_created_body,
+    build_channel_member_added_body,
     build_user_joined_body,
     build_workspace_created_body,
 )
@@ -355,6 +356,53 @@ async def accept_invite(
             display_name=req.display_name,
         ),
     )
+
+    # ENG-112: auto-join the invitee to the workspace's default #general channel so
+    # their sidebar isn't empty on first load. Setup (ENG-109) auto-adds only the
+    # OWNER (via channel.created's genesis member-add), so a later invitee has no
+    # channel membership until now. Find the setup-created default channel — the
+    # PUBLIC `channel` stream named ``settings.default_channel_name`` in this
+    # workspace — and emit a server-authored ``channel.member_added`` self-joining
+    # the invitee. §2.2 homes a PUBLIC-channel lifecycle event in workspace-meta
+    # (mirrors setup's channel.created and validate.py's upload homing rule), while
+    # the reducer grows the channel's OWN stream_members (payload.channel_stream_id).
+    # Authored by the invitee (self-join, like their user.joined). Server-authored,
+    # so it bypasses can_write like setup's channel.created. If the default channel
+    # is missing (renamed/archived edge), skip gracefully — never fail the accept.
+    # Decision: default-channel-only (matches the owner); auto-joining ALL public
+    # channels is a possible future.
+    #
+    # Guests are excluded: a guest sees ONLY explicit-membership streams (no
+    # workspace-meta, no public-channel browser — D5/ENG-67), so they are invited
+    # to specific channels/DMs rather than dropped into #general. Auto-joining a
+    # guest would silently widen their scope, so the default-channel add is
+    # scoped to full members (owner/admin/member).
+    default_channel_stream_id = (
+        await db.scalar(
+            select(Stream.stream_id).where(
+                Stream.workspace_id == invite.workspace_id,
+                Stream.kind == "channel",
+                Stream.visibility == "public",
+                Stream.name == settings.default_channel_name,
+            )
+        )
+        if invite.role != "guest"
+        else None
+    )
+    if default_channel_stream_id is not None:
+        await emit_event(
+            db,
+            home_stream_id=meta_stream_id,
+            body=build_channel_member_added_body(
+                workspace_id=invite.workspace_id,
+                stream_id=meta_stream_id,
+                author_user_id=new_user_ident,
+                author_device_id=device.device_id,
+                client_created_at=now_rfc3339(),
+                channel_stream_id=default_channel_stream_id,
+                user_id=new_user_ident,
+            ),
+        )
 
     user = await db.get(User, new_user_ident)
     assert user is not None
