@@ -12,6 +12,7 @@ import { Outbox } from './outbox'
 import {
   applyEventsToProjection,
   getMessage,
+  listDirectory,
   listMessages,
   listStreamsForSidebar,
 } from './projection'
@@ -330,6 +331,8 @@ export class WorkerCore {
         return this.listStreams()
       case 'message.get':
         return getMessage(this.db, params.message_id).then((message) => ({ message }))
+      case 'directory.list':
+        return listDirectory(this.db)
       default:
         // Exhaustive: a new QueryParams member without a case is a COMPILE error
         // here (params narrows to `never`). At runtime an out-of-contract `q`

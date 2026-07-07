@@ -11,7 +11,14 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { resolveWorkerClient } from '../composables/useWorkerClient'
-import type { StreamBadge, StreamRow, Unsubscribe } from '../worker'
+import type { DirectoryListResult, StreamBadge, StreamRow, Unsubscribe } from '../worker'
+
+/** One @mention / #channel autocomplete candidate for the composer (ENG-101). */
+export interface MentionItem {
+  id: string
+  label: string
+  kind: 'user' | 'channel'
+}
 
 /** A sidebar row: a projected stream merged with its live badge. */
 export type SidebarStream = StreamRow & StreamBadge
@@ -23,6 +30,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const streams = ref<SidebarStream[]>([])
   const selectedStreamId = ref<string | null>(null)
   const loaded = ref(false)
+  /** Autocomplete source for the composer (ENG-101), refreshed with the sidebar. */
+  const directory = ref<DirectoryListResult>({ users: [], channels: [] })
 
   /** Per-stream push unsubscribes, so we can diff + tear down cleanly. */
   const subs = new Map<string, Unsubscribe>()
@@ -38,6 +47,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const selectedStream = computed(
     () => streams.value.find((s) => s.stream_id === selectedStreamId.value) ?? null,
   )
+
+  /** The composer's flat candidate list: users then channels (ENG-101). */
+  const mentionItems = computed<MentionItem[]>(() => [
+    ...directory.value.users.map((u) => ({
+      id: u.user_id,
+      label: u.display_name,
+      kind: 'user' as const,
+    })),
+    ...directory.value.channels.map((c) => ({
+      id: c.stream_id,
+      label: c.name,
+      kind: 'channel' as const,
+    })),
+  ])
 
   /** Load the sidebar + wire per-stream badge subscriptions. */
   async function load(): Promise<void> {
@@ -59,11 +82,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  /** Re-query `streams.list` and reconcile push subscriptions. */
+  /** Re-query `streams.list` (+ the mention directory) and reconcile subscriptions. */
   async function refresh(): Promise<void> {
     const client = await resolveWorkerClient()
-    const res = await client.query({ q: 'streams.list' })
-    streams.value = res.streams
+    const [streamsRes, directoryRes] = await Promise.all([
+      client.query({ q: 'streams.list' }),
+      client.query({ q: 'directory.list' }),
+    ])
+    streams.value = streamsRes.streams
+    directory.value = directoryRes
     reconcileSubscriptions(client)
   }
 
@@ -114,6 +141,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     channels,
     dms,
     visibleStreams,
+    directory,
+    mentionItems,
     load,
     refresh,
     selectStream,

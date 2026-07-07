@@ -21,6 +21,8 @@
 
 import { computeStreamBadge } from './badges'
 import type {
+  DirectoryListResult,
+  DirectoryUser,
   EventBody,
   EventRow,
   MessageRow,
@@ -219,6 +221,58 @@ export async function listMessages(
 /** A single projected message by id, or `null` on a miss (`message.get`). */
 export async function getMessage(db: MsgDb, messageId: string): Promise<MessageRow | null> {
   return (await db.getMessage(messageId)) ?? null
+}
+
+/** Kinds excluded from the `#channel` autocomplete (DMs + infra). */
+const NON_CHANNEL_KINDS = new Set(['dm', 'workspace-meta'])
+
+/**
+ * The `@mention` / `#channel` autocomplete source (ENG-101). Users are folded
+ * from the cached `workspace-meta` events (`user.joined` adds, `user.left`
+ * removes, `user.profile_updated` renames) and channels come from the member
+ * `streams`. A pure LOCAL projection read — it touches only the Dexie cache, never
+ * the network — so the composer's autocomplete is instant and stays inside the
+ * token boundary. Both lists are sorted for a stable, predictable dropdown.
+ */
+export async function listDirectory(db: MsgDb): Promise<DirectoryListResult> {
+  const streams = await db.listStreams()
+
+  const channels = streams
+    .filter((s) => s.member && !NON_CHANNEL_KINDS.has(s.kind))
+    .map((s) => ({ stream_id: s.stream_id, name: s.name ?? s.stream_id }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  const byId = new Map<string, string>() // user_id → display_name
+  const metaStreams = streams.filter((s) => s.kind === 'workspace-meta')
+  for (const meta of metaStreams) {
+    const events = await db.getEventsForStream(meta.stream_id) // ascending server_sequence
+    for (const event of events) {
+      const payload = event.envelope?.body?.payload
+      if (payload === null || typeof payload !== 'object') continue
+      const p = payload as Record<string, unknown>
+      const userId = typeof p.user_id === 'string' ? p.user_id : undefined
+      if (userId === undefined) continue
+      const displayName = typeof p.display_name === 'string' ? p.display_name : undefined
+      switch (event.type) {
+        case 'user.joined':
+          byId.set(userId, displayName ?? userId)
+          break
+        case 'user.left':
+          byId.delete(userId)
+          break
+        case 'user.profile_updated':
+          // A rename only applies to a still-present member; ignore if they left.
+          if (byId.has(userId) && displayName !== undefined) byId.set(userId, displayName)
+          break
+      }
+    }
+  }
+
+  const users: DirectoryUser[] = [...byId.entries()]
+    .map(([user_id, display_name]) => ({ user_id, display_name }))
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
+
+  return { users, channels }
 }
 
 /** The sidebar: every stream merged with its unread/mention badge (`streams.list`). */

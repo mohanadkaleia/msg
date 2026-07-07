@@ -138,13 +138,26 @@ export const useMessagesStore = defineStore('messages', () => {
     }
   }
 
-  /** Optimistic send through the outbox. The pending row arrives via the push. */
-  async function send(text: string): Promise<void> {
+  /**
+   * Optimistic send through the outbox. The pending row arrives via the push.
+   *
+   * `mentions` (ENG-101) are the resolved `u_` ids of the composed @mentions; they
+   * ride the SAME `outbox.send` mutation (an already-supported optional field) and
+   * populate the message payload's `mentions[]` / the projection's
+   * `mention_user_ids`. The wire/format contract is otherwise unchanged — text is
+   * still markdown source, `format` still defaults markdown worker-side.
+   */
+  async function send(text: string, mentions: string[] = []): Promise<void> {
     const streamId = currentStreamId.value
     const body = text.trim()
     if (streamId === null || body.length === 0) return
     const client = await resolveWorkerClient()
-    const res = await client.mutate({ m: 'outbox.send', stream_id: streamId, text: body })
+    const res = await client.mutate({
+      m: 'outbox.send',
+      stream_id: streamId,
+      text: body,
+      ...(mentions.length > 0 ? { mentions } : {}),
+    })
     sendEventIds.set(res.message_id, res.event_id)
   }
 

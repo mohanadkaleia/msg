@@ -21,6 +21,12 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@tiptap/core": "2.27.2",
+    "@tiptap/extension-mention": "2.27.2",
+    "@tiptap/pm": "2.27.2",
+    "@tiptap/starter-kit": "2.27.2",
+    "@tiptap/suggestion": "2.27.2",
+    "@tiptap/vue-3": "2.27.2",
     "dexie": "^4.0.11",
     "pinia": "^2.3.1",
     "vue": "^3.5.13",

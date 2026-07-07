@@ -25,7 +25,7 @@ const messages = useMessagesStore()
 const sync = useSyncStore()
 
 const { myUserId } = storeToRefs(auth)
-const { selectedStream, selectedStreamId, channels, dms } = storeToRefs(workspace)
+const { selectedStream, selectedStreamId, channels, dms, mentionItems } = storeToRefs(workspace)
 const { displayMessages, hasMore } = storeToRefs(messages)
 
 const paletteOpen = ref(false)
@@ -72,8 +72,17 @@ function onPaletteSelect(streamId: string): void {
   paletteOpen.value = false
 }
 
-function onSend(text: string): void {
-  void messages.send(text)
+function onSend(text: string, mentions: string[]): void {
+  void messages.send(text, mentions)
+}
+
+/**
+ * SEAM (ENG-102): the composer requests editing the user's last own message
+ * (ArrowUp on an empty composer). ENG-101 wires only the keybinding; the edit
+ * round-trip (`message.edited`) lands in ENG-102 — connect it here then.
+ */
+function onEditLast(): void {
+  // Intentionally a no-op until ENG-102.
 }
 
 async function onLogout(): Promise<void> {
@@ -131,7 +140,9 @@ onBeforeUnmount(() => {
       <MessageComposer
         :placeholder="composerPlaceholder"
         :disabled="!selectedStream"
+        :mention-items="mentionItems"
         @send="onSend"
+        @edit-last="onEditLast"
       />
     </main>
 
