@@ -19,9 +19,7 @@ from typing import Any
 
 from msgd.core.envelope import Body, Envelope, check_event_size
 from msgd.core.hashing import hash_event
-from msgd.core.ids import new_event_id
-from msgd.core.payloads import build_message_created_body
-from msgd.core.payloads.meta import ChannelCreatedV1
+from msgd.core.payloads import build_channel_created_body, build_message_created_body
 
 from msgctl import outbox
 from msgctl.append import flock_exclusive
@@ -187,6 +185,14 @@ def cmd_login(args: argparse.Namespace) -> int:
         write_credentials(ws, token=str(resp["token"]), expires_at=str(resp["expires_at"]))
         sync = client.get_sync()
         meta_stream_id = _find_meta_stream_id(sync)
+        # Reconcile local state with the server right after binding so the
+        # workspace immediately learns the server's channels — notably the
+        # setup-created public #general (ENG-109). Without this, a subsequent
+        # `send --stream general` would not find `general` in the local name
+        # index and would mint a SECOND `channel.created` (a duplicate channel).
+        # After the pull, `resolve_or_create_stream` matches `general` by name and
+        # REUSES the server's stream id — exactly one `general` ever exists.
+        pull(ws, client)
 
     write_remote_binding(
         ws,
@@ -302,23 +308,18 @@ def _enqueue_channel_created(
     — after ``pull`` the synced dir is ``streams/<channel_stream_id>/``, identical
     across clients.
     """
-    payload = ChannelCreatedV1(
-        channel_stream_id=channel_stream_id, name=name, visibility="public"
-    ).model_dump(mode="json")
-    body_model = Body(
-        event_id=new_event_id(),
+    body = build_channel_created_body(
         workspace_id=ws.workspace_id,
         stream_id=meta_stream_id,
-        type="channel.created",
-        type_version=1,
         author_user_id=ws.local_author.user_id,
         author_device_id=ws.local_author.device_id,
         client_created_at=now_rfc3339(),
-        payload=payload,
+        channel_stream_id=channel_stream_id,
+        name=name,
+        visibility="public",
     )
-    body = body_model.model_dump(mode="json")
     event_hash = hash_event(body)
-    check_event_size(Envelope(body=body_model, event_hash=event_hash))
+    check_event_size(Envelope(body=Body(**body), event_hash=event_hash))
     outbox.enqueue(ws, body, event_hash)
 
 

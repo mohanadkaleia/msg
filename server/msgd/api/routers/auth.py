@@ -40,7 +40,11 @@ from msgd.auth.sessions import (
 )
 from msgd.auth.tokens import hash_token
 from msgd.core.ids import new_stream_id, new_user_id, new_workspace_id
-from msgd.core.payloads import build_user_joined_body, build_workspace_created_body
+from msgd.core.payloads import (
+    build_channel_created_body,
+    build_user_joined_body,
+    build_workspace_created_body,
+)
 from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
 from msgd.db.models import Device, Invite, Stream, User, Workspace
@@ -149,6 +153,29 @@ async def setup(req: SetupRequest, db: DbSession, settings: AppSettings) -> Logi
             client_created_at=authored_at,
             user_id=user_id,
             display_name=req.display_name,
+        ),
+    )
+    # seq 3 — channel.created for the default #general channel (ENG-109). The web
+    # channel-creation UI is not built yet, so without this a fresh workspace has
+    # no channel and the owner's sidebar is empty (unusable out of the box). This
+    # server-authored PUBLIC channel is homed in workspace-meta (§2.2 public
+    # placement); the same reducer-before-insert ordering (D4) has
+    # ``_reduce_channel_created`` create the channel's OWN stream row (head_seq 0)
+    # + the owner's ``stream_members`` row in this same transaction — so the
+    # owner's ``GET /v1/sync`` returns `general` (public, member:true) right away.
+    channel_stream_id = new_stream_id()
+    await emit_event(
+        db,
+        home_stream_id=meta_stream_id,
+        body=build_channel_created_body(
+            workspace_id=workspace_id,
+            stream_id=meta_stream_id,
+            author_user_id=user_id,
+            author_device_id=device.device_id,
+            client_created_at=authored_at,
+            channel_stream_id=channel_stream_id,
+            name=settings.default_channel_name,
+            visibility="public",
         ),
     )
 

@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     invite_default_ttl_seconds: int = 604800  # 7 days
     invite_max_ttl_seconds: int = 2592000  # 30 days
 
+    # --- First-run defaults (ENG-109) ----------------------------------------
+    # Name of the default public channel /v1/setup auto-creates so a fresh
+    # workspace is usable out of the box (the web channel-creation UI is not
+    # built yet, so without a seeded channel the owner's sidebar is empty).
+    default_channel_name: str = "general"
+
     # --- WebSocket fanout (ENG-68, §4.3) -------------------------------------
     # Max concurrent WS connections per user; the over-cap socket is accepted
     # then closed with app code 4029 (§5). The heartbeat is a 30 s ping/pong;
