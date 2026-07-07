@@ -435,6 +435,12 @@ export type QueryParams =
   // a LOCAL read (zero network, never the HTTP API), same discipline as the rest
   // of the query surface.
   | { q: 'directory.list' }
+  // ENG-102: the reaction chips for a set of messages (the M3 message-list UI reads
+  // this to render aggregated emoji + count + who-reacted). A LOCAL projection read
+  // over the seq-aware `reactions` table (present-only), keyed on `message_id` —
+  // the client only holds readable data, so no extra scoping. `emoji` is OPAQUE
+  // bytes rendered ONLY via Vue text interpolation tab-side (never a raw sink).
+  | { q: 'messages.reactions'; message_ids: string[] }
 
 /**
  * Mutation taxonomy (ENG-81) — durable mutations carried on the existing
@@ -537,9 +543,40 @@ export interface DirectoryListResult {
   channels: DirectoryChannel[]
 }
 
+/**
+ * One aggregated reaction chip for a message (ENG-102): a single `emoji` with its
+ * reactor count, the reactor `user_ids`, their resolved `display_names` (for the
+ * who-reacted tooltip, folded from the workspace directory), and `mine` (whether
+ * the signed-in user is among them — drives the idempotent toggle). `emoji` is
+ * OPAQUE bytes (may contain control chars): the tab renders it ONLY through Vue
+ * text interpolation, never a raw-HTML sink.
+ */
+export interface ReactionAggregate {
+  emoji: string
+  count: number
+  user_ids: string[]
+  display_names: string[]
+  mine: boolean
+}
+
+/** The reaction chips for one message (`messages.reactions`), present-only. */
+export interface MessageReactions {
+  message_id: string
+  reactions: ReactionAggregate[]
+}
+
+/** `messages.reactions` result — chips for each requested message id. */
+export interface ReactionsListResult {
+  messages: MessageReactions[]
+}
+
 /** The union of every projection-query result (RpcResultMap['query']). */
 export type QueryResultUnion =
-  MessagesListResult | StreamsListResult | MessageGetResult | DirectoryListResult
+  | MessagesListResult
+  | StreamsListResult
+  | MessageGetResult
+  | DirectoryListResult
+  | ReactionsListResult
 
 /** Result keyed to the query's `q` discriminant (WorkerClient.query<Q>). */
 export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' }
@@ -550,7 +587,9 @@ export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' 
       ? MessageGetResult
       : Q extends { q: 'directory.list' }
         ? DirectoryListResult
-        : never
+        : Q extends { q: 'messages.reactions' }
+          ? ReactionsListResult
+          : never
 export type MutateResult<M extends MutateParams> = M extends {
   m: 'outbox.send' | 'outbox.react' | 'outbox.edit' | 'outbox.remove'
 }

@@ -38,6 +38,10 @@ export {
   type DirectoryListResult,
   type DirectoryUser,
   type DirectoryChannel,
+  // ENG-102 reaction chips (present-only projection read → message-list UI).
+  type ReactionAggregate,
+  type MessageReactions,
+  type ReactionsListResult,
   // ENG-79 sync status surface (ENG-82 sync indicator + scrollback backfill).
   type SyncStatus,
   type SyncState,

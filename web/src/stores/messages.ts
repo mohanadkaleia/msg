@@ -13,7 +13,7 @@ import { computed, ref } from 'vue'
 
 import { resolveWorkerClient } from '../composables/useWorkerClient'
 import { messageTimestamp } from '../lib/time'
-import type { MessageRow, Unsubscribe } from '../worker'
+import type { MessageRow, ReactionAggregate, Unsubscribe } from '../worker'
 
 /** Newest-first page size for a projection read. */
 const PAGE = 50
@@ -28,6 +28,12 @@ export interface DisplayMessage extends MessageRow {
   mine: boolean
   /** Outbox `event_id` for a pending/failed row composed this session (retry/delete). */
   eventId?: string
+  /**
+   * Aggregated reaction chips (ENG-102) — present-only, joined in from the
+   * `messages.reactions` projection read. Optional so isolated component tests can
+   * omit it (defaults to `[]` in the view).
+   */
+  reactions?: ReactionAggregate[]
 }
 
 export const useMessagesStore = defineStore('messages', () => {
@@ -41,6 +47,8 @@ export const useMessagesStore = defineStore('messages', () => {
 
   /** `message_id → outbox event_id`, populated from this session's sends. */
   const sendEventIds = new Map<string, string>()
+  /** `message_id → aggregated reaction chips`, from the `messages.reactions` read. */
+  const reactionsByMessage = ref<Map<string, ReactionAggregate[]>>(new Map())
   let unsub: Unsubscribe | undefined
 
   const displayMessages = computed<DisplayMessage[]>(() =>
@@ -49,12 +57,22 @@ export const useMessagesStore = defineStore('messages', () => {
         ...m,
         ts: messageTimestamp(m),
         mine: m.author_user_id === myUserId.value,
+        reactions: reactionsByMessage.value.get(m.message_id) ?? [],
       }
       const eventId = sendEventIds.get(m.message_id)
       if (eventId !== undefined) decorated.eventId = eventId
       return decorated
     }),
   )
+
+  /** The newest own, non-deleted message id — the ArrowUp→edit-last target (ENG-102). */
+  const lastOwnMessageId = computed<string | null>(() => {
+    for (let i = rows.value.length - 1; i >= 0; i--) {
+      const r = rows.value[i]!
+      if (r.author_user_id === myUserId.value && r.deleted !== true) return r.message_id
+    }
+    return null
+  })
 
   const isEmpty = computed(() => !loading.value && rows.value.length === 0)
 
@@ -88,9 +106,32 @@ export const useMessagesStore = defineStore('messages', () => {
       // Defensive: never trust a page longer than we asked for (no-infallibility).
       rows.value = res.messages.slice(0, PAGE).reverse()
       hasMore.value = res.has_more
+      await syncReactions()
     } finally {
       loading.value = false
     }
+  }
+
+  /**
+   * Re-read the reaction chips for the currently loaded rows (ENG-102) — a LOCAL
+   * `messages.reactions` projection read (present-only, zero network). Runs after
+   * every list load / refresh / backfill and after an optimistic react settles via
+   * the stream push, so chips render instantly and converge into server order. A
+   * stream-switch race (rows changed mid-await) drops the stale result.
+   */
+  async function syncReactions(): Promise<void> {
+    const streamId = currentStreamId.value
+    const ids = rows.value.map((m) => m.message_id)
+    if (ids.length === 0) {
+      reactionsByMessage.value = new Map()
+      return
+    }
+    const client = await resolveWorkerClient()
+    const res = await client.query({ q: 'messages.reactions', message_ids: ids })
+    if (streamId !== currentStreamId.value) return // switched streams mid-flight — drop
+    const next = new Map<string, ReactionAggregate[]>()
+    for (const m of res.messages) next.set(m.message_id, m.reactions)
+    reactionsByMessage.value = next
   }
 
   /**
@@ -107,6 +148,7 @@ export const useMessagesStore = defineStore('messages', () => {
     // Defensive: clamp to the requested window (no-infallibility).
     rows.value = res.messages.slice(0, limit).reverse()
     hasMore.value = res.has_more
+    await syncReactions()
   }
 
   /**
@@ -132,6 +174,7 @@ export const useMessagesStore = defineStore('messages', () => {
       const older = res.messages.slice(0, PAGE).reverse()
       if (older.length > 0) rows.value = [...older, ...rows.value]
       hasMore.value = res.has_more || backfilled.has_more
+      await syncReactions()
       return older.length
     } finally {
       loadingOlder.value = false
@@ -159,6 +202,57 @@ export const useMessagesStore = defineStore('messages', () => {
       ...(mentions.length > 0 ? { mentions } : {}),
     })
     sendEventIds.set(res.message_id, res.event_id)
+  }
+
+  /**
+   * Toggle YOUR reaction on a message (ENG-102) — optimistic via `outbox.react`.
+   * `remove` is the caller's read of the CURRENT membership (idempotent toggle:
+   * clicking an active reaction removes it). The worker applies the pending overlay
+   * + publishes, our subscription re-reads chips, and it settles into server order.
+   */
+  async function toggleReaction(messageId: string, emoji: string, remove: boolean): Promise<void> {
+    const streamId = currentStreamId.value
+    if (streamId === null || emoji.length === 0) return
+    const client = await resolveWorkerClient()
+    await client.mutate({
+      m: 'outbox.react',
+      stream_id: streamId,
+      message_id: messageId,
+      emoji,
+      remove,
+    })
+  }
+
+  /**
+   * Edit one of YOUR messages (ENG-102) — optimistic via `outbox.edit`
+   * (`message.edited`). The text updates immediately and the "edited" marker lands
+   * on settle (the projection stamps `edited_seq` on ack). Whitespace-only is a
+   * no-op (parity with `send`); server + author-or-admin rules still enforce.
+   */
+  async function editMessage(messageId: string, text: string): Promise<void> {
+    const streamId = currentStreamId.value
+    const body = text.trim()
+    if (streamId === null || body.length === 0) return
+    const client = await resolveWorkerClient()
+    await client.mutate({
+      m: 'outbox.edit',
+      stream_id: streamId,
+      message_id: messageId,
+      text: body,
+    })
+  }
+
+  /**
+   * Soft-delete one of YOUR messages (ENG-102, ENG-111) — optimistic via
+   * `outbox.remove` (`message.deleted`). The projection tombstones + REDACTS the
+   * text instantly; the raw event is retained in the log (a soft delete, not a
+   * cryptographic erase — the UI labels it honestly).
+   */
+  async function deleteMessage(messageId: string): Promise<void> {
+    const streamId = currentStreamId.value
+    if (streamId === null) return
+    const client = await resolveWorkerClient()
+    await client.mutate({ m: 'outbox.remove', stream_id: streamId, message_id: messageId })
   }
 
   /** Re-queue a failed send composed this session. */
@@ -191,12 +285,16 @@ export const useMessagesStore = defineStore('messages', () => {
     loadingOlder,
     hasMore,
     isEmpty,
+    lastOwnMessageId,
     setMyUserId,
     selectStream,
     load,
     refresh,
     loadOlder,
     send,
+    toggleReaction,
+    editMessage,
+    deleteMessage,
     retry,
     discard,
     dispose,

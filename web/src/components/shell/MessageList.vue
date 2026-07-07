@@ -30,6 +30,8 @@ const props = withDefaults(
     streamKey?: string | null
     /** Pull the previous page; resolves to the number of rows prepended. */
     loadOlder?: () => Promise<number>
+    /** The message currently in inline-edit (ENG-102); null = none. */
+    editingMessageId?: string | null
   }>(),
   {
     hasMore: false,
@@ -37,10 +39,19 @@ const props = withDefaults(
     overscan: 6,
     streamKey: null,
     loadOlder: () => Promise.resolve(0),
+    editingMessageId: null,
   },
 )
 
-const emit = defineEmits<{ retry: [messageId: string]; discard: [messageId: string] }>()
+const emit = defineEmits<{
+  retry: [messageId: string]
+  discard: [messageId: string]
+  react: [messageId: string, emoji: string, remove: boolean]
+  'edit-start': [messageId: string]
+  'edit-submit': [messageId: string, text: string]
+  'edit-cancel': []
+  delete: [messageId: string]
+}>()
 
 /** A flat render item: a day divider or a message. */
 type RenderItem =
@@ -179,8 +190,14 @@ onBeforeUnmount(() => {
         <MessageItem
           v-else
           :message="item.message"
+          :editing="item.message.message_id === props.editingMessageId"
           @retry="emit('retry', $event)"
           @discard="emit('discard', $event)"
+          @react="(id, emoji, remove) => emit('react', id, emoji, remove)"
+          @edit-start="emit('edit-start', $event)"
+          @edit-submit="(id, text) => emit('edit-submit', id, text)"
+          @edit-cancel="emit('edit-cancel')"
+          @delete="emit('delete', $event)"
         />
       </template>
     </div>

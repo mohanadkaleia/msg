@@ -114,6 +114,111 @@ describe('messages store', () => {
     expect(fake.deleteSpy).toHaveBeenCalledWith(failed.eventId)
   })
 
+  // -- ENG-102 optimistic reactions / edit / delete -------------------------
+
+  it('renders an optimistic reaction chip instantly + settles, with ZERO network', async () => {
+    fake.addStream({ stream_id: 's1' })
+    const msg = fake.addMessage('s1', { created_seq: 1, text: 'hi' })
+    const store = useMessagesStore()
+    store.setMyUserId('u_me')
+    await store.selectStream('s1')
+    expect(store.displayMessages[0]!.reactions).toEqual([])
+
+    await store.toggleReaction(msg.message_id, '👍', false)
+    await flushPromises()
+
+    // The outbox RPC drove it — never the HTTP escape hatch.
+    expect(fake.reactSpy).toHaveBeenCalledWith({
+      m: 'outbox.react',
+      stream_id: 's1',
+      message_id: msg.message_id,
+      emoji: '👍',
+      remove: false,
+    })
+    expect(fake.fetch).not.toHaveBeenCalled()
+
+    const chips = store.displayMessages[0]!.reactions!
+    expect(chips).toHaveLength(1)
+    expect(chips[0]).toMatchObject({ emoji: '👍', count: 1, mine: true })
+  })
+
+  it('toggling an active reaction removes it (idempotent)', async () => {
+    fake.addStream({ stream_id: 's1' })
+    const msg = fake.addMessage('s1', { created_seq: 1, text: 'hi' })
+    fake.addReaction(msg.message_id, 'u_me', '👍')
+    const store = useMessagesStore()
+    store.setMyUserId('u_me')
+    await store.selectStream('s1')
+    expect(store.displayMessages[0]!.reactions![0]).toMatchObject({ mine: true, count: 1 })
+
+    await store.toggleReaction(msg.message_id, '👍', true) // remove my active reaction
+    await flushPromises()
+
+    expect(fake.reactSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ emoji: '👍', remove: true }),
+    )
+    expect(store.displayMessages[0]!.reactions).toEqual([])
+  })
+
+  it('edits a message optimistically: text updates + an "edited" marker', async () => {
+    fake.addStream({ stream_id: 's1' })
+    const msg = fake.addMessage('s1', { created_seq: 1, text: 'before', author_user_id: 'u_me' })
+    const store = useMessagesStore()
+    store.setMyUserId('u_me')
+    await store.selectStream('s1')
+
+    await store.editMessage(msg.message_id, 'after')
+    await flushPromises()
+
+    expect(fake.editSpy).toHaveBeenCalledWith({
+      m: 'outbox.edit',
+      stream_id: 's1',
+      message_id: msg.message_id,
+      text: 'after',
+    })
+    const edited = store.displayMessages[0]!
+    expect(edited.text).toBe('after')
+    expect(edited.edited_seq).toBeDefined()
+    expect(fake.fetch).not.toHaveBeenCalled()
+  })
+
+  it('deletes a message optimistically → tombstone (content gone)', async () => {
+    fake.addStream({ stream_id: 's1' })
+    const msg = fake.addMessage('s1', { created_seq: 1, text: 'secret', author_user_id: 'u_me' })
+    const store = useMessagesStore()
+    store.setMyUserId('u_me')
+    await store.selectStream('s1')
+
+    await store.deleteMessage(msg.message_id)
+    await flushPromises()
+
+    expect(fake.removeSpy).toHaveBeenCalledWith({
+      m: 'outbox.remove',
+      stream_id: 's1',
+      message_id: msg.message_id,
+    })
+    const gone = store.displayMessages[0]!
+    expect(gone.deleted).toBe(true)
+    expect(gone.text).toBe('') // redacted — content is gone
+    expect(fake.fetch).not.toHaveBeenCalled()
+  })
+
+  it('lastOwnMessageId points at the newest own, non-deleted message (edit-last target)', async () => {
+    fake.addStream({ stream_id: 's1' })
+    fake.addMessage('s1', { created_seq: 1, text: 'mine-old', author_user_id: 'u_me' })
+    fake.addMessage('s1', { created_seq: 2, text: 'theirs', author_user_id: 'u_other' })
+    const mineNew = fake.addMessage('s1', {
+      created_seq: 3,
+      text: 'mine-new',
+      author_user_id: 'u_me',
+    })
+    const store = useMessagesStore()
+    store.setMyUserId('u_me')
+    await store.selectStream('s1')
+
+    expect(store.lastOwnMessageId).toBe(mineNew.message_id)
+  })
+
   it('backfills on scroll-top and prepends older messages (server + projection)', async () => {
     fake.addStream({ stream_id: 's1' })
     // 51 in the projection so the head page (50) reports has_more.

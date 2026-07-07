@@ -14,6 +14,7 @@ import {
   getMessage,
   listDirectory,
   listMessages,
+  listReactions,
   listStreamsForSidebar,
 } from './projection'
 import { SyncEngine } from './sync'
@@ -339,6 +340,8 @@ export class WorkerCore {
         return getMessage(this.db, params.message_id).then((message) => ({ message }))
       case 'directory.list':
         return listDirectory(this.db)
+      case 'messages.reactions':
+        return listReactions(this.db, params.message_ids, this.auth.status().my_user_id ?? '')
       default:
         // Exhaustive: a new QueryParams member without a case is a COMPILE error
         // here (params narrows to `never`). At runtime an out-of-contract `q`

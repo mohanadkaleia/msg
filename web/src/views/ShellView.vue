@@ -29,6 +29,8 @@ const { selectedStream, selectedStreamId, channels, dms, mentionItems } = storeT
 const { displayMessages, hasMore } = storeToRefs(messages)
 
 const paletteOpen = ref(false)
+/** The message currently in inline edit (ENG-102); null = none. */
+const editingMessageId = ref<string | null>(null)
 
 const headerLabel = computed(() => {
   const s = selectedStream.value
@@ -77,12 +79,40 @@ function onSend(text: string, mentions: string[]): void {
 }
 
 /**
- * SEAM (ENG-102): the composer requests editing the user's last own message
- * (ArrowUp on an empty composer). ENG-101 wires only the keybinding; the edit
- * round-trip (`message.edited`) lands in ENG-102 — connect it here then.
+ * SEAM (ENG-102): ArrowUp on an empty composer edits the user's last own message.
+ * Loads it into the inline editor (Slack-style); a no-op when the user has no
+ * editable message in the loaded window.
  */
 function onEditLast(): void {
-  // Intentionally a no-op until ENG-102.
+  const id = messages.lastOwnMessageId
+  if (id) editingMessageId.value = id
+}
+
+/** Toggle YOUR reaction on a message (optimistic; idempotent). */
+function onReact(messageId: string, emoji: string, remove: boolean): void {
+  void messages.toggleReaction(messageId, emoji, remove)
+}
+
+/** Open the inline editor on a message. */
+function onEditStart(messageId: string): void {
+  editingMessageId.value = messageId
+}
+
+/** Commit an inline edit, then close the editor. */
+function onEditSubmit(messageId: string, text: string): void {
+  void messages.editMessage(messageId, text)
+  editingMessageId.value = null
+}
+
+/** Abandon the inline edit. */
+function onEditCancel(): void {
+  editingMessageId.value = null
+}
+
+/** Soft-delete a message (confirmed in-UI; honest labeling lives in MessageItem). */
+function onDeleteMessage(messageId: string): void {
+  if (editingMessageId.value === messageId) editingMessageId.value = null
+  void messages.deleteMessage(messageId)
 }
 
 async function onLogout(): Promise<void> {
@@ -133,8 +163,14 @@ onBeforeUnmount(() => {
         :has-more="hasMore"
         :stream-key="selectedStreamId"
         :load-older="messages.loadOlder"
+        :editing-message-id="editingMessageId"
         @retry="messages.retry"
         @discard="messages.discard"
+        @react="onReact"
+        @edit-start="onEditStart"
+        @edit-submit="onEditSubmit"
+        @edit-cancel="onEditCancel"
+        @delete="onDeleteMessage"
       />
 
       <MessageComposer

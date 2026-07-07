@@ -17,6 +17,7 @@ import type {
   PushPayload,
   QueryParams,
   QueryResult,
+  ReactionAggregate,
   StreamBadge,
   StreamRow,
   SyncStatus,
@@ -37,6 +38,10 @@ export class FakeWorker {
   readonly deleteSpy = vi.fn<(eventId: string) => void>()
   /** Captures every `outbox.send` params object (text + mentions assertions). */
   readonly sendSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.send' }>) => void>()
+  /** ENG-102 M3 optimistic-op spies. */
+  readonly reactSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.react' }>) => void>()
+  readonly editSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.edit' }>) => void>()
+  readonly removeSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.remove' }>) => void>()
 
   private streams = new Map<string, SidebarStream>()
   /** The @mention / #channel autocomplete source a `directory.list` returns. */
@@ -46,6 +51,8 @@ export class FakeWorker {
   }
   /** Ascending-by-created_seq message rows per stream. */
   private messages = new Map<string, MessageRow[]>()
+  /** Present reactions: `message_id → emoji → set of reactor user_ids`. */
+  private reactions = new Map<string, Map<string, Set<string>>>()
   private subs = new Map<string, Set<(p: unknown) => void>>()
   private syncStatus: SyncStatus = { state: 'live', online: true }
   private myUserId = 'u_me'
@@ -96,6 +103,16 @@ export class FakeWorker {
   /** Seed the @mention / #channel autocomplete source a `directory.list` returns. */
   setDirectory(users: DirectoryUser[], channels: DirectoryChannel[]): this {
     this.directory = { users, channels }
+    return this
+  }
+
+  /** Seed a present reaction membership (message_id, reactor, emoji). */
+  addReaction(messageId: string, userId: string, emoji: string): this {
+    const byEmoji = this.reactions.get(messageId) ?? new Map<string, Set<string>>()
+    const reactors = byEmoji.get(emoji) ?? new Set<string>()
+    reactors.add(userId)
+    byEmoji.set(emoji, reactors)
+    this.reactions.set(messageId, byEmoji)
     return this
   }
 
@@ -181,6 +198,27 @@ export class FakeWorker {
         .find((m) => m.message_id === params.message_id)
       return Promise.resolve({ message: found ?? null } as QueryResult<Q>)
     }
+    if (params.q === 'messages.reactions') {
+      const names = new Map(this.directory.users.map((u) => [u.user_id, u.display_name]))
+      const messages = params.message_ids.map((message_id) => {
+        const byEmoji = this.reactions.get(message_id) ?? new Map<string, Set<string>>()
+        const reactions: ReactionAggregate[] = [...byEmoji.entries()]
+          .filter(([, reactors]) => reactors.size > 0)
+          .map(([emoji, reactors]): ReactionAggregate => {
+            const user_ids = [...reactors].sort()
+            return {
+              emoji,
+              count: user_ids.length,
+              user_ids,
+              display_names: user_ids.map((id) => names.get(id) ?? id),
+              mine: user_ids.includes(this.myUserId),
+            }
+          })
+          .sort((a, b) => (a.emoji < b.emoji ? -1 : a.emoji > b.emoji ? 1 : 0))
+        return { message_id, reactions }
+      })
+      return Promise.resolve({ messages } as QueryResult<Q>)
+    }
     // messages.list — newest-first, paginated by created_seq, `limit+1` has_more.
     const list = this.messages.get(params.stream_id) ?? []
     const limit = params.limit ?? 50
@@ -226,14 +264,61 @@ export class FakeWorker {
       this.deleteSpy(params.event_id)
       return Promise.resolve({ ok: true } as MutateResult<M>)
     }
-    // ENG-100 M3 optimistic ops (outbox.react / outbox.edit / outbox.remove) —
-    // the fake just echoes a SendResult so the shell round-trips; the real
-    // projection effects are covered by the worker suites.
+    // ENG-100/102 M3 optimistic ops — the fake applies the projection effect the
+    // real worker overlay would (react toggle / edit text+marker / tombstone+redact)
+    // and publishes, so the shell's optimistic render + settle is exercised end-to-end.
+    if (params.m === 'outbox.react') {
+      this.reactSpy(params)
+      this.applyReaction(params.message_id, params.emoji, params.remove === true)
+      this.publishStream(params.stream_id)
+    } else if (params.m === 'outbox.edit') {
+      this.editSpy(params)
+      this.applyEdit(params.message_id, params.text)
+      this.publishStream(params.stream_id)
+    } else if (params.m === 'outbox.remove') {
+      this.removeSpy(params)
+      this.applyDelete(params.message_id)
+      this.publishStream(params.stream_id)
+    }
     return Promise.resolve({
       message_id: params.message_id,
       event_id: newEventId(),
       created_seq: Date.now(),
     } as MutateResult<M>)
+  }
+
+  /** Add/remove the signed-in user's reaction membership (idempotent toggle). */
+  private applyReaction(messageId: string, emoji: string, remove: boolean): void {
+    const byEmoji = this.reactions.get(messageId) ?? new Map<string, Set<string>>()
+    const reactors = byEmoji.get(emoji) ?? new Set<string>()
+    if (remove) reactors.delete(this.myUserId)
+    else reactors.add(this.myUserId)
+    byEmoji.set(emoji, reactors)
+    this.reactions.set(messageId, byEmoji)
+  }
+
+  /** Replace a message's text + stamp the "edited" marker (fake settles instantly). */
+  private applyEdit(messageId: string, text: string): void {
+    for (const list of this.messages.values()) {
+      const row = list.find((m) => m.message_id === messageId)
+      if (row) {
+        row.text = text
+        row.edited_seq = (row.created_seq ?? 0) + 1
+        return
+      }
+    }
+  }
+
+  /** Tombstone + redact a message (mirrors the projection's delete). */
+  private applyDelete(messageId: string): void {
+    for (const list of this.messages.values()) {
+      const row = list.find((m) => m.message_id === messageId)
+      if (row) {
+        row.deleted = true
+        row.text = ''
+        return
+      }
+    }
   }
 
   private subscribe = <T extends Topic>(

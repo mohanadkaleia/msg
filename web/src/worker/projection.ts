@@ -25,9 +25,12 @@ import type {
   DirectoryUser,
   EventBody,
   EventRow,
+  MessageReactions,
   MessageRow,
   MessagesListResult,
   MsgDb,
+  ReactionAggregate,
+  ReactionsListResult,
   StreamBadge,
   StreamRow,
 } from './types'
@@ -540,8 +543,29 @@ export async function listDirectory(db: MsgDb): Promise<DirectoryListResult> {
     .map((s) => ({ stream_id: s.stream_id, name: s.name ?? s.stream_id }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
+  const byId = await buildUserDirectory(db, streams)
+
+  const users: DirectoryUser[] = [...byId.entries()]
+    .map(([user_id, display_name]) => ({ user_id, display_name }))
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
+
+  return { users, channels }
+}
+
+/**
+ * Fold the cached `workspace-meta` events into a `user_id → display_name` map
+ * (`user.joined` adds, `user.left` removes, `user.profile_updated` renames) — the
+ * shared source both the @mention directory (ENG-101) and the reaction who-reacted
+ * tooltip (ENG-102) resolve names from. A pure LOCAL projection read. `streams` is
+ * passed in when the caller already has it (one fewer read).
+ */
+async function buildUserDirectory(
+  db: MsgDb,
+  streams?: readonly StreamRow[],
+): Promise<Map<string, string>> {
+  const all = streams ?? (await db.listStreams())
   const byId = new Map<string, string>() // user_id → display_name
-  const metaStreams = streams.filter((s) => s.kind === 'workspace-meta')
+  const metaStreams = all.filter((s) => s.kind === 'workspace-meta')
   for (const meta of metaStreams) {
     const events = await db.getEventsForStream(meta.stream_id) // ascending server_sequence
     for (const event of events) {
@@ -565,12 +589,50 @@ export async function listDirectory(db: MsgDb): Promise<DirectoryListResult> {
       }
     }
   }
+  return byId
+}
 
-  const users: DirectoryUser[] = [...byId.entries()]
-    .map(([user_id, display_name]) => ({ user_id, display_name }))
-    .sort((a, b) => a.display_name.localeCompare(b.display_name))
-
-  return { users, channels }
+/**
+ * The reaction chips for a set of messages (ENG-102) — the read the M3 message-list
+ * UI renders. For each requested `message_id` it reads the OBSERVABLE (present-only)
+ * reactions from the seq-aware `reactions` table and aggregates them by `emoji`:
+ * count, the reactor `user_ids` (sorted), their resolved `display_names` (folded
+ * from the workspace directory, `user_id` fallback), and `mine` (whether
+ * `myUserId` reacted — drives the idempotent toggle). Chips are sorted by `emoji`
+ * bytes for a stable order. A LOCAL projection read (zero network). `emoji` /
+ * display names are OPAQUE user content — the tab renders them ONLY via Vue text
+ * interpolation, so no escaping happens here.
+ */
+export async function listReactions(
+  db: MsgDb,
+  messageIds: readonly string[],
+  myUserId: string,
+): Promise<ReactionsListResult> {
+  const directory = await buildUserDirectory(db)
+  const messages: MessageReactions[] = []
+  for (const messageId of messageIds) {
+    const rows = await db.getReactionsForMessage(messageId) // present-only
+    const byEmoji = new Map<string, string[]>() // emoji → reactor user_ids
+    for (const r of rows) {
+      const list = byEmoji.get(r.emoji) ?? []
+      list.push(r.author_user_id)
+      byEmoji.set(r.emoji, list)
+    }
+    const reactions: ReactionAggregate[] = [...byEmoji.entries()]
+      .map(([emoji, ids]): ReactionAggregate => {
+        const user_ids = [...ids].sort()
+        return {
+          emoji,
+          count: user_ids.length,
+          user_ids,
+          display_names: user_ids.map((id) => directory.get(id) ?? id),
+          mine: myUserId !== '' && user_ids.includes(myUserId),
+        }
+      })
+      .sort((a, b) => (a.emoji < b.emoji ? -1 : a.emoji > b.emoji ? 1 : 0))
+    messages.push({ message_id: messageId, reactions })
+  }
+  return { messages }
 }
 
 /** The sidebar: every stream merged with its unread/mention badge (`streams.list`). */
