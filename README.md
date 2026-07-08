@@ -17,14 +17,16 @@ msg is a local-first, file-based team messaging app for 5–50-person technical 
 
 **M3 — Messaging core: complete** (tagged `m3`). The chat surface is now real: **reactions** (emoji chips with an idempotent optimistic toggle), **edit** and **delete** on your own messages (an `(edited)` marker; a soft-delete tombstone), **threads** (a right-hand reply pane rooted on any message), **@mentions** with `@`/`#` autocomplete from a zero-network directory projection, and **channel & DM management** (create a public/private channel, browse channels, start a 1:1 DM) — all authored worker-side and fanned out live over WS. The composer is now TipTap (markdown shortcuts, mention chips) at the same seam, still sending markdown SOURCE text (never HTML). The six §12 invariants now exercise the M3 event types end to end — the Python simulation folds reactions/edits/deletes/threads/`dm.created` into convergence + permission-isolation, and the TS `fast-check` client-rebuild gate proves out-of-order (windowed newest-first + backfill) delivery still converges — and the Playwright **`e2e`** job drives the whole messaging-core golden path (react → edit → delete → thread reply → @mention → create channel → start DM) with a second browser seeing message + reaction + thread-reply live, on the default WS backend.
 
+**M3.5 — Files, search, presence, notifications: complete** (tagged `m3.5`). The workspace now carries **file attachments** (drag/drop/paste onto the composer → content-addressed upload; messages render an image thumbnail or a file card, and download streams the bytes through the SharedWorker so the token never touches the tab), **message search** (server-side Postgres full-text, readable-scoped in-query so you never see a hit from a stream you can't read; a top-bar overlay with `in:#channel`/`from:@name` filters, match highlighting, and jump-to-message), **read-state + notification prefs** that sync per-user across your devices (monotonic read markers; per-channel `all`/`mentions`/`mute`), **live presence + typing** (an online dot on avatars; an "X is typing…" line — both ephemeral, WS-only, never written to the log), and **notifications** (in-app toasts + an unread tab-title count + a permission-gated browser Notification, gated by your per-channel prefs; opening a channel marks it read and clears its badge). `file.uploaded` is the only new event type (additive under D9 — no envelope or decision changed); read-state, prefs, presence, and typing are deliberately non-event state. The §12 gates grew to match — the simulation drives real upload/attach ops + a file/search isolation adversary, the client rebuild gate replays `file.uploaded` under out-of-order delivery, and a fourth Playwright leg drives files, search, presence/typing, and notifications over the real stack on the default WS backend.
+
 | Milestone | Scope | Status |
 |---|---|---|
 | **M0 — Protocol spike** | `core/` envelope + JCS + hashing; `msgctl` append → project → rebuild → verify | ✅ Done |
 | **M1 — Sync server** | Auth, streams, batch upload, sync, WebSocket fanout, Postgres | ✅ Done |
 | **M2 — Web client + sync proof** | Vue shell, SharedWorker + Dexie, six invariants green in CI | ✅ Done |
 | **M3 — Messaging core** | Reactions, edit/delete, threads, @mentions, channel & DM management | ✅ Done |
-| M3.5 — Files, search, presence | Attachments + thumbnails, server search, presence/typing, notifications, pins (fast-follow) | Next |
-| M4 — Portability | `export` / `import` / `verify` round-trip | — |
+| **M3.5 — Files, search, presence, notifications** | Attachments + thumbnails, server search, read-state + prefs sync, presence/typing, notifications | ✅ Done |
+| M4 — Portability | `export` / `import` / `verify` round-trip | ⏭ Next |
 | M5 — Plugins | Industry-standard incoming webhooks, bot tokens | — |
 | M6 — Desktop (Tauri) | True offline; "workspace is a folder" | — |
 
@@ -41,7 +43,7 @@ msg/
   server/
     msgd/
       core/           # event envelope, JCS canonicalization, hashing, payload schemas
-        testdata/     # frozen cross-language hash vectors (55 cases: + reactions, edits, deletes)
+        testdata/     # frozen cross-language hash vectors (60 cases: + reactions, edits, deletes, file.uploaded)
       api/            # FastAPI app: auth, /v1/events(/batch), /v1/sync, /v1/ws
       db/             # SQLAlchemy models + Alembic migrations (Postgres)
       ws/             # WebSocket hub — permission-scoped fanout, heartbeat
@@ -110,6 +112,20 @@ Once you're in, the chat surface is a real one. Everything below authors an even
 
 Every hostile input path — message text, author and reactor and participant display names, opaque reaction bytes — is rendered through escaping-only bindings (no `v-html`), so a `<img onerror>` display name is inert.
 
+## What you can do (M3.5 — files, search, presence, notifications)
+
+M3.5 fills in the surfaces a real workspace needs day to day:
+
+- **Attach files** — drag, drop, or paste a file onto the composer; it uploads to **content-addressed** blob storage (behind a `BlobStore` interface, so S3/MinIO is a later config change) and sends with your message. Images render an inline **server-generated thumbnail** (best-effort WEBP, decoded from untrusted bytes behind a decompression-bomb guard and always re-encoded); other files render a download card. Every fetch — thumbnail, preview, download — runs in the SharedWorker and hands the tab a local `blob:` URL, so the session token never reaches page code.
+- **Search messages** — a top-bar search overlay runs **server-side Postgres full-text** search, scoped **in the SQL itself** to streams you can read (a term that appears only in a private channel or DM you're not in returns nothing — no existence oracle). Narrow with `in:#channel` / `from:@name`, see the matched terms highlighted, and click a hit to **jump** to that message.
+- **Read-state + notification prefs, synced** — your read markers and per-channel notification level (`all` / `mentions` / `mute`) sync across your own devices with a same-user WebSocket echo. Read markers only ever move forward (monotonic); prefs are last-write-wins. Neither is an event — they're synced per-user KV, exempt from log rebuild.
+- **Presence + typing** — teammates show a live **online dot** on their avatars, and an "X is typing…" line appears above the composer while someone types. Both are **ephemeral**: relayed over the WebSocket only, held in memory with a short TTL, and **never written to the log** (a reload starts them blank by design).
+- **Notifications** — a new message you should see raises an in-app **toast**, bumps an unread count in the **tab title**, and (if you grant permission) fires a browser **Notification** — all gated by the per-channel pref, and never for your own messages or the conversation you're already looking at. Opening a channel marks it read and clears its badge.
+
+Hostile input stays inert here too: file names, MIME types, search snippets, and display names all render through escaping-only bindings (no `v-html`); the matched-term highlight is plain text segments wrapped in `<mark>`, never built from an HTML string.
+
+**Deferred out of M3.5** (tracked, not shipped): **pins** (a fast-follow, ENG-119), **Web Push** (server-side push to a closed tab), and **group DMs** (DMs are 1:1 for now), plus the remaining Ranin UI follow-ups.
+
 ## The `msgctl` CLI
 
 `msgctl` is the admin tool you used above (bootstrap + invites) — and also a scriptable sync client and a standalone offline workspace tool. It has two modes.
@@ -168,6 +184,8 @@ M2's exit criterion (TDD §13) is that **all six §12 invariants** are asserted 
 Invariants 5 and client-6 are [`fast-check`](https://github.com/dubzzz/fast-check) property suites that drive the **real** worker engine (`web/tests/unit/worker/invariant{5,6}-*.property.spec.ts`). The `e2e · golden path` job additionally runs Playwright over the real production stack — the ENG-83 smoke (login → send → reload → history intact → a second browser sees the message live via WS fanout) **and** the ENG-105 messaging-core golden path (react → edit → delete → thread reply → @mention → create channel → start DM, second browser sees message + reaction + thread reply live). The suites have **teeth**: `MSG_MUTATE=inv5-drop-ack` and `MSG_MUTATE=inv6-rebuild-skew` flip in a client bug that turns the respective suite red (green by default).
 
 > **The six invariants exercise the M3 event types (M3).** The gate steps and their names are unchanged, but their coverage now spans the M3 surface: the Python **Simulation suite** interleaves reactions, edits, deletes, threaded replies and `dm.created` and folds them into convergence + a permission-isolation adversary that also cannot react into, edit in, reply into, or read a stream/DM it may not; the server **Equivalence gate** replays reactions/edits/deletes/threads through `messages_proj` + `reactions_proj` + `thread_participants_proj`; and the client **Invariant suite (§12)** exercises the M3 optimistic ops and proves `rebuild ≡ incremental` under **out-of-order windowed** (newest-first + backfill) delivery, with deterministic teeth for reply-before-root, reaction `removed@lo`+`added@hi`, and edit-before-create. The frozen cross-language vectors grew 47→55 (adding `reaction.added/removed` + `message.edited/deleted`, byte-identical in Python and TS); `channel.created`/`dm.created` vectors are deferred to ENG-110.
+
+> **The gates extend again for M3.5 (files/search/presence/notifications).** Same steps, same names, wider coverage: the Python **Simulation suite** now also drives real file **upload + attach** ops (`message.created.file_ids`) and a file/search **isolation adversary** (a non-member's search returns zero private hits; a borrowed cross-stream file binding → `unknown_file`); the client **Invariant suite (§12)** replays `file.uploaded` under the same out-of-order windowed delivery with its own deterministic teeth; and the frozen cross-language vectors grew 55→60 (adding `file.uploaded`, byte-identical in Python and TS, `VECTORS_SHA256` bumped in lock-step). Read-state, prefs, presence, and typing are **non-event** state (never appended/projected/rebuilt), guarded by a negative test asserting a full presence/typing + read-state/prefs session leaves the `events` count and every projection dump byte-identical. The `e2e` job gains a fourth Playwright leg over the real single-origin stack — attach → render → byte-identical download → image thumbnail; search token → highlighted hit → jump; two-browser presence + typing; and @mention-while-unfocused → in-app toast + mention badge → open-to-clear.
 
 > **Live WS on the default self-host config (ENG-92, resolved).** The "second browser sees the message live via WS fanout" leg runs against uvicorn's **default/shipped `websockets` backend** — exactly what a real self-host runs — with **no `--ws` override**. ENG-92 fixed the server's bearer-subprotocol WS auth to normalize the un-split `["bearer, <token>"]` that the default backend surfaces in the ASGI scope, so the WS upgrade authenticates out of the box. Live sync is therefore certified on the default config, not a workaround.
 

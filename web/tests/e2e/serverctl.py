@@ -151,6 +151,13 @@ def main() -> int:
             "MSG_ARGON2_TIME_COST": "1",
             "MSG_ARGON2_MEMORY_COST_KIB": "8",
             "MSG_ARGON2_PARALLELISM": "1",
+            # The whole e2e run shares one client IP (127.0.0.1) and legitimately
+            # performs a dozen-plus real logins inside a minute (bootstrap + every
+            # spec's fresh contexts — the ENG-130 M3.5 leg alone logs in six
+            # times), which trips the production default of 10/min. Raise the
+            # AUTH limit for the harness only; the limiter itself stays on (and
+            # is unit-covered by server/tests/test_rate_limit.py).
+            "MSG_AUTH_RATE_LIMIT_PER_MINUTE": "120",
         }
         proc = subprocess.Popen(
             [
