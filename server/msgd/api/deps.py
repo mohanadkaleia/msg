@@ -72,6 +72,12 @@ def get_read_state_limiter(request: Request) -> RateLimiter:
     return limiter
 
 
+def get_prefs_limiter(request: Request) -> RateLimiter:
+    """Return the per-user prefs :class:`RateLimiter` (app.state, ENG-124)."""
+    limiter: RateLimiter = request.app.state.prefs_limiter_minute
+    return limiter
+
+
 def get_blob_store(request: Request) -> BlobStore:
     """Return the process-wide content-addressed :class:`BlobStore` (app.state, ENG-116).
 
@@ -279,6 +285,21 @@ async def read_state_rate_limit(ctx: CurrentAuth, request: Request) -> None:
     bucket raises 429 ``/problems/rate-limited`` with ``Retry-After``.
     """
     result = get_read_state_limiter(request).check(f"user:{ctx.user_id}")
+    if not result.allowed:
+        raise problems.rate_limited(result.retry_after)
+
+
+async def prefs_rate_limit(ctx: CurrentAuth, request: Request) -> None:
+    """Prefs rate limit (ENG-124, D3): ``prefs_rate_limit_per_minute`` per user.
+
+    Mounted on ``PUT /v1/prefs``. Modelled on :func:`read_state_rate_limit` /
+    :func:`search_rate_limit`: it depends on :data:`CurrentAuth` so the bucket is
+    keyed by the authenticated user and the limit runs before the upsert. The
+    budget is modest (a pref change is infrequent, unlike scroll-frequent
+    read-state); the exceeded bucket raises 429 ``/problems/rate-limited`` with
+    ``Retry-After``.
+    """
+    result = get_prefs_limiter(request).check(f"user:{ctx.user_id}")
     if not result.allowed:
         raise problems.rate_limited(result.retry_after)
 

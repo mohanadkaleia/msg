@@ -289,6 +289,45 @@ class ReadState(Base):
     )
 
 
+class Pref(Base):
+    """Per-user, per-stream notification preference — synced KV, LWW (ENG-124, D3).
+
+    The D3 **synced per-user KV** message class, the SAME third kind of state as
+    ``read_state`` (neither a durable, hashed, projected event nor ephemeral
+    presence): a ``(user_id, stream_id) -> level`` row that syncs with a
+    same-user cross-device WS echo but is NEVER appended to the log, hashed,
+    projected, or rebuilt (the D3 negative guard proves a PUT touches no
+    ``events`` row and no projection). ``level`` selects the notification
+    behaviour for that stream — ``all`` (every message), ``mentions`` (only
+    @-mentions), or ``mute`` (nothing). ABSENCE of a row means the default level
+    ``all``; the notifications consumer applies that default, so only EXPLICIT
+    prefs are stored here (and returned by ``GET /v1/prefs``).
+
+    **LWW, NOT monotonic — the key contrast with ``read_state``.** A read marker
+    upserts with ``GREATEST`` (a lower incoming ``last_read_seq`` cannot rewind
+    it); a pref is a plain last-write-wins overwrite — setting ``mute`` after
+    ``all`` simply REPLACES ``all`` (``ON CONFLICT DO UPDATE SET level =
+    EXCLUDED.level``). There is no ordering over the enum; the newest write is the
+    truth.
+
+    ``level`` is guarded twice: the Pydantic request model rejects a value outside
+    ``{all,mentions,mute}`` with 422, and the ``ck_prefs_level_valid``
+    CheckConstraint here is defense-in-depth at the DB (mirroring ``users.role`` /
+    ``streams.kind``). Composite PK ``(user_id, stream_id)`` — one pref per user
+    per stream.
+    """
+
+    __tablename__ = "prefs"
+    __table_args__ = (CheckConstraint("level IN ('all','mentions','mute')", name="level_valid"),)
+
+    user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    stream_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    level: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+
+
 class File(Base):
     __tablename__ = "files"
     __table_args__ = (Index("ix_files_workspace_id_sha256", "workspace_id", "sha256"),)

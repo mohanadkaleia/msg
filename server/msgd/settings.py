@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     # unbounded mutating endpoint is a DoS vector, so it is budgeted like every other
     # per-user write surface rather than left open.
     read_state_rate_limit_per_minute: int = 240
+    # Prefs rate limit (ENG-124, D3): per user, keyed ``user:{user_id}`` like the
+    # read-state limiter. ``PUT /v1/prefs`` is an infrequent, cheap last-write-wins
+    # upsert (a user changes a channel's notification level rarely — not on every
+    # scroll like read-state), so the budget is MODEST (60/min per user): ample for
+    # any human toggling prefs, but an unbounded mutating endpoint is a DoS vector,
+    # so it is budgeted like every other per-user write surface rather than left open.
+    prefs_rate_limit_per_minute: int = 60
 
     # --- Invites (D7) --------------------------------------------------------
     invite_default_ttl_seconds: int = 604800  # 7 days

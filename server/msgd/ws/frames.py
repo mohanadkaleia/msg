@@ -38,6 +38,7 @@ __all__ = [
     "RESERVED_CLIENT_FRAME_TYPES",
     "event_frame",
     "read_state_frame",
+    "prefs_frame",
 ]
 
 
@@ -57,8 +58,10 @@ class WSCloseCode(IntEnum):
 PING: Final[dict[str, str]] = {"t": "ping"}
 PONG: Final[dict[str, str]] = {"t": "pong"}
 
-#: Reserved M3 signal-class ``t`` values (documented, not built — §13/D3).
-RESERVED_SERVER_FRAME_TYPES: Final[tuple[str, ...]] = ("read_state", "presence", "typing")
+#: Server→client signal-class ``t`` values. ``read_state`` (ENG-123) and ``prefs``
+#: (ENG-124) are the ACTIVATED synced-per-user-KV echoes; ``presence`` / ``typing``
+#: remain reserved (documented, not built — §13/D3).
+RESERVED_SERVER_FRAME_TYPES: Final[tuple[str, ...]] = ("read_state", "prefs", "presence", "typing")
 RESERVED_CLIENT_FRAME_TYPES: Final[tuple[str, ...]] = ("typing", "presence")
 
 
@@ -108,3 +111,21 @@ def read_state_frame(*, stream_id: str, last_read_seq: int) -> dict[str, Any]:
     only ``_by_user[user_id]``); no other user ever sees another's read marker.
     """
     return {"t": "read_state", "stream_id": stream_id, "last_read_seq": last_read_seq}
+
+
+def prefs_frame(*, stream_id: str, level: str) -> dict[str, Any]:
+    """Build the ``{"t": "prefs", …}`` per-user cross-device echo frame (D3).
+
+    This ACTIVATES the reserved ``prefs`` ``t`` value: the server now SENDS it. It
+    is the wire form of the **synced per-user KV** message class — the SAME third
+    kind of state as ``read_state``, distinct from durable events and ephemeral
+    presence. A pref is NOT an event: never appended to the log, never hashed,
+    never projected or rebuilt (the D3 negative guard). ``PUT /v1/prefs`` writes
+    the authoritative ``level`` to the ``prefs`` table (last-write-wins — NOT the
+    monotonic ``GREATEST`` of read-state) and then echoes THIS frame to the
+    caller's OWN other connections so a user's devices converge (§3.3). ``level``
+    is the stored value (``all`` / ``mentions`` / ``mute``). The echo reaches only
+    that same user's sockets (the hub touches only ``_by_user[user_id]``); no
+    other user ever sees another's pref.
+    """
+    return {"t": "prefs", "stream_id": stream_id, "level": level}

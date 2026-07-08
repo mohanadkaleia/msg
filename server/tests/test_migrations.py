@@ -58,12 +58,15 @@ async def test_check_constraints_present(migrated_db: str) -> None:
         ("users", "ck_users_role_valid"): ("owner", "admin", "member", "guest"),
         ("streams", "ck_streams_kind_valid"): ("workspace-meta", "channel", "dm"),
         ("streams", "ck_streams_visibility_valid"): ("public", "private"),
+        # ENG-124: the prefs level enum is CHECK-guarded (defense-in-depth behind
+        # the Pydantic 422); compare_metadata does not reliably compare CK text.
+        ("prefs", "ck_prefs_level_valid"): ("all", "mentions", "mute"),
     }
 
     def _reflect(sync_conn: Connection) -> dict[tuple[str, str], str]:
         inspector = inspect(sync_conn)
         found: dict[tuple[str, str], str] = {}
-        for table in ("users", "streams"):
+        for table in ("users", "streams", "prefs"):
             for ck in inspector.get_check_constraints(table):
                 name = ck["name"]
                 assert name is not None

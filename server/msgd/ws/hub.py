@@ -41,7 +41,7 @@ from msgd.core.envelope import Envelope
 from msgd.db.engine import get_session
 from msgd.db.models import Stream
 from msgd.events.permissions import readable_streams_predicate
-from msgd.ws.frames import event_frame, read_state_frame
+from msgd.ws.frames import event_frame, prefs_frame, read_state_frame
 from msgd.ws.registry import Connection, Registry
 
 __all__ = ["Hub", "SessionFactory", "hub"]
@@ -144,10 +144,42 @@ class Hub:
         can never fail the PUT (the DB write is authoritative; the echo is
         convenience). No connected socket for the user is a no-op.
         """
+        await self._publish_to_user(
+            user_id, read_state_frame(stream_id=stream_id, last_read_seq=last_read_seq)
+        )
+
+    async def publish_prefs(self, *, user_id: str, stream_id: str, level: str) -> None:
+        """Echo a ``prefs`` frame to EVERY connection of ``user_id`` — and no one else (D3).
+
+        The SAME synced-per-user-KV same-user echo as :meth:`publish_read_state`,
+        for the notification-pref message class (ENG-124): a DIRECT
+        ``_by_user[user_id]`` lookup via :meth:`_publish_to_user`, never the
+        permission-scoped event fanout, so the echo reaches EXACTLY the pref-owner's
+        other devices and structurally cannot reach any other user.
+
+        ``PUT /v1/prefs`` calls this AFTER its authoritative last-write-wins commit,
+        passing the STORED ``level`` (``all`` / ``mentions`` / ``mute``). Delivery is
+        a hint (§3.3): the per-socket send timeout-guards and drops a wedged socket
+        without propagating, so a failed echo can never fail the PUT. No connected
+        socket for the user is a no-op.
+        """
+        await self._publish_to_user(user_id, prefs_frame(stream_id=stream_id, level=level))
+
+    async def _publish_to_user(self, user_id: str, frame: dict[str, Any]) -> None:
+        """Best-effort push ``frame`` to EVERY live socket of ``user_id`` — and no one else.
+
+        The shared same-user echo primitive behind :meth:`publish_read_state` and
+        :meth:`publish_prefs` (D3 synced per-user KV). Recipient resolution is a
+        DIRECT ``_by_user[user_id]`` lookup (:meth:`Registry.connections_for`) — no
+        stream-readability resolve, no DB round trip — so the frame reaches exactly
+        that user's own other devices and structurally cannot reach any other user
+        (a different user's id is simply never looked up). Per-socket
+        timeout-guarded + isolated by :meth:`_send_all`; no connected socket is a
+        no-op. Keeps the typed public methods as the sole callers.
+        """
         recipients = list(self._registry.connections_for(user_id))
         if not recipients:
             return
-        frame = read_state_frame(stream_id=stream_id, last_read_seq=last_read_seq)
         await self._send_all(recipients, frame)
 
     async def _resolve(self, envelope: Envelope) -> list[Connection]:
