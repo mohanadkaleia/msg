@@ -49,6 +49,8 @@ export class FakeWorker {
   readonly metaSpy = vi.fn<(params: MutateParams) => void>()
   /** ENG-129 notification-prefs spy: every `prefs.set(streamId, level)` call. */
   readonly prefsSetSpy = vi.fn<(streamId: string, level: PrefLevel) => void>()
+  /** ENG-129 read-state spy: every `readState.mark(streamId, seq)` call. */
+  readonly markSpy = vi.fn<(streamId: string, seq: number) => void>()
   /** ENG-127 search spy: every `search(params)` call (exact params assertions). */
   readonly searchSpy = vi.fn<(params: SearchParams) => void>()
   /** Queued `search` pages, consumed in order (empty ⇒ an empty result). */
@@ -238,6 +240,23 @@ export class FakeWorker {
     byEmoji.set(emoji, reactors)
     this.reactions.set(messageId, byEmoji)
     return this
+  }
+
+  /**
+   * Deliver a NEW settled inbound message (ENG-129): append the row, advance the
+   * stream's `head_seq` to its seq, bump `unread`, and publish — exactly the
+   * projection effect of a live `message.created` landing over WS.
+   */
+  deliver(streamId: string, opts: Partial<MessageRow> & { created_seq: number }): MessageRow {
+    const row = this.addMessage(streamId, opts)
+    const stream = this.streams.get(streamId)
+    if (stream) {
+      stream.head_seq = Math.max(stream.head_seq, row.created_seq)
+      stream.unread += 1
+      if (row.mention_user_ids.includes(this.myUserId)) stream.mention = true
+    }
+    this.publishStream(streamId)
+    return row
   }
 
   /** Mutate a stream's badge, then publish so subscribers re-query. */
@@ -651,7 +670,10 @@ export class FakeWorker {
         return Promise.resolve(this.searchPages.shift() ?? { hits: [], next_cursor: null })
       },
       readState: {
-        mark: (streamId, seq) => Promise.resolve({ stream_id: streamId, last_read_seq: seq }),
+        mark: (streamId, seq) => {
+          this.markSpy(streamId, seq)
+          return Promise.resolve({ stream_id: streamId, last_read_seq: seq })
+        },
       },
       // ENG-129: a REAL-shaped prefs surface — `get` returns the seeded snapshot,
       // `set` records the call, LWW-upserts, and fans the `{kind:'prefs'}` push

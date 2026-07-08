@@ -29,6 +29,7 @@ import NewDmDialog from './NewDmDialog.vue'
 import RightDrawer from './RightDrawer.vue'
 import SearchOverlay from './SearchOverlay.vue'
 import SpaceRail from './SpaceRail.vue'
+import ToastContainer from './ToastContainer.vue'
 import TopBar from './TopBar.vue'
 import TypingIndicator from './TypingIndicator.vue'
 import EmptyState from '../ui/EmptyState.vue'
@@ -240,5 +241,8 @@ const gridCols = computed(() => {
 
     <!-- The Details drawer's Members row reuses the existing settings dialog. -->
     <ChannelSettingsDialog v-if="settingsFor" :stream="settingsFor" @close="settingsFor = null" />
+
+    <!-- ENG-129 notification toasts: click jumps via the shell's open-stream. -->
+    <ToastContainer @select="onOpenStream" />
   </div>
 </template>
