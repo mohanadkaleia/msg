@@ -167,6 +167,30 @@ describe('MessageComposer attachments (ENG-121)', () => {
     expect(sendBtn(wrapper).attributes('disabled')).toBeUndefined()
   })
 
+  it('Remove BEFORE the upload id resolves still cancels the job once the id is known (no orphan)', async () => {
+    const fake = new FakeWorker().deferUploads() // withhold the file.upload ack
+    const wrapper = await mountComposer(fake)
+    const vm = vmOf(wrapper)
+
+    vm.addFiles([textFile()])
+    await flushPromises()
+    // The ack is deferred → the chip's upload id has NOT resolved yet.
+    const uploadId = uploadIdOf(fake)
+    expect(fake.hasUploadSub(uploadId)).toBe(true)
+
+    // Remove in the pre-resolve window: can't cancel yet (id unknown) → intent parked.
+    await wrapper.get('[data-testid="composer-attachment-remove"]').trigger('click')
+    await flushPromises()
+    expect(fake.cancelSpy).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-testid="composer-attachment"]')).toHaveLength(0) // chip gone
+
+    // Now the ack lands: the deferred cancel fires + the progress sub is torn down.
+    fake.resolveUpload(uploadId)
+    await flushPromises()
+    expect(fake.cancelSpy).toHaveBeenCalledWith(uploadId)
+    expect(fake.hasUploadSub(uploadId)).toBe(false) // no lingering subscription
+  })
+
   it('Remove revokes the local preview URL and cancels the worker upload', async () => {
     const fake = new FakeWorker()
     const wrapper = await mountComposer(fake)

@@ -53,6 +53,10 @@ export class FakeWorker {
   readonly cancelSpy = vi.fn<(uploadId: string) => void>()
   /** Registered per-upload progress callbacks (keyed by the tab-minted upload_id). */
   private readonly uploadCbs = new Map<string, (p: UploadProgress) => void>()
+  /** When set, `file.upload` withholds its ack until `resolveUpload` (tests the
+   *  remove/retry-before-uploadId-resolves window). */
+  private uploadsDeferred = false
+  private readonly deferredUploadAcks = new Map<string, () => void>()
 
   private streams = new Map<string, SidebarStream>()
   /** The @mention / #channel autocomplete source a `directory.list` returns. */
@@ -195,6 +199,24 @@ export class FakeWorker {
   /** Drive a pending upload to `failed{code}` (ENG-121). */
   failUpload(uploadId: string, code = 'file-too-large'): void {
     this.uploadCbs.get(uploadId)?.({ upload_id: uploadId, phase: 'failed', code })
+  }
+
+  /** Withhold the `file.upload` ack so a test can act BEFORE the upload id resolves. */
+  deferUploads(): this {
+    this.uploadsDeferred = true
+    return this
+  }
+
+  /** Resolve a previously-deferred `file.upload` ack (unblocks `start().then()`). */
+  resolveUpload(uploadId: string): void {
+    const ack = this.deferredUploadAcks.get(uploadId)
+    this.deferredUploadAcks.delete(uploadId)
+    ack?.()
+  }
+
+  /** Whether a progress subscription is still registered for `uploadId` (leak probe). */
+  hasUploadSub(uploadId: string): boolean {
+    return this.uploadCbs.has(uploadId)
   }
 
   /** Seed a present reaction membership (message_id, reactor, emoji). */
@@ -546,6 +568,13 @@ export class FakeWorker {
           const cb = this.uploadCbs.get(params.upload_id)
           cb?.({ upload_id: params.upload_id, phase: 'queued' })
           cb?.({ upload_id: params.upload_id, phase: 'uploading' })
+          if (this.uploadsDeferred) {
+            return new Promise<{ upload_id: string }>((resolve) => {
+              this.deferredUploadAcks.set(params.upload_id, () =>
+                resolve({ upload_id: params.upload_id }),
+              )
+            })
+          }
           return Promise.resolve({ upload_id: params.upload_id })
         },
         retry: (uploadId: string) => {

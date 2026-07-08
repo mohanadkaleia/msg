@@ -184,4 +184,52 @@ describe('MessageItem attachments (ENG-121)', () => {
     expect(wrapper.findAll('[data-testid="attachment-pending"]')).toHaveLength(1)
     expect(wrapper.get('[data-testid="attachment-pending"]').text()).toContain('loading')
   })
+
+  it('flips a pending placeholder to the rendered attachment once file.uploaded projects', async () => {
+    // Out-of-order (cross-user) case: the message references f_soon but its
+    // file.uploaded has not projected yet → placeholder. The late file.uploaded
+    // changes the `files` table (not the message's file_ids); the stream republish
+    // hands MessageItem a fresh DisplayMessage (new file_ids array) → a re-query flips
+    // the placeholder to the rendered attachment.
+    const opts: { files: FileRow[]; pending: string[] } = { files: [], pending: ['f_soon'] }
+    setWorkerClient(fakeClient(opts))
+    const wrapper = mount(MessageItem, { props: { message: makeMessage(['f_soon']) } })
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="attachment-pending"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="attachment-image"]').exists()).toBe(false)
+
+    // file.uploaded projects (now resolvable) AND the message re-projects.
+    opts.files = [fileRow({ file_id: 'f_soon', mime_type: 'image/png' })]
+    opts.pending = []
+    await wrapper.setProps({ message: makeMessage(['f_soon']) })
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-testid="attachment-pending"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="attachment-image"]').exists()).toBe(true)
+  })
+
+  it('renders an SVG through the <img :src=blob:> path — never a v-html / object / iframe sink', async () => {
+    setWorkerClient(
+      fakeClient({
+        files: [fileRow({ file_id: 'f_svg', name: 'a.svg', mime_type: 'image/svg+xml' })],
+      }),
+    )
+    const wrapper = mount(MessageItem, { props: { message: makeMessage(['f_svg']) } })
+    await flushPromises()
+
+    // SVG counts as an image → the safe <img :src=blob:> thumbnail path, not raw HTML.
+    const img = wrapper.get('[data-testid="attachment-image"]')
+    expect(img.element.tagName).toBe('IMG')
+    expect(img.attributes('src')).toBe('blob:thumb-1')
+    expect(wrapper.find('object').exists()).toBe(false)
+    expect(wrapper.find('iframe').exists()).toBe(false)
+
+    // The full-view lightbox is likewise an <img>, never an active-content embed.
+    await img.trigger('click')
+    await flushPromises()
+    const lightImg = wrapper.get('[data-testid="attachment-lightbox-image"]')
+    expect(lightImg.element.tagName).toBe('IMG')
+    expect(wrapper.find('object').exists()).toBe(false)
+    expect(wrapper.find('iframe').exists()).toBe(false)
+  })
 })

@@ -86,6 +86,15 @@ export function useComposerAttachments(streamId: () => string | undefined): Comp
     else delete a.code
   }
 
+  // Per-chip progress-sub teardown (set once `start` resolves the upload id).
+  const unsubscribers = new Map<string, () => void>()
+  // A `remove`/`retry` taken BEFORE a chip's upload id resolved parks its intent
+  // here; the `start().then()` resolution honors it the instant the id is known.
+  // Without this, a remove-before-resolve would leave `uploadId === ''`, so the
+  // worker job would run to completion — enqueuing a `file.uploaded` for a file no
+  // message references — and its progress subscription would linger.
+  const pendingIntent = new Map<string, 'cancel' | 'retry'>()
+
   function add(files: File[]): void {
     const stream = streamId()
     if (!stream) return
@@ -104,9 +113,22 @@ export function useComposerAttachments(streamId: () => string | undefined): Comp
       })
       void uploader
         .start({ stream_id: stream, file }, (p) => onProgress(localId, p))
-        .then((id) => {
+        .then(({ uploadId, unsubscribe }) => {
+          unsubscribers.set(localId, unsubscribe)
+          const intent = pendingIntent.get(localId)
+          pendingIntent.delete(localId)
           const a = find(localId)
-          if (a) a.uploadId = id
+          // Removed (chip gone) or an explicit cancel was requested while the id was
+          // pending: tear the sub down and cancel the now-known worker job.
+          if (intent === 'cancel' || !a) {
+            unsubscribe()
+            unsubscribers.delete(localId)
+            void cancelUpload(uploadId)
+            return
+          }
+          a.uploadId = uploadId
+          // A retry requested before the id resolved fires now that it is known.
+          if (intent === 'retry') void retryUpload(uploadId)
         })
     }
   }
@@ -117,17 +139,29 @@ export function useComposerAttachments(streamId: () => string | undefined): Comp
     const [gone] = attachments.value.splice(idx, 1)
     if (!gone) return
     if (gone.previewUrl) URL.revokeObjectURL(gone.previewUrl)
+    const unsub = unsubscribers.get(localId)
+    if (unsub) {
+      unsub()
+      unsubscribers.delete(localId)
+    }
     if (gone.uploadId) void cancelUpload(gone.uploadId)
+    // Id not resolved yet — defer the cancel to the `start().then()` resolution.
+    else pendingIntent.set(localId, 'cancel')
   }
 
   function retry(localId: string): void {
     const a = find(localId)
-    if (!a || !a.uploadId) return
-    void retryUpload(a.uploadId)
+    if (!a) return
+    if (a.uploadId) void retryUpload(a.uploadId)
+    // Id not resolved yet — defer the retry to the `start().then()` resolution.
+    else pendingIntent.set(localId, 'retry')
   }
 
   function clear(): void {
     for (const a of attachments.value) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
+    for (const unsub of unsubscribers.values()) unsub()
+    unsubscribers.clear()
+    pendingIntent.clear()
     attachments.value = []
   }
 

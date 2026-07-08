@@ -22,28 +22,51 @@ export interface StartUploadInput {
   file: File
 }
 
+/** The resolved handle for one started upload: its id + a targeted sub teardown. */
+export interface StartedUpload {
+  uploadId: string
+  /**
+   * Tear down JUST this upload's progress subscription (idempotent). The caller uses
+   * it to drop a lingering sub when it cancels a chip whose id resolved late (ENG-121);
+   * all subs are also torn down on scope dispose, so calling this is optional cleanup.
+   */
+  unsubscribe: Unsubscribe
+}
+
 export function useFileUpload(): {
-  start: (input: StartUploadInput, onProgress?: (p: UploadProgress) => void) => Promise<string>
+  start: (
+    input: StartUploadInput,
+    onProgress?: (p: UploadProgress) => void,
+  ) => Promise<StartedUpload>
 } {
-  const subs: Unsubscribe[] = []
+  const subs = new Set<Unsubscribe>()
   onScopeDispose(() => {
     for (const unsub of subs) unsub()
+    subs.clear()
   })
 
   /**
-   * Begin an upload. Returns the minted `upload_id` (the tab keys its optimistic UI
-   * on it). `onProgress` is wired BEFORE the request is issued, so the machine's
-   * first frame is never dropped.
+   * Begin an upload. Resolves to the minted `upload_id` (the tab keys its optimistic
+   * UI on it) plus a targeted `unsubscribe`. `onProgress` is wired BEFORE the request
+   * is issued, so the machine's first frame is never dropped.
    */
   async function start(
     input: StartUploadInput,
     onProgress?: (p: UploadProgress) => void,
-  ): Promise<string> {
+  ): Promise<StartedUpload> {
     const client = await resolveWorkerClient()
     const uploadId = crypto.randomUUID()
-    if (onProgress) subs.push(client.files.onProgress(uploadId, onProgress))
+    let unsubscribe: Unsubscribe = () => {}
+    if (onProgress) {
+      const raw = client.files.onProgress(uploadId, onProgress)
+      subs.add(raw)
+      // Idempotent, self-removing from the set so scope dispose can't double-call.
+      unsubscribe = () => {
+        if (subs.delete(raw)) raw()
+      }
+    }
     await client.files.upload({ upload_id: uploadId, ...input })
-    return uploadId
+    return { uploadId, unsubscribe }
   }
 
   return { start }
