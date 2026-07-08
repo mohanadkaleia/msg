@@ -254,6 +254,18 @@ export class DexieDb implements MsgDb {
     await this.db.streams.bulkPut([...rows])
   }
 
+  async bumpStreamHead(streamId: string, seq: number): Promise<boolean> {
+    // ENG-150: read-modify-write inside ONE rw transaction so the GREATEST check
+    // and the write are atomic (mirrors upsertReadStateMonotonic) — head_seq only
+    // ever moves UP. A missing row is a no-op: `/v1/sync` authors stream rows.
+    return this.db.transaction('rw', this.db.streams, async () => {
+      const existing = await this.db.streams.get(streamId)
+      if (!existing || seq <= existing.head_seq) return false
+      await this.db.streams.put({ ...existing, head_seq: seq })
+      return true
+    })
+  }
+
   async putCursors(rows: readonly CursorRow[]): Promise<void> {
     await this.db.cursors.bulkPut([...rows])
   }
@@ -633,6 +645,15 @@ export class MemoryDb implements MsgDb {
   putStreams(rows: readonly StreamRow[]): Promise<void> {
     for (const row of rows) this.streamsMap.set(row.stream_id, row)
     return Promise.resolve()
+  }
+
+  bumpStreamHead(streamId: string, seq: number): Promise<boolean> {
+    // ENG-150: synchronous Map access is naturally atomic — no await between the
+    // GREATEST check and the write (mirrors the Dexie txn). Missing row → no-op.
+    const existing = this.streamsMap.get(streamId)
+    if (!existing || seq <= existing.head_seq) return Promise.resolve(false)
+    this.streamsMap.set(streamId, { ...existing, head_seq: seq })
+    return Promise.resolve(true)
   }
 
   putCursors(rows: readonly CursorRow[]): Promise<void> {

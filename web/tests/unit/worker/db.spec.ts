@@ -331,3 +331,46 @@ describe.each([
     await db.close()
   })
 })
+
+describe.each([
+  { name: 'MemoryDb', make: (): Promise<MsgDb> => Promise.resolve(new MemoryDb()) },
+  { name: 'DexieDb', make: (): Promise<MsgDb> => openDb(fakeIdbOptions()) },
+])('bumpStreamHead (ENG-150 atomic GREATEST on head_seq) [$name]', ({ make }) => {
+  it('moves head_seq UP only, preserves the other columns, reports whether it advanced', async () => {
+    const db = await make()
+    await db.putStreams([
+      { stream_id: 's1', kind: 'channel', name: 'general', head_seq: 5, member: true },
+    ])
+    expect(await db.bumpStreamHead('s1', 7)).toBe(true) // higher → advances
+    expect((await db.getStream('s1'))?.head_seq).toBe(7)
+    expect(await db.bumpStreamHead('s1', 6)).toBe(false) // lower → no write, never down
+    expect((await db.getStream('s1'))?.head_seq).toBe(7)
+    expect(await db.bumpStreamHead('s1', 7)).toBe(false) // equal → no write
+    // The bump is a targeted head_seq write — every other column survives.
+    const row = await db.getStream('s1')
+    expect(row?.name).toBe('general')
+    expect(row?.member).toBe(true)
+    await db.close()
+  })
+
+  it('is a no-op for an unknown stream (rows are authored by /v1/sync, never fabricated)', async () => {
+    const db = await make()
+    expect(await db.bumpStreamHead('s_missing', 3)).toBe(false)
+    expect(await db.getStream('s_missing')).toBeUndefined()
+    expect(await db.count('streams')).toBe(0)
+    await db.close()
+  })
+
+  it('concurrent bumps converge to the MAX (settle order cannot lower the head)', async () => {
+    const db = await make()
+    await db.putStreams([{ stream_id: 's1', kind: 'channel', head_seq: 0, member: true }])
+    await Promise.all([
+      db.bumpStreamHead('s1', 3),
+      db.bumpStreamHead('s1', 11),
+      db.bumpStreamHead('s1', 7),
+      db.bumpStreamHead('s1', 2),
+    ])
+    expect((await db.getStream('s1'))?.head_seq).toBe(11)
+    await db.close()
+  })
+})

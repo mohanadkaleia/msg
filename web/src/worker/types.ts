@@ -482,6 +482,20 @@ export interface MsgDb {
   /** Every projected file row — the `dumpFiles` source (sorted in JS). */
   getAllFiles(): Promise<FileRow[]>
   putStreams(rows: readonly StreamRow[]): Promise<void>
+  /**
+   * ENG-150: atomic GREATEST compare-and-set for a stream's `head_seq` — read
+   * the stored row, write `seq` ONLY when it strictly exceeds the stored head,
+   * all inside ONE transaction (mirrors {@link upsertReadStateMonotonic}).
+   * `applyForward` calls this so live WS frames AND catch-up pull pages advance
+   * `head_seq` (previously only a `/v1/sync` `putStreams` set it, so live
+   * unread badges / notifications never fired). `server_sequence` is server
+   * truth on hash-verified events, and the server head is monotonic, so moving
+   * head UP to the max applied seq is always correct; it NEVER moves down. A
+   * missing stream row is a no-op returning `false` — the row is authored by
+   * `/v1/sync` (`putStreams`), never fabricated here (kind/member unknown).
+   * Returns whether it wrote (advanced).
+   */
+  bumpStreamHead(streamId: string, seq: number): Promise<boolean>
   putCursors(rows: readonly CursorRow[]): Promise<void>
   putReadState(rows: readonly ReadStateRow[]): Promise<void>
   /**

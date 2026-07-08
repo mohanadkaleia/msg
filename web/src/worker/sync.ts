@@ -562,8 +562,8 @@ export class SyncEngine {
 
   /**
    * Verify + store one stream's ascending run, then advance the cursor across
-   * the leading gapless verified run and call the projection seam. Used by
-   * catch-up pages AND single live frames.
+   * the leading gapless verified run, bump the stream row's `head_seq`, and
+   * call the projection seam. Used by catch-up pages AND single live frames.
    */
   private async applyForward(streamId: string, wire: readonly WireEvent[]): Promise<void> {
     const cursor = await this.db.getCursor(streamId)
@@ -589,10 +589,22 @@ export class SyncEngine {
     await this.db.putCursors([
       { stream_id: streamId, last_contiguous_seq: newLast, oldest_loaded_seq: oldest },
     ])
-    if (applied.length > 0) {
-      await this.callSeam(streamId, applied)
-      this.publishStream(streamId)
-    }
+    // ENG-150: upsert head_seq = max(stored, max stored seq) so LIVE frames and
+    // catch-up pages advance the stream row — previously only a `/v1/sync`
+    // response set it, so `unread = head_seq − last_read_seq` (badges, ENG-123)
+    // and the head_seq-advance notification edge (ENG-129) never fired live.
+    // `server_sequence` is server truth on these hash-verified envelopes and the
+    // server head is monotonic, so max-only (never down) is correct. head_seq is
+    // stream METADATA, not part of the projection dump (invariant-6 rebuild ≡
+    // incremental compares messages/reactions/threads/files only) — unaffected.
+    const lastRow = rows[rows.length - 1]
+    const headAdvanced = lastRow
+      ? await this.db.bumpStreamHead(streamId, lastRow.server_sequence)
+      : false
+    if (applied.length > 0) await this.callSeam(streamId, applied)
+    // Publish on any observable change: new projected rows OR a badge-relevant
+    // head advance (a head-only bump still moves `unread`, so the UI re-queries).
+    if (applied.length > 0 || headAdvanced) this.publishStream(streamId)
   }
 
   /**

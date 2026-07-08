@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { computeStreamBadge } from '../../../src/worker/badges'
 import { MemoryDb } from '../../../src/worker/db'
 import { BOOTSTRAP_CONCURRENCY, SyncEngine } from '../../../src/worker/sync'
 import type { WsFrame } from '../../../src/worker/ws'
@@ -436,6 +437,64 @@ describe('delivery contract', () => {
     await until(() => h.engine.status().state === 'live')
     // seq 6 was never applied off the syncing-phase frame (cursor from bootstrap = 5).
     expect((await h.db.getCursor('s1'))?.last_contiguous_seq).toBe(5)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ENG-150: live/catch-up events must advance streams.head_seq — the regression
+// the FakeWorker-driven UI suites masked (they hand-advanced head_seq). unread
+// badges (head_seq − last_read_seq, ENG-123) and the notification edge
+// (head_seq advance, ENG-129) depend on this on the real stack.
+// ---------------------------------------------------------------------------
+
+describe('head_seq advance on applyForward (ENG-150)', () => {
+  it('a contiguous live frame at seq N bumps head_seq N−1 → N, so the badge counts it', async () => {
+    const server = new FakeSyncServer()
+    server.addStream({ stream_id: 's1' })
+    await server.seed('s1', 5)
+    const h = makeHarness({ server })
+    await boot(h) // /v1/sync stored head_seq 5
+    expect((await h.db.getStream('s1'))?.head_seq).toBe(5)
+    await h.db.putReadState([{ stream_id: 's1', last_read_seq: 5 }]) // fully read
+
+    const e6 = await buildWireEvent({ streamId: 's1', seq: 6 })
+    h.ws.last().emitEvent(e6) // the live WS fast path — NO /v1/sync involved
+    await untilAsync(async () => (await h.db.getStream('s1'))?.head_seq === 6)
+
+    // The badge fires off the LOCAL row: unread = head_seq − last_read_seq = 1.
+    const badge = await computeStreamBadge(h.db, 's1', 'u_me')
+    expect(badge.unread).toBe(1)
+    // The bump published a `{kind:'stream'}` signal so the sidebar re-queries.
+    expect(h.streamPushes).toContain('s1')
+  })
+
+  it('head_seq only ever moves UP — a stale/duplicate frame cannot lower it', async () => {
+    const server = new FakeSyncServer()
+    server.addStream({ stream_id: 's1' })
+    await server.seed('s1', 5)
+    const h = makeHarness({ server })
+    await boot(h) // head_seq 5
+
+    const e3 = await buildWireEvent({ streamId: 's1', seq: 3 }) // old / duplicate
+    h.ws.last().emitEvent(e3)
+    await flush()
+    expect((await h.db.getStream('s1'))?.head_seq).toBe(5) // unchanged, never down
+  })
+
+  it('a live gap catch-up pull advances head_seq to the pulled top (same choke point)', async () => {
+    const server = new FakeSyncServer()
+    server.addStream({ stream_id: 's1' })
+    await server.seed('s1', 5)
+    const h = makeHarness({ server })
+    await boot(h) // head_seq 5
+    await h.db.putReadState([{ stream_id: 's1', last_read_seq: 5 }])
+
+    await server.extend('s1', 3) // server advances to 8
+    const e8 = server.events('s1').find((e) => e.server?.server_sequence === 8)!
+    h.ws.last().emitEvent(e8) // gap frame → targeted pull → applyForward(6..8)
+    await untilAsync(async () => (await h.db.getStream('s1'))?.head_seq === 8)
+
+    expect((await computeStreamBadge(h.db, 's1', 'u_me')).unread).toBe(3)
   })
 })
 
