@@ -29,6 +29,8 @@ import Mention from '@tiptap/extension-mention'
 
 import { useComposerAttachments } from '../../composables/useComposerAttachments'
 import { formatBytes } from '../../lib/bytes'
+import EmojiPicker from '../ui/EmojiPicker.vue'
+import ComposerToolbar from './ComposerToolbar.vue'
 import { buildSuggestion, type MentionItem } from './composer/mentions'
 import { sanitizePastedHtml } from './composer/sanitize'
 import { serializeDoc } from './composer/serialize'
@@ -168,6 +170,31 @@ function openFilePicker(): void {
   fileInput.value?.click()
 }
 
+/** Toolbar emoji popover open state (the shared `ui/EmojiPicker`). */
+const emojiOpen = ref(false)
+
+/** Emoji toolbar button → toggle the shared curated-emoji popover. */
+function onToolbarEmoji(): void {
+  if (props.disabled) return
+  emojiOpen.value = !emojiOpen.value
+}
+
+/** Insert the chosen glyph at the cursor (source text) and close the popover. */
+function onEmojiSelect(emoji: string): void {
+  editor.value?.chain().focus().insertContent(emoji).run()
+  emojiOpen.value = false
+}
+
+/** `Aa` toolbar button → toggle a bold mark (serializes to `**…**` markdown). */
+function onToolbarBold(): void {
+  editor.value?.chain().focus().toggleBold().run()
+}
+
+/** `@` toolbar button → insert '@' so the tiptap mention suggestion plugin fires. */
+function onToolbarMention(): void {
+  editor.value?.chain().focus().insertContent('@').run()
+}
+
 /** File-picker change: add the chosen files, then reset so re-picking the same fires. */
 function onFilePicked(event: Event): void {
   const input = event.target as HTMLInputElement
@@ -205,7 +232,7 @@ export type { MentionItem }
 </script>
 
 <template>
-  <div class="border-t border-subtle bg-surface p-3">
+  <div class="border-t border-subtle bg-surface px-4 py-3">
     <!-- Pending attachment chips (ENG-121), above the editor. Names/sizes are
          attacker-controlled and rendered ONLY via text; previews are LOCAL blob: URLs. -->
     <div
@@ -261,21 +288,27 @@ export type { MentionItem }
       </div>
     </div>
 
+    <!-- The bordered composer CARD: editor area on top, icon toolbar + accent send
+         button below (ENG-136 "Ranin" high-fidelity redesign). -->
     <div
-      class="flex items-end gap-2 rounded-lg border border-strong bg-surface px-3 py-2 focus-within:border-accent"
-      :class="{ 'opacity-50': props.disabled }"
+      class="relative rounded-md border border-subtle bg-surface-elevated transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/30"
+      :class="{ 'pointer-events-none opacity-60': props.disabled }"
     >
-      <!-- Paperclip file-picker (ENG-121) → hidden native multi-file input. -->
-      <button
-        type="button"
-        :disabled="props.disabled"
-        class="shrink-0 rounded-md px-1.5 py-1 text-muted hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-40"
-        data-testid="attach-file"
-        aria-label="Attach file"
-        @click="openFilePicker"
-      >
-        📎
-      </button>
+      <!-- Editor area. `composer-input` still lands on the ProseMirror node itself
+           (set via editorProps.attributes), unchanged from M3. -->
+      <div class="relative min-w-0 px-3 pb-1 pt-2.5">
+        <!-- Placeholder overlay (StarterKit has no placeholder node; avoid a dep). -->
+        <div
+          v-if="empty"
+          class="pointer-events-none absolute left-3 top-2.5 select-none text-sm text-muted"
+          data-testid="composer-placeholder"
+        >
+          {{ props.placeholder }}
+        </div>
+        <EditorContent v-if="editor" :editor="editor" />
+      </div>
+
+      <!-- Hidden native multi-file input the toolbar's attach buttons proxy to. -->
       <input
         ref="fileInput"
         type="file"
@@ -284,27 +317,37 @@ export type { MentionItem }
         data-testid="attach-file-input"
         @change="onFilePicked"
       />
-      <div class="relative min-w-0 flex-1">
-        <!-- Placeholder overlay (StarterKit has no placeholder node; avoid a dep). -->
-        <div
-          v-if="empty"
-          class="pointer-events-none absolute left-0 top-0 text-sm text-muted"
-          data-testid="composer-placeholder"
-        >
-          {{ props.placeholder }}
+
+      <ComposerToolbar
+        :can-send="canSend"
+        :disabled="props.disabled"
+        @attach="openFilePicker"
+        @bold="onToolbarBold"
+        @emoji="onToolbarEmoji"
+        @mention="onToolbarMention"
+        @send="submit"
+      />
+
+      <!-- Shared curated-emoji popover (ui/EmojiPicker), anchored above the toolbar.
+           A transparent backdrop dismisses it on an outside click. -->
+      <template v-if="emojiOpen">
+        <button
+          type="button"
+          class="fixed inset-0 z-20 cursor-default"
+          aria-label="Close emoji picker"
+          @click="emojiOpen = false"
+        ></button>
+        <div class="absolute bottom-12 left-2 z-30">
+          <EmojiPicker
+            menu-testid="composer-emoji-menu"
+            option-testid="composer-emoji-option"
+            @select="onEmojiSelect"
+          />
         </div>
-        <EditorContent v-if="editor" :editor="editor" />
-      </div>
-      <button
-        type="button"
-        :disabled="!canSend"
-        class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-40"
-        data-testid="composer-send"
-        @click="submit"
-      >
-        Send
-      </button>
+      </template>
     </div>
+
+    <p class="mt-1.5 px-1 text-[11px] text-muted">Shift + Enter to add a new line</p>
   </div>
 </template>
 

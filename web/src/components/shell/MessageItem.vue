@@ -20,6 +20,7 @@ import type { DisplayMessage } from '../../stores/messages'
 import { useAttachments } from '../../composables/useAttachments'
 import { formatTime } from '../../lib/time'
 import type { FileRow } from '../../worker'
+import EmojiPicker from '../ui/EmojiPicker.vue'
 import AttachmentFile from './AttachmentFile.vue'
 import AttachmentImage from './AttachmentImage.vue'
 
@@ -56,8 +57,6 @@ const emit = defineEmits<{
 
 /** Quick one-click reactions in the hover toolbar. Safe literal emoji. */
 const QUICK_REACTIONS = ['👍', '❤️', '😂'] as const
-/** The picker set (the M3 "emoji picker" — a small curated palette, no heavy dep). */
-const PICKER_EMOJI = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🙏', '🔥', '✅', '👀'] as const
 
 const isPending = computed(() => props.message.state === 'pending')
 const isFailed = computed(() => props.message.state === 'failed')
@@ -338,23 +337,13 @@ function confirmDelete(): void {
           >
             +
           </button>
-          <div
+          <EmojiPicker
             v-if="pickerOpen"
-            class="absolute right-0 top-full z-30 mt-1 grid grid-cols-5 gap-0.5 rounded-md border border-subtle bg-surface-elevated p-1 shadow-md"
-            data-testid="reaction-picker-menu"
-          >
-            <button
-              v-for="emoji in PICKER_EMOJI"
-              :key="emoji"
-              type="button"
-              class="rounded px-1 py-0.5 text-sm hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-              data-testid="reaction-option"
-              :data-emoji="emoji"
-              @click="pickReaction(emoji)"
-            >
-              {{ emoji }}
-            </button>
-          </div>
+            class="absolute right-0 top-full z-30 mt-1"
+            menu-testid="reaction-picker-menu"
+            option-testid="reaction-option"
+            @select="pickReaction"
+          />
         </div>
         <button
           type="button"
