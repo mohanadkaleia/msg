@@ -51,18 +51,16 @@ export class ReadStateManager {
   }
 
   /**
-   * The ONE write path. Mirrors the server GREATEST: persist `seq` for `streamId`
-   * ONLY when it strictly exceeds the stored value (default -1 when absent, so a
-   * first seq of 0 still lands). Returns whether it wrote — callers publish on a
-   * change. Idempotent + monotonic ⇒ optimistic/echo/PUT-result reconciliation
-   * never rewinds and re-delivery is a no-op.
+   * The ONE write path. Mirrors the server GREATEST via the db's ATOMIC
+   * compare-and-set ({@link MsgDb.upsertReadStateMonotonic}): persist `seq` for
+   * `streamId` ONLY when it strictly exceeds the stored value, with the read + write
+   * in a single transaction. That atomicity matters because two chains reconcile the
+   * same marker concurrently — an RPC `mark` and a `void applyEcho` off a WS frame —
+   * and a non-atomic read-modify-write could let the later WRITE (by order) clobber a
+   * higher VALUE. Returns whether it advanced; callers publish on a change.
    */
-  private async upsertMonotonic(streamId: string, seq: number): Promise<boolean> {
-    const existing = await this.db.getReadState(streamId)
-    const stored = existing?.last_read_seq ?? -1
-    if (seq <= stored) return false
-    await this.db.putReadState([{ stream_id: streamId, last_read_seq: seq }])
-    return true
+  private upsertMonotonic(streamId: string, seq: number): Promise<boolean> {
+    return this.db.upsertReadStateMonotonic(streamId, seq)
   }
 
   /**

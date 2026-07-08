@@ -484,6 +484,14 @@ export interface MsgDb {
   putStreams(rows: readonly StreamRow[]): Promise<void>
   putCursors(rows: readonly CursorRow[]): Promise<void>
   putReadState(rows: readonly ReadStateRow[]): Promise<void>
+  /**
+   * ENG-126: atomic GREATEST compare-and-set for a read marker — read the stored
+   * `last_read_seq`, write `seq` ONLY when it strictly exceeds it, all inside ONE
+   * transaction so two concurrent chains (an RPC `mark` and a WS `applyEcho`) can
+   * never both read a stale value and let the LAST-WRITE (by order) clobber a
+   * HIGHER value. Returns whether it wrote (advanced). Idempotent + monotonic.
+   */
+  upsertReadStateMonotonic(streamId: string, seq: number): Promise<boolean>
   // -- ENG-126 prefs (synced-KV; mirror of `/v1/prefs`; NOT a derived table) -
   /** LWW upsert of notification-pref rows by their `stream_id` PK. */
   putPrefs(rows: readonly PrefsRow[]): Promise<void>
@@ -491,7 +499,20 @@ export interface MsgDb {
   listPrefs(): Promise<PrefsRow[]>
   /** A single stream's notification pref, or undefined (caller defaults `all`). */
   getPrefs(streamId: string): Promise<PrefsRow | undefined>
+  /**
+   * Drop every DERIVED table (rebuild-only wipe). ENG-126: this does NOT clear the
+   * synced-KV `read_state`/`prefs` tables — a projection-version rebuild must keep
+   * them (they are refilled from the server, not replay). Use {@link clearSyncedKv}
+   * for the logout wipe.
+   */
   clearDerivedTables(): Promise<void>
+  /**
+   * ENG-126: wipe the synced-KV tables (`read_state` + `prefs`). SEPARATE from
+   * {@link clearDerivedTables} on purpose — logout does a FULL local reset (derived
+   * + synced-KV) so a shared machine leaks nothing to the next user, whereas a
+   * projection rebuild wipes ONLY derived tables and PRESERVES synced-KV.
+   */
+  clearSyncedKv(): Promise<void>
 
   // -- ENG-80 projection reads (additive; no schema change) ----------------
   // Rebuild inputs (from the `events` source cache):

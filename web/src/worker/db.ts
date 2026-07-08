@@ -262,6 +262,18 @@ export class DexieDb implements MsgDb {
     await this.db.read_state.bulkPut([...rows])
   }
 
+  async upsertReadStateMonotonic(streamId: string, seq: number): Promise<boolean> {
+    // Read-modify-write inside ONE rw transaction so the GREATEST check and the
+    // write are atomic — no interleave can let a lower seq clobber a higher one.
+    return this.db.transaction('rw', this.db.read_state, async () => {
+      const existing = await this.db.read_state.get(streamId)
+      const stored = existing?.last_read_seq ?? -1
+      if (seq <= stored) return false
+      await this.db.read_state.put({ stream_id: streamId, last_read_seq: seq })
+      return true
+    })
+  }
+
   async putPrefs(rows: readonly PrefsRow[]): Promise<void> {
     await this.db.prefs.bulkPut([...rows])
   }
@@ -299,6 +311,15 @@ export class DexieDb implements MsgDb {
         ])
       },
     )
+  }
+
+  async clearSyncedKv(): Promise<void> {
+    // Logout hygiene (ENG-126): a shared machine must not leak the previous user's
+    // read positions / notification levels. Distinct from clearDerivedTables — a
+    // projection rebuild keeps these; a logout wipes them.
+    await this.db.transaction('rw', [this.db.read_state, this.db.prefs], async () => {
+      await Promise.all([this.db.read_state.clear(), this.db.prefs.clear()])
+    })
   }
 
   // -- ENG-80 projection reads (fluent Dexie, index-bounded) ---------------
@@ -624,6 +645,15 @@ export class MemoryDb implements MsgDb {
     return Promise.resolve()
   }
 
+  upsertReadStateMonotonic(streamId: string, seq: number): Promise<boolean> {
+    // Synchronous Map access is naturally atomic — no await between read + write,
+    // so the GREATEST compare-and-set cannot interleave (mirrors the Dexie txn).
+    const stored = this.readStateMap.get(streamId)?.last_read_seq ?? -1
+    if (seq <= stored) return Promise.resolve(false)
+    this.readStateMap.set(streamId, { stream_id: streamId, last_read_seq: seq })
+    return Promise.resolve(true)
+  }
+
   putPrefs(rows: readonly PrefsRow[]): Promise<void> {
     for (const row of rows) this.prefsMap.set(row.stream_id, row)
     return Promise.resolve()
@@ -646,6 +676,13 @@ export class MemoryDb implements MsgDb {
     this.filesMap.clear()
     this.streamsMap.clear()
     this.cursorsMap.clear()
+    return Promise.resolve()
+  }
+
+  clearSyncedKv(): Promise<void> {
+    // Logout hygiene (ENG-126) — wipe synced-KV; SEPARATE from clearDerivedTables.
+    this.readStateMap.clear()
+    this.prefsMap.clear()
     return Promise.resolve()
   }
 

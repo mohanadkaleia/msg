@@ -273,3 +273,61 @@ describe.each([
     await db.close()
   })
 })
+
+describe.each([
+  { name: 'MemoryDb', make: (): Promise<MsgDb> => Promise.resolve(new MemoryDb()) },
+  { name: 'DexieDb', make: (): Promise<MsgDb> => openDb(fakeIdbOptions()) },
+])('synced-KV wipe is SEPARATE from the derived wipe (ENG-126) [$name]', ({ make }) => {
+  it('clearDerivedTables PRESERVES read_state + prefs (rebuild-exempt)', async () => {
+    const db = await make()
+    await db.putReadState([{ stream_id: 's1', last_read_seq: 7 }])
+    await db.putPrefs([{ stream_id: 's1', level: 'mute' }])
+    await db.clearDerivedTables()
+    expect(await db.count('read_state')).toBe(1)
+    expect(await db.count('prefs')).toBe(1)
+    await db.close()
+  })
+
+  it('clearSyncedKv wipes read_state + prefs (logout hygiene) but not derived tables', async () => {
+    const db = await make()
+    await db.putReadState([{ stream_id: 's1', last_read_seq: 7 }])
+    await db.putPrefs([{ stream_id: 's1', level: 'mute' }])
+    await db.putStreams([{ stream_id: 's1', kind: 'channel', head_seq: 1, member: true }])
+    await db.clearSyncedKv()
+    expect(await db.count('read_state')).toBe(0)
+    expect(await db.count('prefs')).toBe(0)
+    // clearSyncedKv is scoped to synced-KV — it does not touch derived tables.
+    expect(await db.count('streams')).toBe(1)
+    await db.close()
+  })
+})
+
+describe.each([
+  { name: 'MemoryDb', make: (): Promise<MsgDb> => Promise.resolve(new MemoryDb()) },
+  { name: 'DexieDb', make: (): Promise<MsgDb> => openDb(fakeIdbOptions()) },
+])('upsertReadStateMonotonic (ENG-126 atomic GREATEST) [$name]', ({ make }) => {
+  it('writes only a strictly-higher seq; reports whether it advanced', async () => {
+    const db = await make()
+    expect(await db.upsertReadStateMonotonic('s1', 5)).toBe(true)
+    expect((await db.getReadState('s1'))?.last_read_seq).toBe(5)
+    expect(await db.upsertReadStateMonotonic('s1', 3)).toBe(false) // lower → no write
+    expect((await db.getReadState('s1'))?.last_read_seq).toBe(5)
+    expect(await db.upsertReadStateMonotonic('s1', 5)).toBe(false) // equal → no write
+    expect(await db.upsertReadStateMonotonic('s1', 9)).toBe(true) // higher → advances
+    expect((await db.getReadState('s1'))?.last_read_seq).toBe(9)
+    await db.close()
+  })
+
+  it('concurrent compare-and-sets converge to the MAX (last-write cannot lower it)', async () => {
+    const db = await make()
+    // Fire a burst concurrently; regardless of settle order the marker ends at max.
+    await Promise.all([
+      db.upsertReadStateMonotonic('s1', 3),
+      db.upsertReadStateMonotonic('s1', 11),
+      db.upsertReadStateMonotonic('s1', 7),
+      db.upsertReadStateMonotonic('s1', 2),
+    ])
+    expect((await db.getReadState('s1'))?.last_read_seq).toBe(11)
+    await db.close()
+  })
+})

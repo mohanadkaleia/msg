@@ -74,6 +74,17 @@ describe('ReadStateManager (ENG-126 synced-KV, monotonic)', () => {
     expect((await h.db.getReadState('s1'))?.last_read_seq).toBe(15)
   })
 
+  it('a concurrent mark + echo converge to the MAX (atomic monotonic upsert)', async () => {
+    const h = makeHarness(new MemoryDb())
+    // An RPC mark and an inbound WS echo reconcile the same marker at the same time.
+    await Promise.all([
+      h.mgr.mark('s1', 4),
+      h.mgr.applyEcho({ stream_id: 's1', last_read_seq: 12 }),
+    ])
+    // The higher value wins irrespective of settle order — never clobbered down to 4.
+    expect((await h.db.getReadState('s1'))?.last_read_seq).toBe(12)
+  })
+
   it('bootstrap seeds the mirror from GET /v1/read-state (ignoring head_seq/unread)', async () => {
     const h = makeHarness(new MemoryDb())
     h.server.readState.set('s1', 4)
