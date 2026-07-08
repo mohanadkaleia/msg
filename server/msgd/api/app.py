@@ -28,6 +28,7 @@ from msgd.api.routers import (
     events_upload,
     files,
     health,
+    read_state,
     search,
     sync,
 )
@@ -80,6 +81,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.event_limiter_burst = RateLimiter(settings.event_rate_limit_burst_per_second, 1)
     # Search limiter (§8, ENG-122): per-user FTS budget, keyed like the event limiters.
     app.state.search_limiter_minute = RateLimiter(settings.search_rate_limit_per_minute, 60)
+    # Read-state limiter (D3, ENG-123): per-user budget for PUT /v1/read-state,
+    # keyed ``user:{user_id}`` exactly like the event/search limiters.
+    app.state.read_state_limiter_minute = RateLimiter(settings.read_state_rate_limit_per_minute, 60)
     # Content-addressed blob store for file attachments (ENG-116, D8). One shared
     # instance rooted under the configured data dir; ``get_blob_store`` reads it.
     app.state.blob_store = LocalDiskBlobStore(root=settings.data_dir / "blobs")
@@ -110,6 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(files.router)  # ENG-116: /v1/files (initiate + blob + download)
     app.include_router(sync.router)
     app.include_router(search.router)  # ENG-122: GET /v1/search (Postgres FTS, readable-scoped)
+    app.include_router(read_state.router)  # ENG-123: /v1/read-state (synced per-user KV, D3)
     app.include_router(ws.router)  # ENG-68: GET /v1/ws (append-only)
 
     # ENG-75: single-origin SPA (§5.1 D4). Mounted LAST so API routes win;

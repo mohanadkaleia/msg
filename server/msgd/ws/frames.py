@@ -37,6 +37,7 @@ __all__ = [
     "RESERVED_SERVER_FRAME_TYPES",
     "RESERVED_CLIENT_FRAME_TYPES",
     "event_frame",
+    "read_state_frame",
 ]
 
 
@@ -90,3 +91,20 @@ def event_frame(envelope: Envelope) -> dict[str, Any]:
             "server": server_meta,
         },
     }
+
+
+def read_state_frame(*, stream_id: str, last_read_seq: int) -> dict[str, Any]:
+    """Build the ``{"t": "read_state", …}`` per-user cross-device echo frame (D3).
+
+    This ACTIVATES the reserved ``read_state`` ``t`` value: the server now SENDS it.
+    It is the wire form of the **synced per-user KV** message class — a THIRD kind
+    of state distinct from durable events and ephemeral presence. A read marker is
+    NOT an event: it is never appended to the log, never hashed, never projected or
+    rebuilt (the D3 negative guard). ``PUT /v1/read-state`` writes the authoritative
+    marker to the ``read_state`` table and then echoes THIS frame to the caller's
+    OWN other connections so a user's devices converge (§3.3). ``last_read_seq`` is
+    the EFFECTIVE (monotonic-``GREATEST``) value after the upsert — never a lower
+    incoming value. The echo reaches only that same user's sockets (the hub touches
+    only ``_by_user[user_id]``); no other user ever sees another's read marker.
+    """
+    return {"t": "read_state", "stream_id": stream_id, "last_read_seq": last_read_seq}

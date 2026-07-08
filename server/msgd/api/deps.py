@@ -66,6 +66,12 @@ def get_search_limiter(request: Request) -> RateLimiter:
     return limiter
 
 
+def get_read_state_limiter(request: Request) -> RateLimiter:
+    """Return the per-user read-state :class:`RateLimiter` (app.state, ENG-123)."""
+    limiter: RateLimiter = request.app.state.read_state_limiter_minute
+    return limiter
+
+
 def get_blob_store(request: Request) -> BlobStore:
     """Return the process-wide content-addressed :class:`BlobStore` (app.state, ENG-116).
 
@@ -259,6 +265,20 @@ async def search_rate_limit(ctx: CurrentAuth, request: Request) -> None:
     exceeded bucket raises 429 ``/problems/rate-limited`` with ``Retry-After``.
     """
     result = get_search_limiter(request).check(f"user:{ctx.user_id}")
+    if not result.allowed:
+        raise problems.rate_limited(result.retry_after)
+
+
+async def read_state_rate_limit(ctx: CurrentAuth, request: Request) -> None:
+    """Read-state rate limit (ENG-123, D3): ``read_state_rate_limit_per_minute`` per user.
+
+    Mounted on ``PUT /v1/read-state``. Modelled on :func:`event_rate_limit` /
+    :func:`search_rate_limit`: it depends on :data:`CurrentAuth` so the bucket is
+    keyed by the authenticated user and the limit runs before the upsert. The
+    budget is generous (scroll-frequent, cheap idempotent write); the exceeded
+    bucket raises 429 ``/problems/rate-limited`` with ``Retry-After``.
+    """
+    result = get_read_state_limiter(request).check(f"user:{ctx.user_id}")
     if not result.allowed:
         raise problems.rate_limited(result.retry_after)
 

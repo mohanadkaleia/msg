@@ -72,6 +72,19 @@ class Registry:
         if not conns:
             del self._by_user[connection.user_id]
 
+    def connections_for(self, user_id: str) -> set[Connection]:
+        """Return a COPY of ``user_id``'s live sockets (empty set if none) — D3.
+
+        The direct ``_by_user`` lookup the read-state WS echo resolves against: a
+        marker set by a user is echoed to EXACTLY that user's other devices and no
+        one else. Distinct from the hub's per-send stream-readability resolve — this
+        is a same-user-only fanout, so isolation is by construction (a different
+        user's id is simply never looked up). Returns a copy so a caller may iterate
+        while sends deregister failed sockets (identical to :meth:`snapshot`).
+        """
+        conns = self._by_user.get(user_id)
+        return set(conns) if conns is not None else set()
+
     def snapshot(self) -> dict[str, set[Connection]]:
         """A shallow copy safe to iterate while sends deregister failed sockets."""
         return {user_id: set(conns) for user_id, conns in self._by_user.items()}

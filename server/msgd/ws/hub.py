@@ -41,7 +41,7 @@ from msgd.core.envelope import Envelope
 from msgd.db.engine import get_session
 from msgd.db.models import Stream
 from msgd.events.permissions import readable_streams_predicate
-from msgd.ws.frames import event_frame
+from msgd.ws.frames import event_frame, read_state_frame
 from msgd.ws.registry import Connection, Registry
 
 __all__ = ["Hub", "SessionFactory", "hub"]
@@ -124,6 +124,30 @@ class Hub:
         if not recipients:
             return
         frame = event_frame(envelope)
+        await self._send_all(recipients, frame)
+
+    async def publish_read_state(self, *, user_id: str, stream_id: str, last_read_seq: int) -> None:
+        """Echo a ``read_state`` frame to EVERY connection of ``user_id`` — and no one else (D3).
+
+        The read-state message class is **synced per-user KV**, not an event: this is
+        NOT the permission-scoped event fanout. Recipient resolution is a DIRECT
+        ``_by_user[user_id]`` lookup (:meth:`Registry.connections_for`) — no stream
+        readability resolve, no DB round trip — so the echo reaches EXACTLY the
+        marker-owner's other devices and structurally cannot reach any other user.
+        Isolation crux: a different user's id is never looked up, so no other user
+        ever observes another's read marker.
+
+        ``PUT /v1/read-state`` calls this AFTER its authoritative commit, passing the
+        EFFECTIVE (monotonic-``GREATEST``) ``last_read_seq``. Delivery is a hint
+        (§3.3): the per-socket :meth:`_send_one` timeout-guards each push and drops +
+        deregisters a wedged/dead socket without ever propagating — so a failed echo
+        can never fail the PUT (the DB write is authoritative; the echo is
+        convenience). No connected socket for the user is a no-op.
+        """
+        recipients = list(self._registry.connections_for(user_id))
+        if not recipients:
+            return
+        frame = read_state_frame(stream_id=stream_id, last_read_seq=last_read_seq)
         await self._send_all(recipients, frame)
 
     async def _resolve(self, envelope: Envelope) -> list[Connection]:

@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # over a GIN index) is a cheap-ish read but not free, so it gets its own modest
     # per-user budget so a search flood cannot monopolize the DB.
     search_rate_limit_per_minute: int = 60
+    # Read-state rate limit (ENG-123, D3): per user, keyed ``user:{user_id}`` like
+    # the event/file/search limiters. ``PUT /v1/read-state`` is a scroll-frequent,
+    # cheap idempotent monotonic upsert, so the budget is DELIBERATELY generous
+    # (240/min ≈ 4/s per user) — a normal reader scrolling never trips it, but an
+    # unbounded mutating endpoint is a DoS vector, so it is budgeted like every other
+    # per-user write surface rather than left open.
+    read_state_rate_limit_per_minute: int = 240
 
     # --- Invites (D7) --------------------------------------------------------
     invite_default_ttl_seconds: int = 604800  # 7 days
