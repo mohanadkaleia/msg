@@ -82,6 +82,17 @@ function ensureMediaListener(): void {
 
 ensureMediaListener()
 
+/**
+ * Apply the persisted/resolved theme to <html> once at app startup, so the reactive
+ * store — not just the pre-paint index.html script — drives `data-theme` after
+ * hydration. Idempotent; call once from `main.ts`. (PR-A built this composable inert;
+ * PR-D makes it live.)
+ */
+export function initTheme(): void {
+  ensureMediaListener()
+  refreshResolved()
+}
+
 export interface UseTheme {
   /** The persisted preference ('light' | 'dark' | 'system'). */
   theme: Ref<ThemePreference>

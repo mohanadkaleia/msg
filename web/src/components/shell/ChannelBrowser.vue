@@ -20,16 +20,16 @@ function join(stream: SidebarStream): void {
 
 <template>
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     data-testid="channel-browser"
     @click.self="emit('close')"
   >
-    <div class="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl">
-      <h2 class="mb-3 text-sm font-semibold text-slate-800">Browse channels</h2>
+    <div class="w-full max-w-sm rounded-lg border border-subtle bg-surface-elevated p-5 shadow-xl">
+      <h2 class="mb-3 text-sm font-semibold text-primary">Browse channels</h2>
 
       <p
         v-if="browsableChannels.length === 0"
-        class="text-xs text-slate-500"
+        class="text-xs text-secondary"
         data-testid="channel-browser-empty"
       >
         No public channels to join.
@@ -37,13 +37,13 @@ function join(stream: SidebarStream): void {
 
       <ul class="max-h-72 overflow-y-auto">
         <li v-for="stream in browsableChannels" :key="stream.stream_id">
-          <div class="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-slate-100">
-            <span class="truncate text-sm text-slate-700"
+          <div class="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-surface">
+            <span class="truncate text-sm text-primary"
               ># {{ stream.name ?? stream.stream_id }}</span
             >
             <button
               type="button"
-              class="rounded-md border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-200"
+              class="rounded-md border border-strong px-2 py-0.5 text-xs font-medium text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               data-testid="join-channel"
               :data-stream-id="stream.stream_id"
               @click="join(stream)"
@@ -57,7 +57,7 @@ function join(stream: SidebarStream): void {
       <div class="mt-4 flex justify-end">
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 text-sm text-slate-500 hover:text-slate-800"
+          class="rounded-md px-3 py-1.5 text-sm text-secondary hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           @click="emit('close')"
         >
           Close

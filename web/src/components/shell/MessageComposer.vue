@@ -108,7 +108,7 @@ const editor = useEditor({
   editorProps: {
     attributes: {
       class:
-        'max-h-[200px] min-h-[1.5rem] w-full overflow-y-auto text-sm text-slate-900 outline-none',
+        'max-h-[200px] min-h-[1.5rem] w-full overflow-y-auto text-sm text-primary outline-none',
       'data-testid': 'composer-input',
     },
     // Enter-to-send / ArrowUp-edit — but ONLY when no mention popup is open (its
@@ -205,7 +205,7 @@ export type { MentionItem }
 </script>
 
 <template>
-  <div class="border-t border-slate-200 bg-white p-3">
+  <div class="border-t border-subtle bg-surface p-3">
     <!-- Pending attachment chips (ENG-121), above the editor. Names/sizes are
          attacker-controlled and rendered ONLY via text; previews are LOCAL blob: URLs. -->
     <div
@@ -216,7 +216,7 @@ export type { MentionItem }
       <div
         v-for="a in pendingAttachments"
         :key="a.localId"
-        class="flex max-w-xs items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1"
+        class="flex max-w-xs items-center gap-2 rounded-md border border-subtle bg-surface-elevated px-2 py-1"
         data-testid="composer-attachment"
         :data-phase="a.phase"
       >
@@ -227,26 +227,23 @@ export type { MentionItem }
           class="h-8 w-8 rounded object-cover"
         />
         <span v-else class="text-base" aria-hidden="true">📄</span>
-        <span class="min-w-0 truncate text-xs font-medium text-slate-700">{{ a.name }}</span>
-        <span class="whitespace-nowrap text-[11px] text-slate-400">{{ formatBytes(a.size) }}</span>
+        <span class="min-w-0 truncate text-xs font-medium text-primary">{{ a.name }}</span>
+        <span class="whitespace-nowrap text-[11px] text-muted">{{ formatBytes(a.size) }}</span>
         <!-- Phase cue: spinner while uploading, check on done, error on failed. -->
         <span
           v-if="a.phase === 'failed'"
-          class="text-[11px] font-medium text-red-600"
+          class="text-[11px] font-medium text-danger"
           data-testid="composer-attachment-error"
           >failed</span
         >
-        <span
-          v-else-if="a.phase === 'done'"
-          class="text-[11px] text-green-600"
-          aria-label="uploaded"
+        <span v-else-if="a.phase === 'done'" class="text-[11px] text-success" aria-label="uploaded"
           >✓</span
         >
-        <span v-else class="text-[11px] text-slate-400" aria-label="uploading">…</span>
+        <span v-else class="text-[11px] text-muted" aria-label="uploading">…</span>
         <button
           v-if="a.phase === 'failed'"
           type="button"
-          class="text-[11px] font-medium text-slate-600 underline hover:text-slate-900"
+          class="text-[11px] font-medium text-secondary underline hover:text-primary"
           data-testid="composer-attachment-retry"
           @click="retryAttachment(a.localId)"
         >
@@ -254,7 +251,7 @@ export type { MentionItem }
         </button>
         <button
           type="button"
-          class="text-xs text-slate-400 hover:text-slate-700"
+          class="text-xs text-muted hover:text-primary"
           data-testid="composer-attachment-remove"
           aria-label="Remove attachment"
           @click="removeAttachment(a.localId)"
@@ -265,14 +262,14 @@ export type { MentionItem }
     </div>
 
     <div
-      class="flex items-end gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 focus-within:border-slate-500"
+      class="flex items-end gap-2 rounded-lg border border-strong bg-surface px-3 py-2 focus-within:border-accent"
       :class="{ 'opacity-50': props.disabled }"
     >
       <!-- Paperclip file-picker (ENG-121) → hidden native multi-file input. -->
       <button
         type="button"
         :disabled="props.disabled"
-        class="shrink-0 rounded-md px-1.5 py-1 text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+        class="shrink-0 rounded-md px-1.5 py-1 text-muted hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-40"
         data-testid="attach-file"
         aria-label="Attach file"
         @click="openFilePicker"
@@ -291,7 +288,7 @@ export type { MentionItem }
         <!-- Placeholder overlay (StarterKit has no placeholder node; avoid a dep). -->
         <div
           v-if="empty"
-          class="pointer-events-none absolute left-0 top-0 text-sm text-slate-400"
+          class="pointer-events-none absolute left-0 top-0 text-sm text-muted"
           data-testid="composer-placeholder"
         >
           {{ props.placeholder }}
@@ -301,7 +298,7 @@ export type { MentionItem }
       <button
         type="button"
         :disabled="!canSend"
-        class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+        class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-40"
         data-testid="composer-send"
         @click="submit"
       >
@@ -314,9 +311,9 @@ export type { MentionItem }
 <style>
 .composer-mention {
   border-radius: 0.25rem;
-  background-color: rgb(224 231 255);
+  background-color: rgb(var(--c-accent-subtle));
   padding: 0 0.25rem;
-  color: rgb(55 48 163);
+  color: rgb(var(--c-accent));
   font-weight: 500;
   /* Inert chip: never editable, never a script/handler surface. */
   white-space: nowrap;

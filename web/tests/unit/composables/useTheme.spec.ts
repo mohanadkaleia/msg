@@ -50,6 +50,11 @@ async function freshUseTheme() {
   return (await import('../../../src/composables/useTheme')).useTheme
 }
 
+async function freshModule() {
+  vi.resetModules()
+  return await import('../../../src/composables/useTheme')
+}
+
 describe('useTheme', () => {
   beforeEach(() => {
     installLocalStorage()
@@ -115,6 +120,17 @@ describe('useTheme', () => {
     const { setTheme, resolvedTheme } = useTheme()
     expect(() => setTheme('system')).not.toThrow()
     expect(resolvedTheme.value).toBe('light')
+  })
+
+  it('initTheme applies the persisted preference to data-theme on startup', async () => {
+    // Persist a dark preference, then a fresh module + initTheme() must apply it to
+    // <html> (mirrors main.ts wiring the pre-paint script's value into the store).
+    installLocalStorage()
+    window.localStorage.setItem('msg:theme', 'dark')
+    const { initTheme } = await freshModule()
+    expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark')
+    initTheme()
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
   })
 
   it('stores are shared across callers (singleton)', async () => {

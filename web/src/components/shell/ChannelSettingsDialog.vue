@@ -57,28 +57,28 @@ function removeMember(userId: string): void {
 
 <template>
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     data-testid="channel-settings"
     @click.self="emit('close')"
   >
-    <div class="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl">
-      <h2 class="mb-3 text-sm font-semibold text-slate-800">
+    <div class="w-full max-w-sm rounded-lg border border-subtle bg-surface-elevated p-5 shadow-xl">
+      <h2 class="mb-3 text-sm font-semibold text-primary">
         Channel settings — # {{ stream.name ?? stream.stream_id }}
       </h2>
 
-      <label class="mb-1 block text-xs font-medium text-slate-500" for="rename-input">Rename</label>
+      <label class="mb-1 block text-xs font-medium text-secondary" for="rename-input">Rename</label>
       <div class="mb-4 flex gap-2">
         <input
           id="rename-input"
           v-model="newName"
           type="text"
-          class="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+          class="w-full rounded-md border border-strong bg-transparent px-2 py-1.5 text-sm text-primary placeholder:text-muted focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-testid="channel-rename-input"
           autocomplete="off"
         />
         <button
           type="button"
-          class="rounded-md bg-slate-800 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
           :disabled="busy || newName.trim() === '' || newName.trim() === stream.name"
           data-testid="channel-rename-submit"
           @click="rename"
@@ -88,18 +88,18 @@ function removeMember(userId: string): void {
       </div>
 
       <div class="mb-4">
-        <p class="mb-1 text-xs font-medium text-slate-500">Members</p>
+        <p class="mb-1 text-xs font-medium text-secondary">Members</p>
         <ul class="max-h-48 overflow-y-auto">
           <li
             v-for="user in members"
             :key="user.user_id"
-            class="flex items-center justify-between rounded-md px-2 py-1 hover:bg-slate-100"
+            class="flex items-center justify-between rounded-md px-2 py-1 hover:bg-surface"
           >
-            <span class="truncate text-sm text-slate-700">{{ user.display_name }}</span>
+            <span class="truncate text-sm text-primary">{{ user.display_name }}</span>
             <span class="flex gap-1">
               <button
                 type="button"
-                class="rounded border border-slate-300 px-1.5 py-0.5 text-xs text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+                class="rounded border border-strong px-1.5 py-0.5 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 data-testid="channel-add-member"
                 :data-user-id="user.user_id"
                 :disabled="busy"
@@ -109,7 +109,7 @@ function removeMember(userId: string): void {
               </button>
               <button
                 type="button"
-                class="rounded border border-slate-300 px-1.5 py-0.5 text-xs text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+                class="rounded border border-strong px-1.5 py-0.5 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 data-testid="channel-remove-member"
                 :data-user-id="user.user_id"
                 :disabled="busy"
@@ -122,14 +122,14 @@ function removeMember(userId: string): void {
         </ul>
       </div>
 
-      <p v-if="error" class="mb-3 text-xs text-red-600" data-testid="channel-settings-error">
+      <p v-if="error" class="mb-3 text-xs text-danger" data-testid="channel-settings-error">
         {{ error }}
       </p>
 
       <div class="flex justify-between">
         <button
           type="button"
-          class="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+          class="rounded-md border border-danger px-3 py-1.5 text-sm font-medium text-danger hover:bg-danger/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
           :disabled="busy"
           data-testid="channel-archive"
           @click="archive"
@@ -138,7 +138,7 @@ function removeMember(userId: string): void {
         </button>
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 text-sm text-slate-500 hover:text-slate-800"
+          class="rounded-md px-3 py-1.5 text-sm text-secondary hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           @click="emit('close')"
         >
           Close

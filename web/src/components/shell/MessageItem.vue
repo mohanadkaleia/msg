@@ -171,27 +171,27 @@ function confirmDelete(): void {
 
 <template>
   <div
-    class="group relative px-4 py-1.5 hover:bg-slate-50"
+    class="group relative px-4 py-1.5 hover:bg-surface"
     :class="{ 'opacity-50': isPending }"
     data-testid="message-row"
     :data-state="props.message.state ?? 'settled'"
   >
     <!-- TOMBSTONE (ENG-102/ENG-111): a soft-deleted message. Content is redacted
          projection-side; we render only a muted marker, never the old text. -->
-    <p v-if="isDeleted" class="text-sm italic text-slate-400" data-testid="message-tombstone">
+    <p v-if="isDeleted" class="text-sm italic text-muted" data-testid="message-tombstone">
       message deleted
     </p>
 
     <template v-else>
       <div class="flex items-baseline gap-2">
-        <span class="text-sm font-semibold text-slate-800" data-testid="message-author">{{
+        <span class="text-sm font-semibold text-primary" data-testid="message-author">{{
           props.message.author_user_id
         }}</span>
-        <span class="text-xs text-slate-400" data-testid="message-time">
+        <span class="text-xs text-muted" data-testid="message-time">
           <template v-if="isPending">Sending…</template>
           <template v-else>{{ time }}</template>
         </span>
-        <span v-if="isEdited" class="text-xs text-slate-400" data-testid="edited-marker">
+        <span v-if="isEdited" class="text-xs text-muted" data-testid="edited-marker">
           (edited)
         </span>
       </div>
@@ -201,14 +201,14 @@ function confirmDelete(): void {
         <textarea
           v-model="draft"
           rows="2"
-          class="w-full resize-y rounded-md border border-slate-300 px-2 py-1 text-sm text-slate-800 outline-none focus:border-slate-500"
+          class="w-full resize-y rounded-md border border-strong px-2 py-1 text-sm text-primary outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-testid="message-edit-input"
           @keydown="onEditKeydown"
         ></textarea>
         <div class="mt-1 flex items-center gap-2 text-xs">
           <button
             type="button"
-            class="rounded bg-slate-900 px-2 py-0.5 font-medium text-white"
+            class="rounded bg-accent px-2 py-0.5 font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
             data-testid="message-edit-save"
             @click="submitEdit"
           >
@@ -216,20 +216,20 @@ function confirmDelete(): void {
           </button>
           <button
             type="button"
-            class="font-medium text-slate-600 hover:text-slate-900"
+            class="font-medium text-secondary hover:text-primary"
             data-testid="message-edit-cancel"
             @click="emit('edit-cancel')"
           >
             Cancel
           </button>
-          <span class="text-slate-400">Enter to save · Esc to cancel</span>
+          <span class="text-muted">Enter to save · Esc to cancel</span>
         </div>
       </div>
 
       <!-- Plain text ONLY — Vue interpolation escapes; never v-html (XSS). -->
       <p
         v-else
-        class="whitespace-pre-wrap break-words text-sm text-slate-800"
+        class="whitespace-pre-wrap break-words text-sm text-primary"
         data-testid="message-text"
       >
         {{ props.message.text }}
@@ -251,7 +251,7 @@ function confirmDelete(): void {
         <div
           v-for="id in pendingFileIds"
           :key="id"
-          class="flex h-10 max-w-sm items-center rounded-md border border-dashed border-slate-200 px-3 text-xs italic text-slate-400"
+          class="flex h-10 max-w-sm items-center rounded-md border border-dashed border-subtle px-3 text-xs italic text-muted"
           data-testid="attachment-pending"
         >
           attachment loading…
@@ -264,11 +264,11 @@ function confirmDelete(): void {
           v-for="chip in reactions"
           :key="chip.emoji"
           type="button"
-          class="group/chip relative flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
+          class="group/chip relative flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           :class="
             chip.mine
-              ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
-              : 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200'
+              ? 'border-accent bg-accent-subtle text-accent'
+              : 'border-subtle bg-surface text-secondary hover:bg-surface-elevated'
           "
           data-testid="reaction-chip"
           :data-mine="chip.mine"
@@ -280,7 +280,7 @@ function confirmDelete(): void {
           <span class="tabular-nums">{{ chip.count }}</span>
           <!-- Who-reacted tooltip: display names via interpolation (escaped). -->
           <span
-            class="pointer-events-none absolute bottom-full left-0 z-20 mb-1 hidden whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white group-hover/chip:block"
+            class="pointer-events-none absolute bottom-full left-0 z-20 mb-1 hidden whitespace-nowrap rounded border border-subtle bg-surface-elevated px-2 py-1 text-[11px] text-primary shadow-sm group-hover/chip:block"
             data-testid="reaction-tooltip"
             >{{ chip.display_names.join(', ') }}</span
           >
@@ -292,7 +292,7 @@ function confirmDelete(): void {
       <button
         v-if="isThreadRoot"
         type="button"
-        class="mt-1 flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-indigo-600 hover:bg-slate-50"
+        class="mt-1 flex items-center gap-1.5 rounded-md border border-subtle bg-surface px-2 py-1 text-xs text-accent hover:bg-accent-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
         data-testid="thread-affordance"
         @click="emit('open-thread', props.message.message_id)"
       >
@@ -300,7 +300,7 @@ function confirmDelete(): void {
           <span
             v-for="p in participants.slice(0, 3)"
             :key="p.user_id"
-            class="flex h-4 w-4 items-center justify-center rounded-full border border-white bg-slate-300 text-[9px] font-semibold text-slate-700"
+            class="flex h-4 w-4 items-center justify-center rounded-full border border-surface bg-strong text-[9px] font-semibold text-secondary"
             data-testid="thread-participant"
             :title="p.display_name"
             >{{ initial(p.display_name) }}</span
@@ -314,14 +314,14 @@ function confirmDelete(): void {
       <!-- Hover toolbar: quick reactions + emoji picker + (own) edit/delete. -->
       <div
         v-if="canReact && !props.editing"
-        class="absolute right-3 top-0 z-10 -mt-2 hidden items-center gap-0.5 rounded-md border border-slate-200 bg-white px-1 py-0.5 shadow-sm group-hover:flex"
+        class="absolute right-3 top-0 z-10 -mt-2 hidden items-center gap-0.5 rounded-md border border-subtle bg-surface-elevated px-1 py-0.5 shadow-sm group-hover:flex"
         data-testid="message-toolbar"
       >
         <button
           v-for="emoji in QUICK_REACTIONS"
           :key="emoji"
           type="button"
-          class="rounded px-1 text-sm hover:bg-slate-100"
+          class="rounded px-1 text-sm hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-testid="reaction-quick"
           :data-emoji="emoji"
           @click="pickReaction(emoji)"
@@ -331,7 +331,7 @@ function confirmDelete(): void {
         <div class="relative">
           <button
             type="button"
-            class="rounded px-1 text-sm text-slate-500 hover:bg-slate-100"
+            class="rounded px-1 text-sm text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
             data-testid="reaction-picker"
             aria-label="Add reaction"
             @click="pickerOpen = !pickerOpen"
@@ -340,14 +340,14 @@ function confirmDelete(): void {
           </button>
           <div
             v-if="pickerOpen"
-            class="absolute right-0 top-full z-30 mt-1 grid grid-cols-5 gap-0.5 rounded-md border border-slate-200 bg-white p-1 shadow-md"
+            class="absolute right-0 top-full z-30 mt-1 grid grid-cols-5 gap-0.5 rounded-md border border-subtle bg-surface-elevated p-1 shadow-md"
             data-testid="reaction-picker-menu"
           >
             <button
               v-for="emoji in PICKER_EMOJI"
               :key="emoji"
               type="button"
-              class="rounded px-1 py-0.5 text-sm hover:bg-slate-100"
+              class="rounded px-1 py-0.5 text-sm hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               data-testid="reaction-option"
               :data-emoji="emoji"
               @click="pickReaction(emoji)"
@@ -358,7 +358,7 @@ function confirmDelete(): void {
         </div>
         <button
           type="button"
-          class="rounded px-1 text-xs text-slate-500 hover:bg-slate-100"
+          class="rounded px-1 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-testid="reply-in-thread"
           aria-label="Reply in thread"
           @click="emit('open-thread', threadTarget)"
@@ -368,7 +368,7 @@ function confirmDelete(): void {
         <template v-if="canModify">
           <button
             type="button"
-            class="rounded px-1 text-xs text-slate-500 hover:bg-slate-100"
+            class="rounded px-1 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
             data-testid="message-edit"
             aria-label="Edit message"
             @click="startEdit"
@@ -377,7 +377,7 @@ function confirmDelete(): void {
           </button>
           <button
             type="button"
-            class="rounded px-1 text-xs text-slate-500 hover:bg-slate-100"
+            class="rounded px-1 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
             data-testid="message-delete"
             aria-label="Delete message"
             @click="confirmingDelete = true"
@@ -391,13 +391,13 @@ function confirmDelete(): void {
            a permanent/unrecoverable erasure — the log retains it). -->
       <div
         v-if="confirmingDelete"
-        class="mt-1 flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs"
+        class="mt-1 flex items-center gap-2 rounded-md border border-subtle bg-surface px-2 py-1 text-xs"
         data-testid="message-delete-confirm"
       >
-        <span class="text-slate-600">Delete message? It will be removed for everyone.</span>
+        <span class="text-secondary">Delete message? It will be removed for everyone.</span>
         <button
           type="button"
-          class="rounded bg-red-600 px-2 py-0.5 font-medium text-white"
+          class="rounded bg-danger px-2 py-0.5 font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-testid="message-delete-confirm-yes"
           @click="confirmDelete"
         >
@@ -405,7 +405,7 @@ function confirmDelete(): void {
         </button>
         <button
           type="button"
-          class="font-medium text-slate-600 hover:text-slate-900"
+          class="font-medium text-secondary hover:text-primary"
           data-testid="message-delete-cancel"
           @click="confirmingDelete = false"
         >
@@ -418,11 +418,11 @@ function confirmDelete(): void {
         class="mt-1 flex items-center gap-2 text-xs"
         data-testid="message-failed"
       >
-        <span class="text-red-600"> Failed to send{{ formatCode(props.message.error_code) }} </span>
+        <span class="text-danger"> Failed to send{{ formatCode(props.message.error_code) }} </span>
         <template v-if="canAct">
           <button
             type="button"
-            class="font-medium text-slate-600 underline hover:text-slate-900"
+            class="font-medium text-secondary underline hover:text-primary"
             data-testid="message-retry"
             @click="emit('retry', props.message.message_id)"
           >
@@ -430,7 +430,7 @@ function confirmDelete(): void {
           </button>
           <button
             type="button"
-            class="font-medium text-slate-600 underline hover:text-slate-900"
+            class="font-medium text-secondary underline hover:text-primary"
             data-testid="message-failed-discard"
             @click="emit('discard', props.message.message_id)"
           >

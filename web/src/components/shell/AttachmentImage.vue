@@ -29,7 +29,7 @@ const lightboxOpen = ref(false)
     <button
       v-if="url"
       type="button"
-      class="block overflow-hidden rounded-md border border-slate-200"
+      class="block overflow-hidden rounded-md border border-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
       aria-label="Open image"
       @click="lightboxOpen = true"
     >
@@ -43,7 +43,7 @@ const lightboxOpen = ref(false)
     </button>
     <div
       v-else
-      class="flex h-24 w-40 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-xs text-slate-400"
+      class="flex h-24 w-40 items-center justify-center rounded-md border border-subtle bg-surface text-xs text-muted"
       data-testid="attachment-image-loading"
     >
       loading…

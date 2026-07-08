@@ -7,7 +7,24 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import SpaceRail from '../../../src/components/shell/SpaceRail.vue'
+import ThemeToggle from '../../../src/components/ui/ThemeToggle.vue'
 import { useSyncStore } from '../../../src/stores/sync'
+
+// ThemeToggle (mounted in the rail from PR-D) uses useTheme, which reads
+// localStorage; this env's window.localStorage is a bare object, so install a stub.
+function installLocalStorage(): void {
+  const store = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    writable: true,
+    value: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, String(v)),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+    },
+  })
+}
 
 function mountRail(): ReturnType<typeof mount> {
   return mount(SpaceRail, {
@@ -18,6 +35,7 @@ function mountRail(): ReturnType<typeof mount> {
 describe('SpaceRail (ENG-136 PR-B)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    installLocalStorage()
   })
 
   it('is a Workspaces navigation landmark with the neutral workspace glyph', () => {
@@ -50,5 +68,14 @@ describe('SpaceRail (ENG-136 PR-B)', () => {
     const wrapper = mountRail()
     await wrapper.get('[data-testid="logout"]').trigger('click')
     expect(wrapper.emitted('logout')).toHaveLength(1)
+  })
+
+  it('mounts the ThemeToggle in the rail (PR-D)', () => {
+    const wrapper = mountRail()
+    // The theme control lives in the rail: a keyboard-operable button with an
+    // aria-label reflecting the current preference.
+    expect(wrapper.findComponent(ThemeToggle).exists()).toBe(true)
+    const toggle = wrapper.getComponent(ThemeToggle)
+    expect(toggle.get('button').attributes('aria-label')).toBeTruthy()
   })
 })

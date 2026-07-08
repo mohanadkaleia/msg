@@ -32,27 +32,30 @@ async function submit(): Promise<void> {
 
 <template>
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     data-testid="create-channel"
     @click.self="emit('close')"
   >
-    <form class="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl" @submit.prevent="submit">
-      <h2 class="mb-3 text-sm font-semibold text-slate-800">Create a channel</h2>
+    <form
+      class="w-full max-w-sm rounded-lg border border-subtle bg-surface-elevated p-5 shadow-xl"
+      @submit.prevent="submit"
+    >
+      <h2 class="mb-3 text-sm font-semibold text-primary">Create a channel</h2>
 
-      <label class="mb-1 block text-xs font-medium text-slate-500" for="channel-name">Name</label>
+      <label class="mb-1 block text-xs font-medium text-secondary" for="channel-name">Name</label>
       <input
         id="channel-name"
         v-model="name"
         type="text"
-        class="mb-3 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+        class="mb-3 w-full rounded-md border border-strong bg-transparent px-2 py-1.5 text-sm text-primary placeholder:text-muted focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
         placeholder="general"
         data-testid="create-channel-name"
         autocomplete="off"
       />
 
       <fieldset class="mb-4">
-        <legend class="mb-1 text-xs font-medium text-slate-500">Visibility</legend>
-        <label class="mr-4 inline-flex items-center gap-1 text-sm text-slate-700">
+        <legend class="mb-1 text-xs font-medium text-secondary">Visibility</legend>
+        <label class="mr-4 inline-flex items-center gap-1 text-sm text-secondary">
           <input
             v-model="visibility"
             type="radio"
@@ -61,7 +64,7 @@ async function submit(): Promise<void> {
           />
           Public
         </label>
-        <label class="inline-flex items-center gap-1 text-sm text-slate-700">
+        <label class="inline-flex items-center gap-1 text-sm text-secondary">
           <input
             v-model="visibility"
             type="radio"
@@ -72,21 +75,21 @@ async function submit(): Promise<void> {
         </label>
       </fieldset>
 
-      <p v-if="error" class="mb-3 text-xs text-red-600" data-testid="create-channel-error">
+      <p v-if="error" class="mb-3 text-xs text-danger" data-testid="create-channel-error">
         {{ error }}
       </p>
 
       <div class="flex justify-end gap-2">
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 text-sm text-slate-500 hover:text-slate-800"
+          class="rounded-md px-3 py-1.5 text-sm text-secondary hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           @click="emit('close')"
         >
           Cancel
         </button>
         <button
           type="submit"
-          class="rounded-md bg-slate-800 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
           :disabled="busy || name.trim() === ''"
           data-testid="create-channel-submit"
         >

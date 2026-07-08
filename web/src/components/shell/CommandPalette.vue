@@ -84,29 +84,29 @@ function labelFor(item: QuickItem): string {
 <template>
   <div
     v-if="props.open"
-    class="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/30 p-4 pt-[12vh]"
+    class="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-4 pt-[12vh]"
     data-testid="command-palette"
     @click.self="emit('close')"
   >
     <div
-      class="w-full max-w-lg overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
+      class="w-full max-w-lg overflow-hidden rounded-lg border border-subtle bg-surface-elevated shadow-xl"
     >
       <input
         ref="input"
         v-model="query"
         type="text"
         placeholder="Jump to a channel or person…"
-        class="w-full border-b border-slate-100 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400"
+        class="w-full border-b border-subtle bg-transparent px-4 py-3 text-sm text-primary outline-none placeholder:text-muted focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
         data-testid="command-palette-input"
         @keydown="onKeydown"
       />
       <ul class="max-h-80 overflow-y-auto py-1">
-        <li v-if="results.length === 0" class="px-4 py-3 text-sm text-slate-400">No matches</li>
+        <li v-if="results.length === 0" class="px-4 py-3 text-sm text-muted">No matches</li>
         <li
           v-for="(item, index) in results"
           :key="item.id"
           class="flex cursor-pointer items-center justify-between px-4 py-2 text-sm"
-          :class="index === activeIndex ? 'bg-slate-100 text-slate-900' : 'text-slate-600'"
+          :class="index === activeIndex ? 'bg-accent-subtle text-primary' : 'text-secondary'"
           data-testid="command-palette-item"
           :data-active="index === activeIndex"
           @click="choose(index)"
@@ -115,7 +115,7 @@ function labelFor(item: QuickItem): string {
           <span class="truncate">{{ labelFor(item) }}</span>
           <span
             v-if="item.unread > 0"
-            class="ml-2 shrink-0 rounded-full bg-slate-200 px-1.5 text-xs text-slate-600"
+            class="ml-2 shrink-0 rounded-full bg-strong px-1.5 text-xs text-secondary"
             >{{ item.unread }}</span
           >
         </li>

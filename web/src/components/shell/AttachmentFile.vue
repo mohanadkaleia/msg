@@ -40,20 +40,20 @@ async function onDownload(): Promise<void> {
 
 <template>
   <div
-    class="flex max-w-sm items-center gap-3 rounded-md border border-slate-200 bg-white px-3 py-2"
+    class="flex max-w-sm items-center gap-3 rounded-md border border-subtle bg-surface px-3 py-2"
     data-testid="attachment-file"
   >
     <span class="text-lg" aria-hidden="true">📄</span>
     <div class="min-w-0 flex-1">
       <!-- ATTACKER-CONTROLLED name — text interpolation only (escaped). -->
-      <p class="truncate text-sm font-medium text-slate-800" data-testid="attachment-file-name">
+      <p class="truncate text-sm font-medium text-primary" data-testid="attachment-file-name">
         {{ file.name }}
       </p>
-      <p class="text-xs text-slate-400">{{ formatBytes(file.size_bytes) }}</p>
+      <p class="text-xs text-muted">{{ formatBytes(file.size_bytes) }}</p>
     </div>
     <button
       type="button"
-      class="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+      class="rounded-md border border-strong px-2 py-1 text-xs font-medium text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
       data-testid="attachment-download"
       @click="onDownload"
     >

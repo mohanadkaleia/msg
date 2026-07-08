@@ -38,25 +38,25 @@ async function start(userId: string): Promise<void> {
 
 <template>
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     data-testid="new-dm"
     @click.self="emit('close')"
   >
-    <div class="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl">
-      <h2 class="mb-3 text-sm font-semibold text-slate-800">New direct message</h2>
+    <div class="w-full max-w-sm rounded-lg border border-subtle bg-surface-elevated p-5 shadow-xl">
+      <h2 class="mb-3 text-sm font-semibold text-primary">New direct message</h2>
 
       <input
         v-model="filter"
         type="text"
-        class="mb-3 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+        class="mb-3 w-full rounded-md border border-strong bg-transparent px-2 py-1.5 text-sm text-primary placeholder:text-muted focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
         placeholder="Search people…"
         data-testid="new-dm-filter"
         autocomplete="off"
       />
 
-      <p v-if="error" class="mb-2 text-xs text-red-600" data-testid="new-dm-error">{{ error }}</p>
+      <p v-if="error" class="mb-2 text-xs text-danger" data-testid="new-dm-error">{{ error }}</p>
 
-      <p v-if="candidates.length === 0" class="text-xs text-slate-500" data-testid="new-dm-empty">
+      <p v-if="candidates.length === 0" class="text-xs text-secondary" data-testid="new-dm-empty">
         No people found.
       </p>
 
@@ -64,7 +64,7 @@ async function start(userId: string): Promise<void> {
         <li v-for="user in candidates" :key="user.user_id">
           <button
             type="button"
-            class="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+            class="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
             data-testid="new-dm-user"
             :data-user-id="user.user_id"
             :disabled="busy"
@@ -78,7 +78,7 @@ async function start(userId: string): Promise<void> {
       <div class="mt-4 flex justify-end">
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 text-sm text-slate-500 hover:text-slate-800"
+          class="rounded-md px-3 py-1.5 text-sm text-secondary hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           @click="emit('close')"
         >
           Close

@@ -81,14 +81,14 @@ function onDelete(messageId: string): void {
 
 <template>
   <aside
-    class="flex w-96 min-w-0 flex-col border-l border-slate-200 bg-white"
+    class="flex w-96 min-w-0 flex-col border-l border-subtle bg-background"
     data-testid="thread-pane"
   >
-    <header class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-      <h2 class="text-sm font-semibold text-slate-900">Thread</h2>
+    <header class="flex items-center justify-between border-b border-subtle px-4 py-3">
+      <h2 class="text-sm font-semibold text-primary">Thread</h2>
       <button
         type="button"
-        class="rounded-md px-2 py-1 text-xs text-slate-500 hover:text-slate-900"
+        class="rounded-md px-2 py-1 text-xs text-secondary hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
         data-testid="thread-close"
         aria-label="Close thread"
         @click="onClose"
@@ -99,7 +99,7 @@ function onDelete(messageId: string): void {
 
     <div ref="scroller" class="flex-1 overflow-y-auto" @scroll="onScroll">
       <!-- Root message, pinned at the top of the thread. -->
-      <div v-if="displayRoot" class="border-b border-slate-100" data-testid="thread-root">
+      <div v-if="displayRoot" class="border-b border-subtle" data-testid="thread-root">
         <MessageItem
           :message="displayRoot"
           @react="onReact"
@@ -114,7 +114,7 @@ function onDelete(messageId: string): void {
 
       <div
         v-if="participants.length > 0"
-        class="px-4 py-1 text-xs text-slate-400"
+        class="px-4 py-1 text-xs text-muted"
         data-testid="thread-participants"
       >
         {{ participants.length }}

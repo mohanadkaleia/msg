@@ -5,14 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>msg</title>
     <!--
-      ENG-136 "Ranin" theme bootstrap (PR-A). Runs before the module bundle to
-      set data-theme on <html> pre-paint (no FOUC). PINNED TO LIGHT for PR-A:
-      dark mode is not enabled until PR-D, so the app must look byte-identical to
-      today. PR-D will replace this with: read localStorage['msg:theme'] and, when
-      'system' (or unset), resolve via matchMedia('(prefers-color-scheme: dark)').
+      ENG-136 "Ranin" theme bootstrap (PR-D). Runs before the module bundle to set
+      data-theme on <html> pre-paint (no FOUC). Mirrors useTheme's resolution EXACTLY
+      (same localStorage key `msg:theme`, same 'system'→prefers-color-scheme fallback)
+      so the pre-paint attribute matches what the reactive store applies on hydration.
     -->
     <script>
-      document.documentElement.setAttribute('data-theme', 'light')
+      ;(function () {
+        try {
+          var pref = null
+          try {
+            pref = window.localStorage.getItem('msg:theme')
+          } catch (e) {
+            pref = null
+          }
+          var resolved =
+            pref === 'light' || pref === 'dark'
+              ? pref
+              : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+          document.documentElement.setAttribute('data-theme', resolved)
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light')
+        }
+      })()
     </script>
   </head>
   <body>

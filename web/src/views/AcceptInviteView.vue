@@ -80,25 +80,25 @@ async function logoutToSwitch(): Promise<void> {
 </script>
 
 <template>
-  <main class="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+  <main class="flex min-h-screen items-center justify-center bg-background p-4">
     <!-- ENG-112: already-signed-in state — never the create-account form. -->
     <section
       v-if="isAuthenticated"
-      class="w-full max-w-sm space-y-5 rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
+      class="w-full max-w-sm space-y-5 rounded-lg border border-subtle bg-surface-elevated p-8 shadow-sm"
       data-test="already-signed-in"
     >
       <div class="space-y-1">
-        <h1 class="text-xl font-semibold text-slate-900">You're already signed in</h1>
-        <p class="text-sm text-slate-500">
+        <h1 class="text-xl font-semibold text-primary">You're already signed in</h1>
+        <p class="text-sm text-secondary">
           You're already signed in as
-          <span class="font-medium text-slate-700" data-test="signed-in-as">{{ signedInAs }}</span
+          <span class="font-medium text-primary" data-test="signed-in-as">{{ signedInAs }}</span
           >.
         </p>
       </div>
 
       <button
         type="button"
-        class="w-full rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white"
+        class="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
         data-test="go-to-app"
         @click="goToApp"
       >
@@ -108,7 +108,7 @@ async function logoutToSwitch(): Promise<void> {
       <button
         type="button"
         :disabled="loggingOut"
-        class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+        class="w-full rounded-md border border-strong px-3 py-2 text-sm font-medium text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
         data-test="logout"
         @click="logoutToSwitch"
       >
@@ -118,64 +118,64 @@ async function logoutToSwitch(): Promise<void> {
 
     <form
       v-else
-      class="w-full max-w-sm space-y-5 rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
+      class="w-full max-w-sm space-y-5 rounded-lg border border-subtle bg-surface-elevated p-8 shadow-sm"
       @submit.prevent="onSubmit"
     >
       <div class="space-y-1">
-        <h1 class="text-xl font-semibold text-slate-900">Accept your invite</h1>
-        <p class="text-sm text-slate-500">Create your account to join the workspace.</p>
+        <h1 class="text-xl font-semibold text-primary">Accept your invite</h1>
+        <p class="text-sm text-secondary">Create your account to join the workspace.</p>
       </div>
 
       <p
         v-if="errorMessage"
         role="alert"
-        class="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700"
+        class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger"
         data-test="error"
       >
         {{ errorMessage }}
       </p>
 
       <label class="block space-y-1">
-        <span class="text-sm font-medium text-slate-700">Your name</span>
+        <span class="text-sm font-medium text-secondary">Your name</span>
         <input
           v-model="displayName"
           type="text"
           autocomplete="name"
           required
-          class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          class="w-full rounded-md border border-strong bg-transparent px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-test="display-name"
         />
       </label>
 
       <label class="block space-y-1">
-        <span class="text-sm font-medium text-slate-700">Email</span>
+        <span class="text-sm font-medium text-secondary">Email</span>
         <input
           v-model="email"
           type="email"
           autocomplete="username"
           required
-          class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          class="w-full rounded-md border border-strong bg-transparent px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-test="email"
         />
       </label>
 
       <label class="block space-y-1">
-        <span class="text-sm font-medium text-slate-700">Password</span>
+        <span class="text-sm font-medium text-secondary">Password</span>
         <input
           v-model="password"
           type="password"
           autocomplete="new-password"
           required
-          class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          class="w-full rounded-md border border-strong bg-transparent px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-test="password"
         />
-        <span class="text-xs text-slate-400">At least {{ PASSWORD_MIN }} characters.</span>
+        <span class="text-xs text-muted">At least {{ PASSWORD_MIN }} characters.</span>
       </label>
 
       <button
         type="submit"
         :disabled="!canSubmit"
-        class="w-full rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+        class="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
         data-test="submit"
       >
         {{ submitting ? 'Joining…' : 'Join workspace' }}

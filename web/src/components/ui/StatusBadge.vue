@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // ui/StatusBadge.vue — ENG-136 "Ranin" primitive (PR-A). A small status dot with
 // an optional label. `tone` maps to a token color; used later for sync + presence.
-// `syncing` animates (pulse); `online`/`success` share the success token.
+// `syncing` animates (pulse); `online`/`success` share the success token; `offline`
+// reads as urgent (danger, PR-B review #3) rather than a muted grey.
 import { computed } from 'vue'
 
 type Tone = 'online' | 'success' | 'syncing' | 'sync-pending' | 'offline' | 'danger' | 'muted'
@@ -16,7 +17,7 @@ const dotColor: Record<Tone, string> = {
   success: 'bg-success',
   syncing: 'bg-accent',
   'sync-pending': 'bg-sync-pending',
-  offline: 'bg-muted',
+  offline: 'bg-danger',
   danger: 'bg-danger',
   muted: 'bg-muted',
 }

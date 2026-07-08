@@ -121,6 +121,23 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.threadOpen.value).toBe(false)
   })
 
+  it('closes an open thread when navigating to a scaffold view (PR-B review #4)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const root = fake.addMessage('s_a', { created_seq: 1, text: 'root' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.onOpenThread(root.message_id)
+    await flushPromises()
+    expect(ctrl.threadOpen.value).toBe(true)
+
+    // Flipping to a scaffold placeholder closes the drawer so it doesn't dock beside it.
+    ctrl.setActiveView('inbox')
+    await flushPromises()
+    expect(ctrl.threadOpen.value).toBe(false)
+    expect(ctrl.activeView.value).toBe('inbox')
+  })
+
   it('gates the Admin scaffold on a privileged role', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     setWorkerClient(fake.client)

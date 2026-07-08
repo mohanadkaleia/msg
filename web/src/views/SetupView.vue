@@ -50,20 +50,20 @@ async function onSubmit(): Promise<void> {
 </script>
 
 <template>
-  <main class="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+  <main class="flex min-h-screen items-center justify-center bg-background p-4">
     <form
-      class="w-full max-w-sm space-y-5 rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
+      class="w-full max-w-sm space-y-5 rounded-lg border border-subtle bg-surface-elevated p-8 shadow-sm"
       @submit.prevent="onSubmit"
     >
       <div class="space-y-1">
-        <h1 class="text-xl font-semibold text-slate-900">Create your workspace</h1>
-        <p class="text-sm text-slate-500">First-run setup — you'll be the owner.</p>
+        <h1 class="text-xl font-semibold text-primary">Create your workspace</h1>
+        <p class="text-sm text-secondary">First-run setup — you'll be the owner.</p>
       </div>
 
       <p
         v-if="errorMessage"
         role="alert"
-        class="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700"
+        class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger"
         data-test="error"
       >
         {{ errorMessage }}
@@ -73,57 +73,57 @@ async function onSubmit(): Promise<void> {
       </p>
 
       <label class="block space-y-1">
-        <span class="text-sm font-medium text-slate-700">Workspace name</span>
+        <span class="text-sm font-medium text-secondary">Workspace name</span>
         <input
           v-model="workspaceName"
           type="text"
           required
-          class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          class="w-full rounded-md border border-strong bg-transparent px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-test="workspace"
         />
       </label>
 
       <label class="block space-y-1">
-        <span class="text-sm font-medium text-slate-700">Your name</span>
+        <span class="text-sm font-medium text-secondary">Your name</span>
         <input
           v-model="displayName"
           type="text"
           autocomplete="name"
           required
-          class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          class="w-full rounded-md border border-strong bg-transparent px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-test="display-name"
         />
       </label>
 
       <label class="block space-y-1">
-        <span class="text-sm font-medium text-slate-700">Email</span>
+        <span class="text-sm font-medium text-secondary">Email</span>
         <input
           v-model="email"
           type="email"
           autocomplete="username"
           required
-          class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          class="w-full rounded-md border border-strong bg-transparent px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-test="email"
         />
       </label>
 
       <label class="block space-y-1">
-        <span class="text-sm font-medium text-slate-700">Password</span>
+        <span class="text-sm font-medium text-secondary">Password</span>
         <input
           v-model="password"
           type="password"
           autocomplete="new-password"
           required
-          class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          class="w-full rounded-md border border-strong bg-transparent px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           data-test="password"
         />
-        <span class="text-xs text-slate-400">At least {{ PASSWORD_MIN }} characters.</span>
+        <span class="text-xs text-muted">At least {{ PASSWORD_MIN }} characters.</span>
       </label>
 
       <button
         type="submit"
         :disabled="!canSubmit"
-        class="w-full rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+        class="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
         data-test="submit"
       >
         {{ submitting ? 'Creating…' : 'Create workspace' }}

@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="scroller"
-    class="flex-1 overflow-y-auto bg-white"
+    class="flex-1 overflow-y-auto bg-background"
     data-testid="message-list"
     @scroll="onScroll"
   >
@@ -183,7 +183,7 @@ onBeforeUnmount(() => {
           data-testid="day-divider"
         >
           <span
-            class="rounded-full border border-slate-200 bg-white px-3 py-0.5 text-xs font-medium text-slate-500 shadow-sm"
+            class="rounded-full border border-subtle bg-surface-elevated px-3 py-0.5 text-xs font-medium text-secondary shadow-sm"
           >
             {{ item.label }}
           </span>

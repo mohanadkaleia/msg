@@ -15,7 +15,8 @@ describe('ui/StatusBadge', () => {
     ['success', 'bg-success'],
     ['syncing', 'bg-accent'],
     ['sync-pending', 'bg-sync-pending'],
-    ['offline', 'bg-muted'],
+    // PR-B review #3: offline reads as urgent (danger), not a muted grey.
+    ['offline', 'bg-danger'],
     ['danger', 'bg-danger'],
     ['muted', 'bg-muted'],
   ] as const)('maps tone %s to %s', (tone, expected) => {

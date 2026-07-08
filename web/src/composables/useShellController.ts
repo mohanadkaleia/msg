@@ -113,6 +113,9 @@ export function useShellController() {
 
   /** Flip the main panel to a scaffold section (Inbox/Feeds/Apps/Admin) or the timeline. */
   function setActiveView(view: ActiveView): void {
+    // Navigating to a scaffold view closes any open thread so the drawer doesn't dock
+    // beside a placeholder (PR-B review #4). The conversation view keeps its thread.
+    if (view !== 'conversation') thread.close()
     activeView.value = view
   }
 

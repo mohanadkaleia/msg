@@ -14,6 +14,7 @@ import { storeToRefs } from 'pinia'
 import { useSyncStore } from '../../stores/sync'
 import IconButton from '../ui/IconButton.vue'
 import StatusBadge from '../ui/StatusBadge.vue'
+import ThemeToggle from '../ui/ThemeToggle.vue'
 
 defineProps<{ workspaceInitials: string; workspaceName: string }>()
 const emit = defineEmits<{ logout: [] }>()
@@ -57,8 +58,8 @@ const badgeTone = computed<'online' | 'syncing' | 'offline'>(() => {
       <StatusBadge :tone="badgeTone" />
     </div>
 
-    <!-- PR-D mounts <ThemeToggle> here. -->
-    <slot name="theme" />
+    <!-- PR-D: theme cycle (light/dark/system), keyboard-operable, in the rail. -->
+    <ThemeToggle />
 
     <!-- Account affordance: sign out lives in the rail (§ Ranin PR-B). PR-C: this
          is the first IconButton call site, proving the `label` primitive. -->

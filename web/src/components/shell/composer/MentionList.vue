@@ -54,7 +54,7 @@ defineExpose({ onKeyDown })
 
 <template>
   <div
-    class="max-h-56 min-w-[12rem] overflow-y-auto rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg"
+    class="max-h-56 min-w-[12rem] overflow-y-auto rounded-md border border-subtle bg-surface-elevated py-1 text-sm shadow-lg"
     data-testid="mention-list"
   >
     <button
@@ -62,13 +62,13 @@ defineExpose({ onKeyDown })
       :key="item.id"
       type="button"
       class="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-      :class="index === selected ? 'bg-slate-100 text-slate-900' : 'text-slate-700'"
+      :class="index === selected ? 'bg-accent-subtle text-primary' : 'text-secondary'"
       data-testid="mention-option"
       @mousedown.prevent="commit(index)"
     >
-      <span class="text-slate-400">{{ item.kind === 'channel' ? '#' : '@' }}</span>
+      <span class="text-muted">{{ item.kind === 'channel' ? '#' : '@' }}</span>
       <span class="truncate">{{ item.label }}</span>
     </button>
-    <div v-if="props.items.length === 0" class="px-3 py-1.5 text-slate-400">No matches</div>
+    <div v-if="props.items.length === 0" class="px-3 py-1.5 text-muted">No matches</div>
   </div>
 </template>
