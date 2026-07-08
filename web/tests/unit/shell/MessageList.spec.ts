@@ -113,6 +113,37 @@ describe('MessageList virtualization', () => {
     expect(wrapper.find('[data-testid="new-divider"]').exists()).toBe(false)
   })
 
+  // -- ENG-127 search jump-to-message ---------------------------------------
+
+  it('scrollToMessage jumps the window to a far row and briefly highlights it', async () => {
+    const day = new Date('2026-07-06T10:00:00').getTime()
+    const messages = Array.from({ length: 1000 }, (_, i) => msg(i, day))
+    const wrapper = mount(MessageList, {
+      props: { messages, viewportHeight: 400, rowHeight: 40, overscan: 6, streamKey: 's1' },
+    })
+    const target = messages[500]!.message_id
+    const vm = wrapper.vm as unknown as { scrollToMessage: (id: string) => boolean }
+
+    expect(vm.scrollToMessage(target)).toBe(true)
+    await nextTick()
+
+    // The virtualized window re-centered on the row (it is actually rendered) …
+    const row = wrapper.find(`[data-message-id="${target}"]`)
+    expect(row.exists()).toBe(true)
+    // … and it carries the brief jump highlight.
+    expect(row.classes()).toContain('bg-accent-subtle')
+  })
+
+  it('scrollToMessage returns false for a message outside the loaded window', () => {
+    const day = new Date('2026-07-06T10:00:00').getTime()
+    const messages = Array.from({ length: 5 }, (_, i) => msg(i, day))
+    const wrapper = mount(MessageList, {
+      props: { messages, viewportHeight: 400, rowHeight: 40, streamKey: 's1' },
+    })
+    const vm = wrapper.vm as unknown as { scrollToMessage: (id: string) => boolean }
+    expect(vm.scrollToMessage('m_not_loaded')).toBe(false)
+  })
+
   it('calls loadOlder when the user scrolls to the top and more remain', async () => {
     const day = new Date('2026-07-06T10:00:00').getTime()
     const messages = Array.from({ length: 5 }, (_, i) => msg(i, day))

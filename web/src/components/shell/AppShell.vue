@@ -16,7 +16,7 @@
 // `useShellController`. The Inbox brings its own header + filter tabs, so the
 // ChannelHeader is skipped for it. No message data ever comes from the HTTP API —
 // the shell reads exclusively through the worker client (via the stores).
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 
 import AppSidebar from './AppSidebar.vue'
 import ChannelHeader from './ChannelHeader.vue'
@@ -27,6 +27,7 @@ import MessageComposer from './MessageComposer.vue'
 import MessageList from './MessageList.vue'
 import NewDmDialog from './NewDmDialog.vue'
 import RightDrawer from './RightDrawer.vue'
+import SearchOverlay from './SearchOverlay.vue'
 import SpaceRail from './SpaceRail.vue'
 import TopBar from './TopBar.vue'
 import TypingIndicator from './TypingIndicator.vue'
@@ -78,6 +79,36 @@ const {
 /** TopBar compose → open a New DM (REAL: compose maps to "new direct message"). */
 const showCompose = ref(false)
 
+/**
+ * TopBar search → the ENG-127 message-search overlay (server FTS through the
+ * worker's `search` RPC). DISTINCT from the Cmd+K CommandPalette quick-switcher,
+ * which stays keyboard-bound as-is.
+ */
+const searchOpen = ref(false)
+
+/** The live MessageList, for the search jump's best-effort scroll-to-message. */
+const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
+
+/**
+ * Search jump-to-message (ENG-127): close the overlay, select the hit's stream
+ * (the shell's existing stream-select), then BEST-EFFORT scroll to the message.
+ * The stream's window loads asynchronously, so we poll briefly; if the hit is
+ * older than the loaded window we simply leave the channel open at its tail —
+ * deep-loading pages around an arbitrary hit is a follow-up.
+ */
+async function onSearchJump(streamId: string, messageId: string): Promise<void> {
+  searchOpen.value = false
+  onOpenStream(streamId)
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await nextTick()
+    const list = messageListRef.value
+    if (list && typeof list.scrollToMessage === 'function' && list.scrollToMessage(messageId)) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
 /** SCAFFOLD: the add-member affordance lives in the sidebar's channel settings
  * today; the header's button is a forward hook (a dedicated flow is a follow-up). */
 function onHeaderAddMember(): void {
@@ -119,7 +150,7 @@ const gridCols = computed(() => {
 
     <!-- Right: a top-bar row spanning the main + drawer region, then the columns. -->
     <div class="flex min-w-0 flex-1 flex-col">
-      <TopBar @search="openPalette" @compose="showCompose = true" />
+      <TopBar @search="searchOpen = true" @compose="showCompose = true" />
 
       <div class="grid min-h-0 flex-1" :class="gridCols">
         <!-- Main column. The Inbox brings its own header + tabs, so the shared
@@ -136,6 +167,7 @@ const gridCols = computed(() => {
           <!-- Live conversation timeline (real channel/DM). -->
           <template v-if="activeView === 'conversation'">
             <MessageList
+              ref="messageListRef"
               :messages="displayMessages"
               :names="names"
               :presence="presenceStatuses"
@@ -198,6 +230,10 @@ const gridCols = computed(() => {
       @select="onPaletteSelect"
       @close="paletteOpen = false"
     />
+
+    <!-- ENG-127 message search (server FTS via the worker's `search` RPC), opened
+         from the top-bar search field. Jump closes it + selects the hit's stream. -->
+    <SearchOverlay :open="searchOpen" @close="searchOpen = false" @jump="onSearchJump" />
 
     <!-- REAL compose target: a New DM dialog opened from the TopBar compose button. -->
     <NewDmDialog v-if="showCompose" @close="showCompose = false" />

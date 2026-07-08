@@ -81,7 +81,7 @@ describe('AppShell (ENG-136 PR-C)', () => {
     const sidebar = wrapper.get('aside[role="navigation"]')
     expect(sidebar.attributes('aria-label')).toBe('Channels and direct messages')
 
-    // TopBar — a centered search that opens the palette.
+    // TopBar — a centered search that opens the message-search overlay (ENG-127).
     expect(wrapper.find('[data-testid="topbar-search"]').exists()).toBe(true)
 
     // Main region.
@@ -91,7 +91,7 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(wrapper.find('[role="complementary"][aria-label="Thread"]').exists()).toBe(false)
   })
 
-  it('opens the command palette from the top-bar search', async () => {
+  it('opens the SEARCH overlay from the top-bar search; Cmd+K still opens the palette', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     // Unstub CommandPalette so we can observe it opening.
     setWorkerClient(fake.client)
@@ -108,9 +108,57 @@ describe('AppShell (ENG-136 PR-C)', () => {
     })
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(false)
+    // ENG-127: the top-bar search opens the message-search overlay (NOT the
+    // quick-switcher palette — a distinct message-FTS surface).
+    expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(false)
     await wrapper.get('[data-testid="topbar-search"]').trigger('click')
+    expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="search-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(false)
+
+    // Esc dismisses the overlay.
+    await wrapper.get('[data-testid="search-input"]').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(false)
+
+    // The Cmd+K quick-switcher palette is UNCHANGED.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(true)
+  })
+
+  it('search jump closes the overlay and selects the hit stream (ENG-127)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    fake.addStream({ stream_id: 's_b', name: 'beta', kind: 'channel' })
+    const target = fake.addMessage('s_b', { created_seq: 1, text: 'jump target' })
+    fake.queueSearch({
+      hits: [
+        {
+          message_id: target.message_id,
+          stream_id: 's_b',
+          author_user_id: 'u_other',
+          text: 'jump target',
+          created_seq: 1,
+          rank: 1,
+          thread_root_id: null,
+        },
+      ],
+      next_cursor: null,
+    })
+    const wrapper = await mountShell(fake, router)
+    expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# alpha')
+
+    await wrapper.get('[data-testid="topbar-search"]').trigger('click')
+    await wrapper.get('[data-testid="search-input"]').setValue('jump')
+    await new Promise((resolve) => setTimeout(resolve, 300)) // debounce
+    await flushPromises()
+
+    await wrapper.get('[data-testid="search-jump"]').trigger('click')
+    await flushPromises()
+
+    // Overlay closed + the hit's stream selected (best-effort scroll is covered
+    // by MessageList.spec — the list is stubbed here).
+    expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# beta')
   })
 
   it('renders channel-header + MessageList + MessageComposer for a real conversation', async () => {

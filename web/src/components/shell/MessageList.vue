@@ -182,6 +182,42 @@ function scrollToBottom(): void {
   atBottom = true
 }
 
+/** The row briefly highlighted after a search jump (ENG-127); null = none. */
+const flashId = ref<string | null>(null)
+let flashTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Jump-to-message (ENG-127 search): scroll the virtualized window to `messageId`
+ * and briefly highlight the row. BEST-EFFORT: returns false when the message is
+ * not in the LOADED window — deep-scrolling to an arbitrary historical hit would
+ * need loading pages around it (a follow-up); the caller then simply leaves the
+ * channel open at its tail.
+ */
+function scrollToMessage(messageId: string): boolean {
+  const index = items.value.findIndex((i) => i.type === 'message' && i.key === messageId)
+  if (index === -1) return false
+  const el = scroller.value
+  if (el) {
+    // Land the row mid-viewport via the windowing math, then let the real DOM
+    // node fine-tune (jsdom lacks scrollIntoView — guarded).
+    el.scrollTop = Math.max(0, index * props.rowHeight - viewport.value / 2)
+    scrollTop.value = el.scrollTop
+    atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < props.rowHeight
+  }
+  void nextTick(() => {
+    const row = el?.querySelector(`[data-message-id="${messageId}"]`)
+    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  })
+  flashId.value = messageId
+  if (flashTimer !== undefined) clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => {
+    flashId.value = null
+  }, 1600)
+  return true
+}
+
+defineExpose({ scrollToMessage })
+
 // Stream change → jump to the newest message.
 watch(
   () => props.streamKey,
@@ -210,6 +246,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', measure)
+  if (flashTimer !== undefined) clearTimeout(flashTimer)
 })
 </script>
 
@@ -251,6 +288,7 @@ onBeforeUnmount(() => {
           :names="props.names"
           :presence="props.presence"
           :editing="item.message.message_id === props.editingMessageId"
+          :flash="item.message.message_id === flashId"
           @retry="emit('retry', $event)"
           @discard="emit('discard', $event)"
           @react="(id, emoji, remove) => emit('react', id, emoji, remove)"

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // TopBar — ENG-136 "Ranin" top bar (PR-3). A full-width row above the main + drawer
-// region: a centered search "input" (a button that opens the Cmd+K quick-switcher —
-// the palette) with a `⌘K` hint chip, and right-aligned actions: compose
-// (`square-pen`), a notifications bell with an unread dot, and a `more` menu.
+// region: a centered search "input" (a button — the shell opens the ENG-127 message
+// SearchOverlay from it; the `⌘K` hint chip stays for the keyboard-bound
+// quick-switcher palette) and right-aligned actions: compose (`square-pen`), a
+// notifications bell with an unread dot, and a `more` menu.
 //
 // REAL: `compose` maps to "new direct message" upstream (AppShell opens the New DM
 // dialog). SCAFFOLD: the bell (notifications) and `more` menu are placeholders — the
@@ -15,7 +16,7 @@ const emit = defineEmits<{ search: []; compose: [] }>()
 
 <template>
   <div class="flex items-center gap-3 border-b border-subtle px-4 py-2">
-    <!-- Centered search — opens the quick-switcher palette. -->
+    <!-- Centered search — opens the message-search overlay (ENG-127). -->
     <div class="mx-auto w-full max-w-xl">
       <button
         type="button"

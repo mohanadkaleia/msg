@@ -50,8 +50,13 @@ const props = withDefaults(
      * that do not wire presence); a provided map defaults unknown ids to offline.
      */
     presence?: ReadonlyMap<string, PresenceStatus> | undefined
+    /**
+     * Briefly highlight this row (ENG-127 search jump-to-message): a tinted
+     * background the parent clears after a moment. Purely visual.
+     */
+    flash?: boolean
   }>(),
-  { editing: false, showHeader: true, names: undefined, presence: undefined },
+  { editing: false, showHeader: true, names: undefined, presence: undefined, flash: false },
 )
 
 const emit = defineEmits<{
@@ -207,10 +212,11 @@ function confirmDelete(): void {
 
 <template>
   <div
-    class="group relative flex gap-3 px-4 py-0.5 hover:bg-surface"
-    :class="{ 'opacity-50': isPending }"
+    class="group relative flex gap-3 px-4 py-0.5 transition-colors hover:bg-surface"
+    :class="{ 'opacity-50': isPending, 'bg-accent-subtle': props.flash }"
     data-testid="message-row"
     :data-state="props.message.state ?? 'settled'"
+    :data-message-id="props.message.message_id"
   >
     <!-- Avatar gutter (40px + the row's gap-3 = a ~52px content indent). The
          avatar shows only on a group's LEADING row; a grouped follow-up keeps the

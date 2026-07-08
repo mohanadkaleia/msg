@@ -21,6 +21,8 @@ import type {
   QueryParams,
   QueryResult,
   ReactionAggregate,
+  SearchParams,
+  SearchResult,
   StreamBadge,
   StreamRow,
   SyncStatus,
@@ -47,6 +49,10 @@ export class FakeWorker {
   readonly metaSpy = vi.fn<(params: MutateParams) => void>()
   /** ENG-129 notification-prefs spy: every `prefs.set(streamId, level)` call. */
   readonly prefsSetSpy = vi.fn<(streamId: string, level: PrefLevel) => void>()
+  /** ENG-127 search spy: every `search(params)` call (exact params assertions). */
+  readonly searchSpy = vi.fn<(params: SearchParams) => void>()
+  /** Queued `search` pages, consumed in order (empty ⇒ an empty result). */
+  private searchPages: SearchResult[] = []
   /** ENG-102 M3 optimistic-op spies. */
   readonly reactSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.react' }>) => void>()
   readonly editSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.edit' }>) => void>()
@@ -293,6 +299,12 @@ export class FakeWorker {
   emitSync(status: SyncStatus): void {
     this.syncStatus = status
     for (const h of this.subs.get('sync') ?? []) h(status)
+  }
+
+  /** Queue the next `search` result page (ENG-127), consumed FIFO. */
+  queueSearch(result: SearchResult): this {
+    this.searchPages.push(result)
+    return this
   }
 
   /** Seed a stored notification pref (ENG-129) the next `prefs.get` returns. */
@@ -632,8 +644,12 @@ export class FakeWorker {
           return () => this.uploadCbs.delete(uploadId)
         },
       },
-      // ENG-126 seams — inert stubs (the shell UI lands in ENG-127/128/129).
-      search: () => Promise.resolve({ hits: [], next_cursor: null }),
+      // ENG-127 search: records params + returns the next queued page (a test
+      // seeds pages via queueSearch; unqueued calls resolve empty).
+      search: (params: SearchParams) => {
+        this.searchSpy(params)
+        return Promise.resolve(this.searchPages.shift() ?? { hits: [], next_cursor: null })
+      },
       readState: {
         mark: (streamId, seq) => Promise.resolve({ stream_id: streamId, last_read_seq: seq }),
       },
