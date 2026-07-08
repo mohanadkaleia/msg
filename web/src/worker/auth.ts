@@ -159,8 +159,13 @@ export class AuthManager {
 
   /**
    * Clear the session (in-memory token + session `meta` rows), KEEP `device_id`,
-   * and lean-wipe the derived tables so a shared machine does not leak cached
-   * messages/streams to the next user (R6/R7).
+   * and FULL-wipe the local projections so a shared machine does not leak cached
+   * data to the next user (R6/R7). This is a full local reset: the DERIVED tables
+   * (`clearDerivedTables`) AND the SYNCED-KV tables (`clearSyncedKv` — `read_state`
+   * + `prefs`, ENG-126). The two wipes stay SEPARATE by design: a projection-version
+   * rebuild clears ONLY derived tables and PRESERVES synced-KV (server-owned per-user
+   * state), whereas logout must additionally wipe synced-KV — the previous user's
+   * read positions / notification levels must not survive for the next user.
    *
    * A best-effort server-side revoke is out of scope here (no bulk-logout
    * endpoint); a future ticket can revoke the current session via
@@ -169,6 +174,7 @@ export class AuthManager {
   async logout(): Promise<{ ok: true }> {
     await this.clearSession()
     await this.db.clearDerivedTables()
+    await this.db.clearSyncedKv()
     return { ok: true }
   }
 

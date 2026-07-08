@@ -12,10 +12,23 @@ import type { ApiError } from './http'
 // ---------------------------------------------------------------------------
 
 /**
- * App-level version guarding the *derived* tables (`messages`, `streams`,
- * `cursors`, `read_state`). Bumping it forces a rebuild of the derived tables
- * from the raw `events` cache; it does NOT touch the IndexedDB index layout
- * (that is the Dexie `version()` number in `db.ts`). See TDD §5.2, D-4.
+ * App-level version guarding the *derived* tables (`messages`, `reactions`,
+ * `thread_participants`, `files`, `streams`, `cursors`). Bumping it forces a
+ * rebuild of the derived tables from the raw `events` cache; it does NOT touch
+ * the IndexedDB index layout (that is the Dexie `version()` number in `db.ts`).
+ * See TDD §5.2, D-4.
+ *
+ * ENG-126, D3 (message-class rationale): `read_state` and `prefs` are SYNCED-KV
+ * tables — server-authoritative per-user state pulled from `/v1/read-state` and
+ * `/v1/prefs`, NOT derivable from the message `events` log. They are therefore
+ * REBUILD-EXEMPT (absent from {@link DERIVED_TABLES} / `clearDerivedTables`): a
+ * projection-version bump must never wipe them, or the badges would silently
+ * un-read on a shape-skew boot until the next sync. Contrast ephemeral
+ * presence/typing, which are memory-only and never persisted at all. The two
+ * version numbers stay orthogonal: adding the `prefs` Dexie table is an
+ * additive `version(4)` INDEX-layout change and must NOT bump this
+ * PROJECTION-VALIDITY number (an accidental bump needlessly drops + rebuilds
+ * every derived table on all clients).
  */
 // ENG-81 bumped 1 → 2: `MessageRow` gained the `state`/`error_code` lifecycle
 // fields and rebuild now re-derives pending rows from `outbox`, so shape-change
@@ -324,10 +337,29 @@ export interface OutboxRow {
   error_code?: string
 }
 
-/** Local echo of the server read-state KV (derived). */
+/**
+ * Local mirror of the server read-state KV (ENG-123). SYNCED-KV, not derived:
+ * pulled from `GET /v1/read-state`, kept monotonic (server GREATEST) locally,
+ * and REBUILD-EXEMPT (see {@link PROJECTION_VERSION} D3 — a projection rebuild
+ * must not wipe it).
+ */
 export interface ReadStateRow {
   stream_id: string
   last_read_seq: number
+}
+
+/** Per-channel notification level (ENG-124), LWW. Default `all` when absent. */
+export type PrefLevel = 'all' | 'mentions' | 'mute'
+
+/**
+ * Local mirror of the server notification-prefs KV (ENG-124). SYNCED-KV, LWW:
+ * pulled from `GET /v1/prefs`, replaced unconditionally on echo/PUT-result, and
+ * REBUILD-EXEMPT (see {@link PROJECTION_VERSION} D3). Its own additive Dexie
+ * `version(4)` table — an INDEX-layout change that MUST NOT bump PROJECTION_VERSION.
+ */
+export interface PrefsRow {
+  stream_id: string
+  level: PrefLevel
 }
 
 /** Generic key/value meta row (source): projection_version, my_user_id, … */
@@ -350,9 +382,18 @@ export type TableName =
   | 'cursors'
   | 'outbox'
   | 'read_state'
+  | 'prefs'
   | 'meta'
 
-/** Derived tables — safe to drop + rebuild from `events` + server pulls. */
+/**
+ * Derived tables — safe to drop + rebuild from `events` + server pulls.
+ *
+ * ENG-126: `read_state` was WRONGLY listed here — it is a SYNCED-KV table (from
+ * `/v1/read-state`, not the message log), so a projection-version bump used to
+ * wipe it (harmless only while empty). It is now REBUILD-EXEMPT, alongside the
+ * new `prefs` synced-KV table (which is likewise NOT added here). See
+ * {@link PROJECTION_VERSION} D3.
+ */
 export const DERIVED_TABLES = [
   'messages',
   'reactions',
@@ -360,7 +401,6 @@ export const DERIVED_TABLES = [
   'files',
   'streams',
   'cursors',
-  'read_state',
 ] as const
 export type DerivedTable = (typeof DERIVED_TABLES)[number]
 
@@ -444,7 +484,35 @@ export interface MsgDb {
   putStreams(rows: readonly StreamRow[]): Promise<void>
   putCursors(rows: readonly CursorRow[]): Promise<void>
   putReadState(rows: readonly ReadStateRow[]): Promise<void>
+  /**
+   * ENG-126: atomic GREATEST compare-and-set for a read marker — read the stored
+   * `last_read_seq`, write `seq` ONLY when it strictly exceeds it, all inside ONE
+   * transaction so two concurrent chains (an RPC `mark` and a WS `applyEcho`) can
+   * never both read a stale value and let the LAST-WRITE (by order) clobber a
+   * HIGHER value. Returns whether it wrote (advanced). Idempotent + monotonic.
+   */
+  upsertReadStateMonotonic(streamId: string, seq: number): Promise<boolean>
+  // -- ENG-126 prefs (synced-KV; mirror of `/v1/prefs`; NOT a derived table) -
+  /** LWW upsert of notification-pref rows by their `stream_id` PK. */
+  putPrefs(rows: readonly PrefsRow[]): Promise<void>
+  /** All notification-pref rows (the prefs snapshot). */
+  listPrefs(): Promise<PrefsRow[]>
+  /** A single stream's notification pref, or undefined (caller defaults `all`). */
+  getPrefs(streamId: string): Promise<PrefsRow | undefined>
+  /**
+   * Drop every DERIVED table (rebuild-only wipe). ENG-126: this does NOT clear the
+   * synced-KV `read_state`/`prefs` tables — a projection-version rebuild must keep
+   * them (they are refilled from the server, not replay). Use {@link clearSyncedKv}
+   * for the logout wipe.
+   */
   clearDerivedTables(): Promise<void>
+  /**
+   * ENG-126: wipe the synced-KV tables (`read_state` + `prefs`). SEPARATE from
+   * {@link clearDerivedTables} on purpose — logout does a FULL local reset (derived
+   * + synced-KV) so a shared machine leaks nothing to the next user, whereas a
+   * projection rebuild wipes ONLY derived tables and PRESERVES synced-KV.
+   */
+  clearSyncedKv(): Promise<void>
 
   // -- ENG-80 projection reads (additive; no schema change) ----------------
   // Rebuild inputs (from the `events` source cache):
@@ -983,6 +1051,76 @@ export interface AuthStatus {
 /** Application-level auth outcome (token-free); a wrong password is not an RPC fault. */
 export type AuthResult = { ok: true; status: AuthStatus } | { ok: false; error: ApiError }
 
+// ---------------------------------------------------------------------------
+// Search (ENG-126) — the ONE read that is an HTTP call, not a local projection
+// query. Postgres FTS is server-side (ENG-122); the token stays worker-side, so
+// `search` is a top-level RPC method (NOT a `query` `q`, which are all local).
+// Pagination is EXPLICIT and stateless: a tab re-calls `search` with the
+// returned `cursor` to fetch the next page.
+// ---------------------------------------------------------------------------
+
+/** One `GET /v1/search` hit (server FTS row, readable-scoped). */
+export interface SearchHit {
+  message_id: string
+  stream_id: string
+  author_user_id: string
+  text: string
+  created_seq: number
+  rank: number
+  thread_root_id: string | null
+}
+
+/**
+ * `search` params. `q` is the full-text query; `in` filters by stream, `from` by
+ * author; `before`/`after` bound `created_seq` (ints); `limit` is 1..50; `cursor`
+ * resumes a prior page. NO token/identity fields — the worker attaches the bearer.
+ */
+export interface SearchParams {
+  q: string
+  in?: string
+  from?: string
+  before?: number
+  after?: number
+  limit?: number
+  cursor?: string
+}
+
+/** `search` result — a page of hits + an opaque `cursor` for the next page. */
+export interface SearchResult {
+  hits: SearchHit[]
+  next_cursor: string | null
+}
+
+/** `prefs.get` result — the notification-pref snapshot (default `all` when a stream is absent). */
+export interface PrefsListResult {
+  prefs: PrefsRow[]
+}
+
+/** Live-presence status for a workspace user (ENG-125), ephemeral (memory-only). */
+export type PresenceStatus = 'online' | 'offline'
+
+/** One presence entry in a {@link PresencePush} snapshot. */
+export interface PresenceEntry {
+  user_id: string
+  status: PresenceStatus
+}
+
+/** `{kind:'presence'}` push — the FULL current workspace presence snapshot. */
+export interface PresencePush {
+  presence: PresenceEntry[]
+}
+
+/** `{kind:'typing'}` push — a stream's current (non-expired) typing user set. */
+export interface TypingPush {
+  stream_id: string
+  user_ids: string[]
+}
+
+/** `{kind:'prefs'}` push — the full notification-pref snapshot on any change. */
+export interface PrefsPush {
+  prefs: PrefsRow[]
+}
+
 export type RpcRequest =
   | { method: 'meta.get'; params: { key: string } }
   | { method: 'query'; params: QueryParams }
@@ -1002,6 +1140,15 @@ export type RpcRequest =
   | { method: 'file.retry'; params: { upload_id: string } }
   | { method: 'file.cancel'; params: { upload_id: string } }
   | { method: 'file.fetch'; params: { file_id: string; variant: 'blob' | 'thumbnail' } }
+  // ENG-126 — search (HTTP FTS, token worker-side), synced-KV read-state/prefs,
+  // and the outbound typing signal. `readState.mark`/`prefs.set` mutate a
+  // server-authoritative per-user KV (NOT the event log); `typing.send` is a
+  // fire-and-forget ephemeral WS signal (client-throttled, dropped when offline).
+  | { method: 'search'; params: SearchParams }
+  | { method: 'readState.mark'; params: { stream_id: string; last_read_seq: number } }
+  | { method: 'prefs.get'; params: Record<string, never> }
+  | { method: 'prefs.set'; params: { stream_id: string; level: PrefLevel } }
+  | { method: 'typing.send'; params: { stream_id: string } }
 
 export type RpcMethod = RpcRequest['method']
 
@@ -1013,6 +1160,12 @@ export type Topic =
   // ENG-119: per-upload progress. The tab subscribes on its minted `upload_id`
   // before issuing `file.upload`, then reads the phase machine off these pushes.
   | { kind: 'upload'; upload_id: string }
+  // ENG-126 ephemeral signals + prefs reactivity. `presence` is workspace-wide;
+  // `typing` is per-stream; `prefs` fans the whole snapshot on any change. Late
+  // subscribers seed from the current in-memory snapshot on their first push.
+  | { kind: 'presence' }
+  | { kind: 'typing'; stream_id: string }
+  | { kind: 'prefs' }
 
 /** Payload delivered on a push, keyed to the topic. */
 export interface StreamPush {
@@ -1026,7 +1179,13 @@ export type PushPayload<T extends Topic> = T extends { kind: 'status' }
       ? StreamPush
       : T extends { kind: 'upload' }
         ? UploadProgress
-        : never
+        : T extends { kind: 'presence' }
+          ? PresencePush
+          : T extends { kind: 'typing' }
+            ? TypingPush
+            : T extends { kind: 'prefs' }
+              ? PrefsPush
+              : never
 
 // Tab → Worker frames. Every frame carries `clientId` so the leader's
 // BroadcastChannel can fan responses to the right follower.
@@ -1132,6 +1291,51 @@ export interface WorkerClient {
     onProgress(uploadId: string, cb: (payload: UploadProgress) => void): Unsubscribe
   }
 
+  /**
+   * Search (ENG-126). The ONE read that hits the HTTP API rather than the local
+   * projection — Postgres FTS is server-side. The token stays worker-side; the tab
+   * passes only filters + an opaque `cursor` and reads back hits + `next_cursor`.
+   */
+  search(params: SearchParams): Promise<SearchResult>
+
+  /**
+   * Read-state (ENG-126). `mark` records the newest read `seq` for a stream —
+   * optimistic + monotonic (never rewinds), reconciled with the server GREATEST.
+   * The unread/mention badge clears instantly via the `{kind:'stream'}` push.
+   */
+  readState: {
+    mark(streamId: string, seq: number): Promise<ReadStateRow>
+  }
+
+  /**
+   * Notification prefs (ENG-126). `get` returns the snapshot (default `all` per
+   * absent stream); `set` writes the per-channel level (LWW). Changes fan on the
+   * `{kind:'prefs'}` push.
+   */
+  prefs: {
+    get(): Promise<PrefsListResult>
+    set(streamId: string, level: PrefLevel): Promise<PrefsRow>
+  }
+
+  /**
+   * Presence (ENG-126) — ephemeral, memory-only, workspace-wide. `subscribe` seeds
+   * from the current in-memory snapshot on its first push and updates on every
+   * live frame; nothing is persisted, and the set is wiped on a socket drop.
+   */
+  presence: {
+    subscribe(cb: (payload: PresencePush) => void): Unsubscribe
+  }
+
+  /**
+   * Typing (ENG-126) — ephemeral, memory-only, per-stream. `subscribe` receives a
+   * stream's live typing set (auto-expiring ~5s); `send` emits a throttled
+   * outbound typing signal (dropped silently when not `live`).
+   */
+  typing: {
+    subscribe(streamId: string, cb: (payload: TypingPush) => void): Unsubscribe
+    send(streamId: string): Promise<{ ok: true }>
+  }
+
   /** Detach this tab (close port / leave channel). Idempotent. */
   dispose(): void
 }
@@ -1151,5 +1355,11 @@ export function topicKey(topic: Topic): string {
       return `stream:${topic.stream_id}`
     case 'upload':
       return `upload:${topic.upload_id}`
+    case 'presence':
+      return 'presence'
+    case 'typing':
+      return `typing:${topic.stream_id}`
+    case 'prefs':
+      return 'prefs'
   }
 }

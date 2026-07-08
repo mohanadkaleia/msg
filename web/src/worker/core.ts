@@ -11,6 +11,10 @@ import { FileManager } from './files'
 import { createHttpClient, type HttpClient } from './http'
 import { MetaAuthor } from './meta'
 import { Outbox } from './outbox'
+import { EphemeralState } from './presence'
+import { PrefsManager, isPrefLevel } from './prefs'
+import { ReadStateManager } from './readstate'
+import { searchMessages } from './search'
 import {
   applyEventsToProjection,
   getMessage,
@@ -23,7 +27,7 @@ import {
   listThreadSummaries,
 } from './projection'
 import { SyncEngine } from './sync'
-import { browserWsFactory, type WsFactory } from './ws'
+import { browserWsFactory, type WsFactory, type WsFrame } from './ws'
 import {
   MAX_CACHED_EVENTS_PER_STREAM,
   RpcCodedError,
@@ -36,12 +40,17 @@ import {
   type MsgDb,
   type MutateParams,
   type MutateResultUnion,
+  type PrefsListResult,
+  type PrefsRow,
+  type PresenceStatus,
   type PushPayload,
   type QueryParams,
   type QueryResultUnion,
+  type ReadStateRow,
   type RpcError,
   type RpcMethod,
   type RpcRequest,
+  type SearchResult,
   type SyncStatus,
   type ToWorker,
   type Topic,
@@ -71,6 +80,12 @@ export interface RpcResultMap {
   'file.retry': UploadAck
   'file.cancel': UploadAck
   'file.fetch': FileFetchResult
+  // ENG-126 — search (HTTP FTS) + synced-KV read-state/prefs + outbound typing.
+  search: SearchResult
+  'readState.mark': ReadStateRow
+  'prefs.get': PrefsListResult
+  'prefs.set': PrefsRow
+  'typing.send': { ok: true }
 }
 
 /** A handler typed to exactly one method's request variant and result. */
@@ -128,6 +143,14 @@ export class WorkerCore {
   private readonly files: FileManager
   /** Channel & member management + DM creation authoring (ENG-104). */
   private readonly meta: MetaAuthor
+  /** The worker-side HTTP client — shared by every manager (search reads it directly). */
+  private readonly http: HttpClient
+  /** Synced-KV read-state mirror (ENG-126) — monotonic, rebuild-exempt, persisted. */
+  private readonly readState: ReadStateManager
+  /** Synced-KV notification prefs (ENG-126) — LWW, rebuild-exempt, persisted. */
+  private readonly prefs: PrefsManager
+  /** Ephemeral presence + typing (ENG-126) — memory-only, NO db handle (structural). */
+  private readonly ephemeral: EphemeralState
   /** Latest sync state — gates the outbox drain to `live` + detects the rising edge. */
   private syncLive = false
 
@@ -151,12 +174,17 @@ export class WorkerCore {
           return this.auth.clearSession()
         },
       })
+    this.http = http
     this.auth = new AuthManager(db, http)
     this.sync = new SyncEngine({
       http,
       wsFactory: options.wsFactory ?? browserWsFactory,
       db,
       getToken: () => this.auth.getToken(),
+      // ENG-126: route the four signal frames OUT of the event-sync path. The
+      // handler shape-validates each arm defensively (D9); a malformed frame is
+      // ignored, never crashing the socket or entering the cursor machinery.
+      onSignalFrame: (frame) => this.handleSignalFrame(frame),
       // FOLD-IN (ENG-79/80 wiring gap, §7): default the seam to the REAL
       // projection so live WS events land in `messages`, not just `events`. One
       // constructor change fixes all three transport entry points (they share
@@ -195,10 +223,73 @@ export class WorkerCore {
       // how a NEW stream (no per-stream subscription yet) first appears (ENG-104).
       onStreamsChanged: () => this.publish({ kind: 'sync' }, this.sync.status()),
     })
+    // ENG-126 synced-KV managers — hold a db handle, PERSIST, rebuild-exempt.
+    this.readState = new ReadStateManager({
+      db,
+      http,
+      publishStream: (streamId) =>
+        this.publish({ kind: 'stream', stream_id: streamId }, { stream_id: streamId }),
+    })
+    this.prefs = new PrefsManager({
+      db,
+      http,
+      publishPrefs: () => {
+        void this.prefs.list().then((prefs) => this.publish({ kind: 'prefs' }, { prefs }))
+      },
+    })
+    // ENG-126 ephemeral presence/typing — constructed WITHOUT a db handle (a
+    // structural guarantee it cannot persist). `sendTyping` is gated to `live` by
+    // the SyncEngine (drops otherwise); the throttle lives in EphemeralState.
+    this.ephemeral = new EphemeralState({
+      publishPresence: (payload) => this.publish({ kind: 'presence' }, payload),
+      publishTyping: (streamId, payload) =>
+        this.publish({ kind: 'typing', stream_id: streamId }, payload),
+      sendTyping: (streamId) => this.sync.sendTyping(streamId),
+    })
     this.registerDefaults()
     this.registerAuth()
     this.registerSync()
     this.registerFiles()
+    this.registerSignals()
+  }
+
+  /**
+   * ENG-126 signal-frame router. Called by the SyncEngine for the four inbound
+   * signal frame types, OUTSIDE the event-sync path. Each arm shape-validates the
+   * WIRE frame defensively and ignores a malformed one (D9) — a version-skewed /
+   * corrupt frame must never crash the worker or mutate state on bad data.
+   */
+  private handleSignalFrame(frame: WsFrame): void {
+    switch (frame.t) {
+      case 'read_state': {
+        const f = frame as { stream_id?: unknown; last_read_seq?: unknown }
+        if (typeof f.stream_id === 'string' && typeof f.last_read_seq === 'number') {
+          void this.readState.applyEcho({ stream_id: f.stream_id, last_read_seq: f.last_read_seq })
+        }
+        return
+      }
+      case 'prefs': {
+        const f = frame as { stream_id?: unknown; level?: unknown }
+        if (typeof f.stream_id === 'string' && isPrefLevel(f.level)) {
+          void this.prefs.applyEcho({ stream_id: f.stream_id, level: f.level })
+        }
+        return
+      }
+      case 'presence': {
+        const f = frame as { user_id?: unknown; status?: unknown }
+        if (typeof f.user_id === 'string' && isPresenceStatus(f.status)) {
+          this.ephemeral.applyPresence({ user_id: f.user_id, status: f.status })
+        }
+        return
+      }
+      case 'typing': {
+        const f = frame as { stream_id?: unknown; user_id?: unknown }
+        if (typeof f.stream_id === 'string' && typeof f.user_id === 'string') {
+          this.ephemeral.applyTyping({ stream_id: f.stream_id, user_id: f.user_id })
+        }
+        return
+      }
+    }
   }
 
   /**
@@ -210,7 +301,19 @@ export class WorkerCore {
     const wasLive = this.syncLive
     this.syncLive = status.state === 'live'
     this.publish({ kind: 'sync' }, status)
-    if (!wasLive && this.syncLive) this.outbox.drain()
+    if (!wasLive && this.syncLive) {
+      // Rising edge into `live` (first connect / reconnect): kick the outbox drain
+      // AND reconcile the synced-KV mirrors from the server (ENG-126). Both are
+      // fire-and-forget; a failed fetch is a no-op that the next live edge retries.
+      this.outbox.drain()
+      void this.readState.bootstrap()
+      void this.prefs.bootstrap()
+    }
+    if (wasLive && !this.syncLive) {
+      // Leaving `live` (socket drop / degraded / logout): ephemeral presence +
+      // typing do not survive a disconnect — wipe them (re-derived on reconnect).
+      this.ephemeral.clearAll()
+    }
   }
 
   /**
@@ -470,6 +573,29 @@ export class WorkerCore {
     this.register('file.cancel', (req) => this.files.cancel(req.params.upload_id))
     this.register('file.fetch', (req) => this.files.fetch(req.params))
   }
+
+  // -- ENG-126 search + read-state/prefs + typing handlers -----------------
+  // `search` is an HTTP FTS read (token worker-side); `readState.mark`/`prefs.*`
+  // drive the synced-KV managers; `typing.send` is a fire-and-forget ephemeral
+  // signal (client-throttled in EphemeralState, dropped by SyncEngine when offline).
+
+  private registerSignals(): void {
+    this.register('search', (req) => searchMessages(this.http, req.params))
+    this.register('readState.mark', (req) =>
+      this.readState.mark(req.params.stream_id, req.params.last_read_seq),
+    )
+    this.register('prefs.get', async () => ({ prefs: await this.prefs.list() }))
+    this.register('prefs.set', (req) => this.prefs.set(req.params.stream_id, req.params.level))
+    this.register('typing.send', (req) => {
+      this.ephemeral.sendTyping(req.params.stream_id)
+      return Promise.resolve({ ok: true as const })
+    })
+  }
+}
+
+/** Narrow an inbound presence `status` to the legal set (reject malformed, D9). */
+function isPresenceStatus(v: unknown): v is PresenceStatus {
+  return v === 'online' || v === 'offline'
 }
 
 /**

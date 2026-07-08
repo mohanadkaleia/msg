@@ -13,6 +13,7 @@ import type {
   EventBody,
   FromWorker,
   MessageSink,
+  SearchResult,
   StoredEvent,
   SyncStreamMeta,
   WireEvent,
@@ -295,6 +296,14 @@ export class FakeSyncServer {
   /** When set, every `POST /v1/events/batch` fails transiently with this error. */
   batchError: ApiError | undefined
 
+  // -- ENG-126 read-state / prefs / search model --------------------------
+  /** `stream_id` → server `last_read_seq` (GREATEST-merged on PUT). */
+  readonly readState = new Map<string, number>()
+  /** `stream_id` → notification `level` (LWW-replaced on PUT). */
+  readonly prefs = new Map<string, string>()
+  /** The canned `GET /v1/search` response tests configure (default empty). */
+  searchResult: SearchResult = { hits: [], next_cursor: null }
+
   // -- ENG-119 Files API model --------------------------------------------
   /** `file_id` → the reserved file row (models the server `files` table). */
   private readonly files = new Map<string, FakeFileRow>()
@@ -558,6 +567,52 @@ export class FakeSyncServer {
     }
   }
 
+  // -- ENG-126 read-state / prefs / search responders ---------------------
+
+  /** `GET /v1/search` — return the canned {@link searchResult} (filters ride the query). */
+  respondSearch(): ApiResult<SearchResult> {
+    return { ok: true, value: this.searchResult }
+  }
+
+  /** `GET /v1/read-state` — `{streams:[{stream_id,last_read_seq,head_seq,unread}]}`. */
+  respondGetReadState(): ApiResult<{
+    streams: { stream_id: string; last_read_seq: number; head_seq: number; unread: number }[]
+  }> {
+    const streams = [...this.readState].map(([stream_id, last_read_seq]) => ({
+      stream_id,
+      last_read_seq,
+      head_seq: last_read_seq,
+      unread: 0,
+    }))
+    return { ok: true, value: { streams } }
+  }
+
+  /** `PUT /v1/read-state` — GREATEST-merge, echo the effective value (mirrors ENG-123). */
+  respondPutReadState(body: {
+    stream_id: string
+    last_read_seq: number
+  }): ApiResult<{ stream_id: string; last_read_seq: number }> {
+    const prev = this.readState.get(body.stream_id) ?? -1
+    const effective = Math.max(prev, body.last_read_seq)
+    this.readState.set(body.stream_id, effective)
+    return { ok: true, value: { stream_id: body.stream_id, last_read_seq: effective } }
+  }
+
+  /** `GET /v1/prefs` — `{prefs:[{stream_id,level}]}`. */
+  respondGetPrefs(): ApiResult<{ prefs: { stream_id: string; level: string }[] }> {
+    const prefs = [...this.prefs].map(([stream_id, level]) => ({ stream_id, level }))
+    return { ok: true, value: { prefs } }
+  }
+
+  /** `PUT /v1/prefs` — LWW-replace, echo the level (mirrors ENG-124). */
+  respondPutPrefs(body: {
+    stream_id: string
+    level: string
+  }): ApiResult<{ stream_id: string; level: string }> {
+    this.prefs.set(body.stream_id, body.level)
+    return { ok: true, value: { stream_id: body.stream_id, level: body.level } }
+  }
+
   /** The stored wire event for an `event_id` (to emit as a WS frame in a test). */
   wireFor(eventId: string): WireEvent | undefined {
     for (const s of this.streams.values()) {
@@ -574,6 +629,9 @@ export class FakeSyncServer {
   }
 
   async respond(path: string): Promise<ApiResult<unknown>> {
+    if (path.startsWith('/v1/search')) return this.respondSearch()
+    if (path.startsWith('/v1/read-state')) return this.respondGetReadState()
+    if (path.startsWith('/v1/prefs')) return this.respondGetPrefs()
     if (path.startsWith('/v1/sync')) {
       if (this.syncError) return { ok: false, error: this.syncError }
       const streams: SyncStreamMeta[] = [...this.streams.values()].map((s) => ({
@@ -616,6 +674,8 @@ export class FakeSyncServer {
 export class FakeHttpClient implements HttpClient {
   readonly getCalls: string[] = []
   readonly postCalls: { path: string; body: unknown }[] = []
+  /** Every `put` call — the JSON body (synced-KV writes: read-state / prefs). */
+  readonly putCalls: { path: string; body: unknown }[] = []
   /** Every `putBlob` call — the raw body + declared content type (never JSON). */
   readonly putBlobCalls: { path: string; body: Blob | ArrayBuffer; contentType?: string }[] = []
   readonly getBlobCalls: string[] = []
@@ -684,6 +744,21 @@ export class FakeHttpClient implements HttpClient {
       ) as ApiResult<T>
     }
     return { ok: true, value: undefined as T }
+  }
+
+  put<T>(path: string, body: unknown): Promise<ApiResult<T>> {
+    this.putCalls.push({ path, body })
+    if (path.startsWith('/v1/read-state')) {
+      return Promise.resolve(
+        this.server.respondPutReadState(body as { stream_id: string; last_read_seq: number }),
+      ) as Promise<ApiResult<T>>
+    }
+    if (path.startsWith('/v1/prefs')) {
+      return Promise.resolve(
+        this.server.respondPutPrefs(body as { stream_id: string; level: string }),
+      ) as Promise<ApiResult<T>>
+    }
+    return Promise.resolve({ ok: true, value: undefined as T })
   }
 
   del(): Promise<ApiResult<void>> {

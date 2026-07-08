@@ -598,6 +598,22 @@ export class FakeWorker {
           return () => this.uploadCbs.delete(uploadId)
         },
       },
+      // ENG-126 seams — inert stubs (the shell UI lands in ENG-127/128/129).
+      search: () => Promise.resolve({ hits: [], next_cursor: null }),
+      readState: {
+        mark: (streamId, seq) => Promise.resolve({ stream_id: streamId, last_read_seq: seq }),
+      },
+      prefs: {
+        get: () => Promise.resolve({ prefs: [] }),
+        set: (streamId, level) => Promise.resolve({ stream_id: streamId, level }),
+      },
+      presence: {
+        subscribe: (cb) => this.subscribe({ kind: 'presence' }, cb),
+      },
+      typing: {
+        subscribe: (streamId, cb) => this.subscribe({ kind: 'typing', stream_id: streamId }, cb),
+        send: () => Promise.resolve({ ok: true as const }),
+      },
       dispose: () => {},
     }
   }

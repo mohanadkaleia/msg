@@ -256,7 +256,7 @@ describe('AuthManager session lifecycle', () => {
     expect(await db.metaGet(META_DEVICE_ID)).toBe('dev-fresh')
   })
 
-  it('logout clears the session, keeps device_id, and wipes derived tables', async () => {
+  it('logout clears the session, keeps device_id, and wipes derived + synced-KV tables', async () => {
     const db = new MemoryDb()
     const { fetchImpl } = makeFetch(() => loginResponse())
     const { manager } = makeManager(db, fetchImpl)
@@ -273,6 +273,10 @@ describe('AuthManager session lifecycle', () => {
         file_ids: [],
       },
     ])
+    // ENG-126: seed the synced-KV tables so the wipe assertion is non-vacuous — a
+    // shared machine must not leak the previous user's read positions / prefs.
+    await db.putReadState([{ stream_id: 's1', last_read_seq: 5 }])
+    await db.putPrefs([{ stream_id: 's1', level: 'mute' }])
 
     await manager.logout()
 
@@ -281,6 +285,9 @@ describe('AuthManager session lifecycle', () => {
     expect(await db.metaGet(META_MY_USER_ID)).toBeUndefined()
     expect(await db.metaGet(META_DEVICE_ID)).toBe('dev-fresh') // kept
     expect(await db.count('messages')).toBe(0) // derived wiped
+    // Synced-KV wiped too (logout = full local reset for the next user).
+    expect(await db.count('read_state')).toBe(0)
+    expect(await db.count('prefs')).toBe(0)
   })
 
   it('restore() rehydrates the in-memory session from meta (reload persistence)', async () => {

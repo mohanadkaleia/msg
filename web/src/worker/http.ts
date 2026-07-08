@@ -55,6 +55,13 @@ export interface BlobRequestOptions {
 export interface HttpClient {
   /** POST a JSON body. `authed` defaults true; login/setup/accept-invite pass false. */
   post<T>(path: string, body: unknown, opts?: { authed?: boolean }): Promise<ApiResult<T>>
+  /**
+   * Authed PUT of a JSON body (ENG-126, mirrors {@link post}): `Content-Type:
+   * application/json`, bearer attached, 401 → `onUnauthorized`, never throws. Used
+   * by the synced-KV writes (`/v1/read-state`, `/v1/prefs`). NOT the raw-bytes
+   * {@link putBlob} — that path is `application/octet-stream` and never JSON.
+   */
+  put<T>(path: string, body: unknown): Promise<ApiResult<T>>
   /** Authed GET returning parsed JSON. */
   get<T>(path: string): Promise<ApiResult<T>>
   /** Authed DELETE expecting 204 No Content. */
@@ -190,7 +197,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
   }
 
   function request<T>(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body: unknown,
     authed: boolean,
@@ -231,6 +238,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
   return {
     post: <T>(path: string, body: unknown, opts?: { authed?: boolean }) =>
       request<T>('POST', path, body, opts?.authed ?? true),
+    put: <T>(path: string, body: unknown) => request<T>('PUT', path, body, true),
     get: <T>(path: string) => request<T>('GET', path, undefined, true),
     del: (path: string) => request<void>('DELETE', path, undefined, true),
 

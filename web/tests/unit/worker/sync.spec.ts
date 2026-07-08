@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MemoryDb } from '../../../src/worker/db'
 import { BOOTSTRAP_CONCURRENCY, SyncEngine } from '../../../src/worker/sync'
+import type { WsFrame } from '../../../src/worker/ws'
 import type {
   ApplyEventsToProjection,
   EventRow,
@@ -30,6 +31,7 @@ interface Harness {
   statuses: SyncStatus[]
   streamPushes: string[]
   seamCalls: { streamId: string; seqs: number[] }[]
+  signalFrames: WsFrame[]
   onlineRef: { value: boolean }
 }
 
@@ -48,6 +50,7 @@ function makeHarness(overrides: HarnessOptions): Harness {
   const statuses: SyncStatus[] = []
   const streamPushes: string[] = []
   const seamCalls: { streamId: string; seqs: number[] }[] = []
+  const signalFrames: WsFrame[] = []
   const onlineRef = { value: true }
 
   const seam: ApplyEventsToProjection =
@@ -65,6 +68,7 @@ function makeHarness(overrides: HarnessOptions): Harness {
     applyToProjection: seam,
     emitStatus: (s) => statuses.push(s),
     publishStream: (sid) => streamPushes.push(sid),
+    onSignalFrame: (f) => signalFrames.push(f),
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
     isOnline: () => onlineRef.value,
@@ -72,7 +76,18 @@ function makeHarness(overrides: HarnessOptions): Harness {
     heartbeatTimeoutMs: 40_000,
   })
 
-  return { engine, db, http, ws, clock, statuses, streamPushes, seamCalls, onlineRef }
+  return {
+    engine,
+    db,
+    http,
+    ws,
+    clock,
+    statuses,
+    streamPushes,
+    seamCalls,
+    signalFrames,
+    onlineRef,
+  }
 }
 
 async function boot(h: Harness): Promise<void> {
@@ -585,5 +600,86 @@ describe('backfill', () => {
     const result = await h.engine.backfill('s1')
     expect(result.events).toBe(0)
     expect(result.has_more).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ENG-126 signal frames — routed OUT of the event-sync path.
+// ---------------------------------------------------------------------------
+
+describe('signal frames route to onSignalFrame, never the event path (ENG-126)', () => {
+  it('routes read_state / prefs / presence / typing to onSignalFrame', async () => {
+    const server = new FakeSyncServer()
+    server.addStream({ stream_id: 's1' })
+    await server.seed('s1', 3)
+    const h = makeHarness({ server })
+    await boot(h)
+
+    const seamBefore = h.seamCalls.length
+    const cursorBefore = (await h.db.getCursor('s1'))?.last_contiguous_seq
+
+    h.ws.last().emit({ t: 'read_state', stream_id: 's1', last_read_seq: 2 })
+    h.ws.last().emit({ t: 'prefs', stream_id: 's1', level: 'mute' })
+    h.ws.last().emit({ t: 'presence', user_id: 'u1', status: 'online' })
+    h.ws.last().emit({ t: 'typing', stream_id: 's1', user_id: 'u1' })
+    await flush()
+
+    // All four landed on the signal sink…
+    expect(h.signalFrames.map((f) => f.t)).toEqual(['read_state', 'prefs', 'presence', 'typing'])
+    // …and NONE touched the event path: no seam call, no cursor advance.
+    expect(h.seamCalls.length).toBe(seamBefore)
+    expect((await h.db.getCursor('s1'))?.last_contiguous_seq).toBe(cursorBefore)
+  })
+
+  it('tolerates a malformed signal frame (still routed; D9 shape-validate is core-side)', async () => {
+    const server = new FakeSyncServer()
+    server.addStream({ stream_id: 's1' })
+    await server.seed('s1', 1)
+    const h = makeHarness({ server })
+    await boot(h)
+
+    // A `typing` frame missing `user_id` is still routed (the core ignores it); the
+    // engine itself never inspects the payload, so nothing throws / no cursor moves.
+    expect(() =>
+      h.ws.last().emit({ t: 'typing', stream_id: 's1' } as unknown as WsFrame),
+    ).not.toThrow()
+    await flush()
+    expect(h.signalFrames.some((f) => f.t === 'typing')).toBe(true)
+    expect(h.seamCalls.every((c) => c.streamId === 's1')).toBe(true)
+  })
+
+  it('resets the watchdog on a signal frame (any inbound frame proves liveness)', async () => {
+    const server = new FakeSyncServer()
+    server.addStream({ stream_id: 's1' })
+    await server.seed('s1', 1)
+    const h = makeHarness({ server })
+    await boot(h)
+
+    // Advance almost to the watchdog window, then a signal frame arrives.
+    h.clock.advance(39_000)
+    h.ws.last().emit({ t: 'presence', user_id: 'u1', status: 'online' })
+    // Advance the remainder — the watchdog was reset, so the socket is NOT torn down.
+    h.clock.advance(39_000)
+    expect(h.engine.status().state).toBe('live')
+  })
+})
+
+describe('SyncEngine.sendTyping is gated to live (ENG-126)', () => {
+  it('sends a typing frame only when live; drops otherwise', async () => {
+    const server = new FakeSyncServer()
+    server.addStream({ stream_id: 's1' })
+    await server.seed('s1', 1)
+    const h = makeHarness({ server })
+
+    // Before the socket opens the engine is connecting, not live → dropped.
+    h.engine.start()
+    h.engine.sendTyping('s1')
+    expect(h.ws.last().sent.filter((f) => f.t === 'typing')).toHaveLength(0)
+
+    // Once live, the frame is sent verbatim.
+    h.ws.last().open()
+    await until(() => h.engine.status().state === 'live')
+    h.engine.sendTyping('s1')
+    expect(h.ws.last().sent).toContainEqual({ t: 'typing', stream_id: 's1' })
   })
 })

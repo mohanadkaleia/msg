@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { computeAllBadges, computeStreamBadge } from '../../../src/worker/badges'
 import { MemoryDb, openDb } from '../../../src/worker/db'
 import { applyEventsToProjection } from '../../../src/worker/projection'
+import { ReadStateManager } from '../../../src/worker/readstate'
 import type { MsgDb } from '../../../src/worker/types'
 
-import { fakeIdbOptions } from './helpers'
+import { FakeHttpClient, FakeSyncServer, fakeIdbOptions } from './helpers'
 import { messageCreatedEvent } from './projfixtures'
 
 async function seedStream(
@@ -100,6 +101,52 @@ describe.each([
     const byId = Object.fromEntries(badges.map((b) => [b.stream_id, b]))
     expect(byId.s1).toEqual({ stream_id: 's1', unread: 3, mention: true })
     expect(byId.s2).toEqual({ stream_id: 's2', unread: 0, mention: false })
+    await db.close()
+  })
+
+  it('unread + mention clear after a read-state mark, and a {kind:stream} push fires', async () => {
+    const db = await make()
+    await seedStream(db, 's1', 5, 0)
+    await applyEventsToProjection(db, 's1', [
+      messageCreatedEvent({ streamId: 's1', seq: 5, messageId: 'm_5', mentions: ['u_me'] }),
+    ])
+    expect(await computeStreamBadge(db, 's1', 'u_me')).toEqual({
+      stream_id: 's1',
+      unread: 5,
+      mention: true,
+    })
+
+    const pushes: string[] = []
+    const mgr = new ReadStateManager({
+      db,
+      http: new FakeHttpClient(new FakeSyncServer()),
+      publishStream: (s) => pushes.push(s),
+    })
+    await mgr.mark('s1', 5)
+
+    // The badge now reads clear off the updated read_state…
+    expect(await computeStreamBadge(db, 's1', 'u_me')).toEqual({
+      stream_id: 's1',
+      unread: 0,
+      mention: false,
+    })
+    // …and the sidebar was told to re-derive it.
+    expect(pushes).toContain('s1')
+    await db.close()
+  })
+
+  it('unread clears after an inbound read-state echo (another device marked it read)', async () => {
+    const db = await make()
+    await seedStream(db, 's1', 8, 0)
+    const pushes: string[] = []
+    const mgr = new ReadStateManager({
+      db,
+      http: new FakeHttpClient(new FakeSyncServer()),
+      publishStream: (s) => pushes.push(s),
+    })
+    await mgr.applyEcho({ stream_id: 's1', last_read_seq: 8 })
+    expect((await computeStreamBadge(db, 's1', 'u_me')).unread).toBe(0)
+    expect(pushes).toContain('s1')
     await db.close()
   })
 })

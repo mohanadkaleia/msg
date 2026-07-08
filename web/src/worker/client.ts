@@ -21,14 +21,22 @@ import {
   type MsgDb,
   type MutateParams,
   type MutateResult,
+  type PrefLevel,
+  type PrefsListResult,
+  type PrefsRow,
+  type PresencePush,
   type PushPayload,
   type QueryParams,
   type QueryResult,
+  type ReadStateRow,
+  type SearchParams,
+  type SearchResult,
   type SetupCredentials,
   type SyncStatus,
   type Topic,
   type ToWorker,
   type Transport,
+  type TypingPush,
   type Unsubscribe,
   type UploadAck,
   type UploadProgress,
@@ -151,6 +159,49 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
         caller.subscribe({ kind: 'upload', upload_id: uploadId }, (payload) => {
           cb(payload as UploadProgress)
         }),
+    },
+    // Search (ENG-126): the ONE read routed over HTTP (server FTS), not the local
+    // projection. The token stays worker-side; the tab passes only filters + cursor.
+    search: (params: SearchParams) =>
+      caller.request({ method: 'search', params }) as Promise<SearchResult>,
+    // Read-state (ENG-126): `mark` clears the unread/mention badge (optimistic +
+    // monotonic worker-side; the `{kind:'stream'}` push re-derives the badge).
+    readState: {
+      mark: (streamId: string, seq: number) =>
+        caller.request({
+          method: 'readState.mark',
+          params: { stream_id: streamId, last_read_seq: seq },
+        }) as Promise<ReadStateRow>,
+    },
+    // Notification prefs (ENG-126): synced-KV get/set (LWW); changes fan `{kind:'prefs'}`.
+    prefs: {
+      get: () => caller.request({ method: 'prefs.get', params: {} }) as Promise<PrefsListResult>,
+      set: (streamId: string, level: PrefLevel) =>
+        caller.request({
+          method: 'prefs.set',
+          params: { stream_id: streamId, level },
+        }) as Promise<PrefsRow>,
+    },
+    // Presence (ENG-126): ephemeral, memory-only, workspace-wide. Subscribe seeds
+    // from the current in-memory snapshot on its first push (no HTTP seed).
+    presence: {
+      subscribe: (cb: (payload: PresencePush) => void): Unsubscribe =>
+        caller.subscribe({ kind: 'presence' }, (payload) => {
+          cb(payload as PresencePush)
+        }),
+    },
+    // Typing (ENG-126): ephemeral, per-stream. `send` emits a throttled outbound
+    // signal (dropped when offline); `subscribe` receives the auto-expiring set.
+    typing: {
+      subscribe: (streamId: string, cb: (payload: TypingPush) => void): Unsubscribe =>
+        caller.subscribe({ kind: 'typing', stream_id: streamId }, (payload) => {
+          cb(payload as TypingPush)
+        }),
+      send: (streamId: string) =>
+        caller.request({
+          method: 'typing.send',
+          params: { stream_id: streamId },
+        }) as Promise<{ ok: true }>,
     },
     dispose: () => {
       caller.dispose()

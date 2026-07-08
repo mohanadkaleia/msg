@@ -6,15 +6,29 @@
 import type { WireEvent } from './types'
 
 /**
- * A parsed inbound text frame. `event`/`ping`/`pong` are the M1 surface; every
- * other `t` (M3 read_state/presence/typing, or unknown) is tolerated + ignored
- * by the engine (D9). The catch-all keeps the type open without `any`.
+ * A parsed inbound text frame. `event`/`ping`/`pong` are the M1 surface; the four
+ * ENG-126 signal frames (`read_state`/`prefs`/`presence`/`typing`) are routed OUT
+ * of the event-sync path to `SyncEngine.onSignalFrame` (they never enter the
+ * cursor / invariant machinery). The `{t:string}` catch-all keeps the type open
+ * without `any` so any OTHER / future / malformed `t` is still tolerated +
+ * ignored by the engine (D9). Field shapes here are the WIRE shapes; the core
+ * shape-validates each arm defensively before acting on it.
  */
 export type WsFrame =
-  { t: 'event'; event: WireEvent } | { t: 'ping' } | { t: 'pong' } | { t: string }
+  | { t: 'event'; event: WireEvent }
+  | { t: 'ping' }
+  | { t: 'pong' }
+  | { t: 'read_state'; stream_id: string; last_read_seq: number }
+  | { t: 'prefs'; stream_id: string; level: string }
+  | { t: 'presence'; user_id: string; status: string }
+  | { t: 'typing'; stream_id: string; user_id: string }
+  | { t: string }
 
-/** Client→server control frames — the only M1 client-send surface. */
-export type WsClientFrame = { t: 'ping' } | { t: 'pong' }
+/**
+ * Client→server control frames — the M1 `ping`/`pong` plus the ENG-126 outbound
+ * `typing` signal (`SyncEngine.sendTyping`, sent only while `live`).
+ */
+export type WsClientFrame = { t: 'ping' } | { t: 'pong' } | { t: 'typing'; stream_id: string }
 
 /**
  * The transport contract `SyncEngine` drives. Callbacks are registered once,

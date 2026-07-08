@@ -36,7 +36,13 @@ import {
   type SyncStreamMeta,
   type WireEvent,
 } from './types'
-import { deriveWsUrl, WS_CLOSE_CLIENT_GOING_AWAY, type WsConnection, type WsFactory } from './ws'
+import {
+  deriveWsUrl,
+  WS_CLOSE_CLIENT_GOING_AWAY,
+  type WsConnection,
+  type WsFactory,
+  type WsFrame,
+} from './ws'
 
 /** Max page size — the server clamps to 500 (§4.3); ask for the biggest legal page. */
 export const PULL_LIMIT = 500
@@ -66,6 +72,13 @@ export interface SyncEngineDeps {
   emitStatus: (status: SyncStatus) => void
   /** Async "events changed for stream X" signal — WorkerCore fans `{kind:'stream'}`. */
   publishStream: (streamId: string) => void
+  /**
+   * ENG-126 signal-frame sink. Inbound `read_state`/`prefs`/`presence`/`typing`
+   * frames are routed here INSTEAD of the event-sync path (no cursor, no
+   * invariant-5/6, no `applyForward`). Optional so ENG-79 tests run without it;
+   * WorkerCore injects a router that shape-validates each arm (D9).
+   */
+  onSignalFrame?: (frame: WsFrame) => void
   /** Injectable clock (tests advance backoff / watchdog / retry timers). */
   setTimeout?: (cb: () => void, ms: number) => TimerId
   clearTimeout?: (handle: TimerId) => void
@@ -125,6 +138,7 @@ export class SyncEngine {
   private readonly applyToProjection: ApplyEventsToProjection
   private readonly emitStatus: (status: SyncStatus) => void
   private readonly publishStream: (streamId: string) => void
+  private readonly onSignalFrame: ((frame: WsFrame) => void) | undefined
   private readonly setTimer: (cb: () => void, ms: number) => TimerId
   private readonly clearTimer: (handle: TimerId) => void
   private readonly isOnlineFn: () => boolean
@@ -139,6 +153,7 @@ export class SyncEngine {
     this.applyToProjection = deps.applyToProjection ?? noopApplyToProjection
     this.emitStatus = deps.emitStatus
     this.publishStream = deps.publishStream
+    this.onSignalFrame = deps.onSignalFrame
     this.setTimer =
       deps.setTimeout ?? ((cb, ms) => globalThis.setTimeout(cb, ms) as unknown as TimerId)
     this.clearTimer =
@@ -268,24 +283,51 @@ export class SyncEngine {
     this.handleDegraded('connection closed')
   }
 
-  private onFrame(frame: { t: string; event?: WireEvent }): void {
+  private onFrame(frame: WsFrame): void {
     // ANY inbound frame proves the socket is alive — reset the watchdog first.
     this.resetWatchdog()
-    if (frame.t === 'ping') {
-      this.ws?.send({ t: 'pong' })
-      return
+    switch (frame.t) {
+      case 'ping':
+        this.ws?.send({ t: 'pong' })
+        return
+      case 'pong':
+        return
+      case 'event':
+        // While still `syncing` the cursor does not yet reflect reality; ignore
+        // live frames and let bootstrap + the next gap-check reconcile (risk 3).
+        if (this.state !== 'live') return
+        if ('event' in frame && frame.event) {
+          const event = frame.event
+          void this.onEventFrame(event).catch((err: unknown) => {
+            console.warn('[sync] event frame handling failed', errText(err))
+          })
+        }
+        return
+      case 'read_state':
+      case 'prefs':
+      case 'presence':
+      case 'typing':
+        // ENG-126: signal frames NEVER touch the event-sync path (no cursor
+        // advance, no invariant-5/6, no projection call). Hand off to the
+        // injected router, which shape-validates each arm + ignores malformed (D9).
+        this.onSignalFrame?.(frame)
+        return
+      default:
+        // Every other / reserved / unknown frame is ignored (D9 tolerance).
+        return
     }
-    if (frame.t === 'pong') return
-    if (frame.t === 'event' && frame.event) {
-      // While still `syncing` the cursor does not yet reflect reality; ignore
-      // live frames and let bootstrap + the next gap-check reconcile (risk 3).
-      if (this.state !== 'live') return
-      const event = frame.event
-      void this.onEventFrame(event).catch((err: unknown) => {
-        console.warn('[sync] event frame handling failed', errText(err))
-      })
-    }
-    // Every other / reserved (M3) / unknown frame is ignored (D9 tolerance).
+  }
+
+  /**
+   * ENG-126 outbound typing signal. Sends `{t:'typing',stream_id}` ONLY while
+   * `live` (a socket exists + is open); otherwise SILENTLY dropped — typing is
+   * ephemeral, so a signal that cannot be delivered is simply lost (never queued).
+   * The per-stream leading-edge throttle lives in `EphemeralState` (matching the
+   * server's 1/3 s window); this method is the pure transport gate.
+   */
+  sendTyping(streamId: string): void {
+    if (this.state !== 'live') return
+    this.ws?.send({ t: 'typing', stream_id: streamId })
   }
 
   private handleDegraded(reason: string): void {

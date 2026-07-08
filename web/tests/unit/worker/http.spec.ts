@@ -208,6 +208,44 @@ describe('createHttpClient', () => {
     expect(calls[0]?.init?.method).toBe('DELETE')
   })
 
+  it('put sends a JSON body with the bearer + Content-Type, parses the 200 (ENG-126)', async () => {
+    const { fetchImpl, calls } = fakeFetch(
+      () =>
+        new Response(JSON.stringify({ stream_id: 's1', last_read_seq: 9 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    )
+    const http = createHttpClient(deps({ fetchImpl }))
+
+    const res = await http.put<{ stream_id: string; last_read_seq: number }>('/v1/read-state', {
+      stream_id: 's1',
+      last_read_seq: 9,
+    })
+
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.value).toEqual({ stream_id: 's1', last_read_seq: 9 })
+    expect(calls[0]?.init?.method).toBe('PUT')
+    expect(headerOf(calls[0]?.init, 'Authorization')).toBe('Bearer tok-123')
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBe('application/json')
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ stream_id: 's1', last_read_seq: 9 }))
+  })
+
+  it('put fires onUnauthorized on a 401 (expired/revoked session)', async () => {
+    const onUnauthorized = vi.fn()
+    const { fetchImpl } = fakeFetch(
+      () =>
+        new Response(JSON.stringify({ type: '/problems/unauthenticated', status: 401 }), {
+          status: 401,
+        }),
+    )
+    const http = createHttpClient(deps({ fetchImpl, onUnauthorized }))
+
+    await http.put('/v1/prefs', { stream_id: 's1', level: 'mute' })
+
+    expect(onUnauthorized).toHaveBeenCalledOnce()
+  })
+
   it('prefixes a non-empty baseUrl', async () => {
     const { fetchImpl, calls } = fakeFetch(() => new Response('{}', { status: 200 }))
     const http = createHttpClient(deps({ fetchImpl, baseUrl: 'https://api.example.com' }))

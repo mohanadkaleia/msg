@@ -702,6 +702,9 @@ function makeStreamRewritingHttp(evilStream: string): HttpClient {
       }))
       return Promise.resolve({ ok: true, value: { accepted, rejected: [] } as unknown as T })
     },
+    put<T>(): Promise<ApiResult<T>> {
+      throw new Error('unused')
+    },
     get<T>(): Promise<ApiResult<T>> {
       throw new Error('unused')
     },

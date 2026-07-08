@@ -21,6 +21,7 @@ import {
   type MetaRow,
   type MsgDb,
   type OutboxRow,
+  type PrefsRow,
   type ReactionRow,
   type ReadStateRow,
   type StreamRow,
@@ -46,6 +47,7 @@ export class MsgDB extends Dexie {
   cursors!: Table<CursorRow, string>
   outbox!: Table<OutboxRow, string>
   read_state!: Table<ReadStateRow, string>
+  prefs!: Table<PrefsRow, string>
   meta!: Table<MetaRow, string>
 
   constructor(options?: DexieOptions) {
@@ -77,6 +79,16 @@ export class MsgDB extends Dexie {
     // which populates `files` from the cached `file.uploaded` events on boot.
     this.version(3).stores({
       files: 'file_id, stream_id',
+    })
+    // ENG-126: the `prefs` synced-KV table — one row per `stream_id` (the LWW
+    // notification level pulled from `/v1/prefs`). Additive table only; the
+    // existing indexes are unchanged (Dexie carries them forward), so NO
+    // `.upgrade()` data migration is needed. Critically this is a Dexie
+    // INDEX-LAYOUT bump ONLY — it does NOT (and must not) bump PROJECTION_VERSION:
+    // `prefs` is server-authoritative synced state, not a derived table, so it is
+    // NOT dropped/rebuilt on a projection-version change (see types.ts D3).
+    this.version(4).stores({
+      prefs: 'stream_id',
     })
   }
 }
@@ -250,7 +262,34 @@ export class DexieDb implements MsgDb {
     await this.db.read_state.bulkPut([...rows])
   }
 
+  async upsertReadStateMonotonic(streamId: string, seq: number): Promise<boolean> {
+    // Read-modify-write inside ONE rw transaction so the GREATEST check and the
+    // write are atomic — no interleave can let a lower seq clobber a higher one.
+    return this.db.transaction('rw', this.db.read_state, async () => {
+      const existing = await this.db.read_state.get(streamId)
+      const stored = existing?.last_read_seq ?? -1
+      if (seq <= stored) return false
+      await this.db.read_state.put({ stream_id: streamId, last_read_seq: seq })
+      return true
+    })
+  }
+
+  async putPrefs(rows: readonly PrefsRow[]): Promise<void> {
+    await this.db.prefs.bulkPut([...rows])
+  }
+
+  async listPrefs(): Promise<PrefsRow[]> {
+    return this.db.prefs.toArray()
+  }
+
+  async getPrefs(streamId: string): Promise<PrefsRow | undefined> {
+    return this.db.prefs.get(streamId)
+  }
+
   async clearDerivedTables(): Promise<void> {
+    // ENG-126: `read_state` (and `prefs`) are NOT cleared here — they are
+    // synced-KV, not derived from `events`, so a projection rebuild must PRESERVE
+    // them (they are refilled from `/v1/read-state` + `/v1/prefs`, not replay).
     await this.db.transaction(
       'rw',
       [
@@ -260,7 +299,6 @@ export class DexieDb implements MsgDb {
         this.db.files,
         this.db.streams,
         this.db.cursors,
-        this.db.read_state,
       ],
       async () => {
         await Promise.all([
@@ -270,10 +308,18 @@ export class DexieDb implements MsgDb {
           this.db.files.clear(),
           this.db.streams.clear(),
           this.db.cursors.clear(),
-          this.db.read_state.clear(),
         ])
       },
     )
+  }
+
+  async clearSyncedKv(): Promise<void> {
+    // Logout hygiene (ENG-126): a shared machine must not leak the previous user's
+    // read positions / notification levels. Distinct from clearDerivedTables — a
+    // projection rebuild keeps these; a logout wipes them.
+    await this.db.transaction('rw', [this.db.read_state, this.db.prefs], async () => {
+      await Promise.all([this.db.read_state.clear(), this.db.prefs.clear()])
+    })
   }
 
   // -- ENG-80 projection reads (fluent Dexie, index-bounded) ---------------
@@ -352,6 +398,8 @@ export class DexieDb implements MsgDb {
         return this.db.outbox.count()
       case 'read_state':
         return this.db.read_state.count()
+      case 'prefs':
+        return this.db.prefs.count()
       case 'meta':
         return this.db.meta.count()
       default:
@@ -383,6 +431,7 @@ export class MemoryDb implements MsgDb {
   private readonly streamsMap = new Map<string, StreamRow>()
   private readonly cursorsMap = new Map<string, CursorRow>()
   private readonly readStateMap = new Map<string, ReadStateRow>()
+  private readonly prefsMap = new Map<string, PrefsRow>()
 
   private static eventKey(streamId: string, seq: number): string {
     return `${streamId}::${seq}`
@@ -596,14 +645,44 @@ export class MemoryDb implements MsgDb {
     return Promise.resolve()
   }
 
+  upsertReadStateMonotonic(streamId: string, seq: number): Promise<boolean> {
+    // Synchronous Map access is naturally atomic — no await between read + write,
+    // so the GREATEST compare-and-set cannot interleave (mirrors the Dexie txn).
+    const stored = this.readStateMap.get(streamId)?.last_read_seq ?? -1
+    if (seq <= stored) return Promise.resolve(false)
+    this.readStateMap.set(streamId, { stream_id: streamId, last_read_seq: seq })
+    return Promise.resolve(true)
+  }
+
+  putPrefs(rows: readonly PrefsRow[]): Promise<void> {
+    for (const row of rows) this.prefsMap.set(row.stream_id, row)
+    return Promise.resolve()
+  }
+
+  listPrefs(): Promise<PrefsRow[]> {
+    return Promise.resolve([...this.prefsMap.values()])
+  }
+
+  getPrefs(streamId: string): Promise<PrefsRow | undefined> {
+    return Promise.resolve(this.prefsMap.get(streamId))
+  }
+
   clearDerivedTables(): Promise<void> {
+    // ENG-126: `read_state` + `prefs` are synced-KV (NOT derived) — preserved
+    // across a rebuild, mirroring DexieDb.clearDerivedTables.
     this.messagesMap.clear()
     this.reactionsMap.clear()
     this.participantsMap.clear()
     this.filesMap.clear()
     this.streamsMap.clear()
     this.cursorsMap.clear()
+    return Promise.resolve()
+  }
+
+  clearSyncedKv(): Promise<void> {
+    // Logout hygiene (ENG-126) — wipe synced-KV; SEPARATE from clearDerivedTables.
     this.readStateMap.clear()
+    this.prefsMap.clear()
     return Promise.resolve()
   }
 
@@ -680,6 +759,8 @@ export class MemoryDb implements MsgDb {
         return Promise.resolve(this.outboxMap.size)
       case 'read_state':
         return Promise.resolve(this.readStateMap.size)
+      case 'prefs':
+        return Promise.resolve(this.prefsMap.size)
       case 'meta':
         return Promise.resolve(this.metaMap.size)
       default:
@@ -743,11 +824,14 @@ export async function openDb(options?: DexieOptions): Promise<MsgDb> {
  * `events → messages` via the SAME `applyEventsToProjection` the incremental
  * path uses — which is what makes rebuild ≡ incremental true by construction.
  *
- * ONLY `messages` is rebuilt locally: `streams`/`cursors`/`read_state` are
- * echoes of server-authoritative state, refilled by ENG-79's resumed pulls
- * (§5.2 "then resume pulls"), not derivable from the message `events` alone.
- * Replay logic lives in `projection.ts` (db.ts imports the one function) so
- * there is no db.ts↔projection.ts cycle.
+ * ONLY `messages` is rebuilt locally: `streams`/`cursors` are echoes of
+ * server-authoritative state, refilled by ENG-79's resumed pulls (§5.2 "then
+ * resume pulls"), not derivable from the message `events` alone. The synced-KV
+ * `read_state` + `prefs` tables (ENG-126) are NEITHER cleared NOR rebuilt here —
+ * they SURVIVE the rebuild untouched and are reconciled from `/v1/read-state` +
+ * `/v1/prefs` on the next rising-edge-into-`live` (see types.ts D3). Replay logic
+ * lives in `projection.ts` (db.ts imports the one function) so there is no
+ * db.ts↔projection.ts cycle.
  */
 export async function rebuildProjections(db: MsgDb): Promise<void> {
   const remaining = await db.count('messages')

@@ -37,6 +37,27 @@ describe('parseFrame (BrowserWsConnection text-frame parsing)', () => {
     })
   })
 
+  it('parses the ENG-126 signal frames (read_state / prefs / presence / typing)', () => {
+    expect(
+      parseFrame(JSON.stringify({ t: 'read_state', stream_id: 's1', last_read_seq: 7 })),
+    ).toEqual({ t: 'read_state', stream_id: 's1', last_read_seq: 7 })
+    expect(parseFrame(JSON.stringify({ t: 'prefs', stream_id: 's1', level: 'mute' }))).toEqual({
+      t: 'prefs',
+      stream_id: 's1',
+      level: 'mute',
+    })
+    expect(parseFrame(JSON.stringify({ t: 'presence', user_id: 'u1', status: 'online' }))).toEqual({
+      t: 'presence',
+      user_id: 'u1',
+      status: 'online',
+    })
+    expect(parseFrame(JSON.stringify({ t: 'typing', stream_id: 's1', user_id: 'u1' }))).toEqual({
+      t: 'typing',
+      stream_id: 's1',
+      user_id: 'u1',
+    })
+  })
+
   it('drops a non-JSON text payload without throwing', () => {
     expect(parseFrame('not json {')).toBeNull()
   })
