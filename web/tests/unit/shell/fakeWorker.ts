@@ -12,6 +12,7 @@ import type {
   DirectoryChannel,
   DirectoryUser,
   FileRow,
+  FileUploadParams,
   MessageRow,
   MutateParams,
   MutateResult,
@@ -25,6 +26,7 @@ import type {
   ThreadParticipant,
   Topic,
   Unsubscribe,
+  UploadProgress,
   WorkerClient,
 } from '../../../src/worker'
 
@@ -46,6 +48,11 @@ export class FakeWorker {
   readonly reactSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.react' }>) => void>()
   readonly editSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.edit' }>) => void>()
   readonly removeSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.remove' }>) => void>()
+  /** ENG-121 attachment-upload spies + progress plumbing. */
+  readonly uploadSpy = vi.fn<(params: FileUploadParams) => void>()
+  readonly cancelSpy = vi.fn<(uploadId: string) => void>()
+  /** Registered per-upload progress callbacks (keyed by the tab-minted upload_id). */
+  private readonly uploadCbs = new Map<string, (p: UploadProgress) => void>()
 
   private streams = new Map<string, SidebarStream>()
   /** The @mention / #channel autocomplete source a `directory.list` returns. */
@@ -172,6 +179,22 @@ export class FakeWorker {
       ...file,
     })
     return this
+  }
+
+  /**
+   * Drive a pending upload to `done` with a resolved `file_id` (ENG-121). The upload
+   * stub emits `queued`→`uploading` on `upload()` (in-flight, Send disabled); a test
+   * calls this to flip the chip to `done` (Send enabled) and, on Send, seeds the file
+   * so `attachments.forMessage` resolves it.
+   */
+  completeUpload(uploadId: string, fileId: string, file: Partial<FileRow> = {}): void {
+    this.addFile({ file_id: fileId, ...file })
+    this.uploadCbs.get(uploadId)?.({ upload_id: uploadId, phase: 'done', file_id: fileId })
+  }
+
+  /** Drive a pending upload to `failed{code}` (ENG-121). */
+  failUpload(uploadId: string, code = 'file-too-large'): void {
+    this.uploadCbs.get(uploadId)?.({ upload_id: uploadId, phase: 'failed', code })
   }
 
   /** Seed a present reaction membership (message_id, reactor, emoji). */
@@ -513,15 +536,38 @@ export class FakeWorker {
           })
         },
       },
-      // ENG-119: the shell tests don't drive file uploads yet (ENG-121); a minimal
-      // token-free stub keeps the WorkerClient surface satisfied.
+      // ENG-121: a controllable upload stub. `onProgress` registers the tab's callback
+      // (subscribed BEFORE `upload`, per useFileUpload); `upload` drives the chip to an
+      // in-flight phase (Send disabled) and the test drives the terminal via
+      // completeUpload/failUpload. `retry` re-emits `done`; `cancel` records + clears.
       files: {
-        upload: (params) => Promise.resolve({ upload_id: params.upload_id }),
-        retry: (uploadId: string) => Promise.resolve({ upload_id: uploadId }),
-        cancel: (uploadId: string) => Promise.resolve({ upload_id: uploadId }),
+        upload: (params) => {
+          this.uploadSpy(params)
+          const cb = this.uploadCbs.get(params.upload_id)
+          cb?.({ upload_id: params.upload_id, phase: 'queued' })
+          cb?.({ upload_id: params.upload_id, phase: 'uploading' })
+          return Promise.resolve({ upload_id: params.upload_id })
+        },
+        retry: (uploadId: string) => {
+          this.addFile({ file_id: `f_retry_${uploadId}` })
+          this.uploadCbs.get(uploadId)?.({
+            upload_id: uploadId,
+            phase: 'done',
+            file_id: `f_retry_${uploadId}`,
+          })
+          return Promise.resolve({ upload_id: uploadId })
+        },
+        cancel: (uploadId: string) => {
+          this.cancelSpy(uploadId)
+          this.uploadCbs.delete(uploadId)
+          return Promise.resolve({ upload_id: uploadId })
+        },
         download: () => Promise.resolve({ blob: null }),
         thumbnail: () => Promise.resolve({ blob: null }),
-        onProgress: () => () => {},
+        onProgress: (uploadId: string, cb: (p: UploadProgress) => void): Unsubscribe => {
+          this.uploadCbs.set(uploadId, cb)
+          return () => this.uploadCbs.delete(uploadId)
+        },
       },
       dispose: () => {},
     }

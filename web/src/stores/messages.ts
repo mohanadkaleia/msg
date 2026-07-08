@@ -226,16 +226,23 @@ export const useMessagesStore = defineStore('messages', () => {
    * `mention_user_ids`. The wire/format contract is otherwise unchanged — text is
    * still markdown source, `format` still defaults markdown worker-side.
    */
-  async function send(text: string, mentions: string[] = []): Promise<void> {
+  async function send(
+    text: string,
+    mentions: string[] = [],
+    fileIds: string[] = [],
+  ): Promise<void> {
     const streamId = currentStreamId.value
     const body = text.trim()
-    if (streamId === null || body.length === 0) return
+    // A FILE-ONLY message (ENG-121) is allowed: empty body is fine when there are
+    // attachments — only a truly empty send (no text AND no files) is a no-op.
+    if (streamId === null || (body.length === 0 && fileIds.length === 0)) return
     const client = await resolveWorkerClient()
     const res = await client.mutate({
       m: 'outbox.send',
       stream_id: streamId,
       text: body,
       ...(mentions.length > 0 ? { mentions } : {}),
+      ...(fileIds.length > 0 ? { file_ids: fileIds } : {}),
     })
     sendEventIds.set(res.message_id, res.event_id)
   }

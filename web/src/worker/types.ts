@@ -797,18 +797,18 @@ export type UploadPhase =
 
 /**
  * One upload-progress frame (ENG-119) — PHASE-level, not byte-level. The composer
- * shows the phase while the blob uploads; the optimistic message row only appears
- * at `emitting` (a `message.created.file_ids` referencing a not-yet-present file is
- * server-rejected `unknown_file`, so the row must wait for the blob). Ids fill in as
- * they become known: `file_id` after `initiating`, `message_id`/`event_id` after
- * `emitting`; `code` is set only on `failed`.
+ * (ENG-121) renders a pending chip and shows the phase while the blob uploads. An
+ * upload is DECOUPLED from message-send (ENG-121, Option A): it emits ONLY the
+ * durable `file.uploaded` log record and drives the chip to `done`; the referencing
+ * `message.created` is authored later, once, by `outbox.send` on Send. So the frame
+ * carries the resolved `file_id` (known after `initiating`) — the composer collects
+ * these to pass as `file_ids` on Send — and NO message_id/event_id (there is no
+ * companion message at this layer). `code` is set only on `failed`.
  */
 export interface UploadProgress {
   upload_id: string
   phase: UploadPhase
   file_id?: string
-  message_id?: string
-  event_id?: string
   code?: string
 }
 
@@ -817,17 +817,15 @@ export interface UploadProgress {
  * so it can subscribe to the `{kind:'upload'}` push BEFORE issuing the request (no
  * lost-first-frame race). The `file` is a STRUCTURED CLONE of the `File` handle —
  * cloneable (not transferable); the clone shares the blob handle, not the bytes, so
- * it is cheap. The worker (never the tab) calls `file.arrayBuffer()`/hashes it. The
- * message fields mirror `outbox.send` — the companion `message.created` carries them.
+ * it is cheap. The worker (never the tab) calls `file.arrayBuffer()`/hashes it. No
+ * message fields ride here: the upload is DECOUPLED from message-send (ENG-121) —
+ * it homes+PUTs the blob and enqueues `file.uploaded`; the composer references the
+ * resolved `file_id` from `outbox.send` on Send.
  */
 export interface FileUploadParams {
   upload_id: string
   stream_id: string
   file: File
-  text?: string
-  format?: 'markdown' | 'plain'
-  thread_root_id?: string
-  mentions?: string[]
 }
 
 /** `file.upload`/`file.retry`/`file.cancel` result — echoes the tab-minted id. */

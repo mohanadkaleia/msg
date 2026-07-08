@@ -202,11 +202,16 @@ export const useThreadStore = defineStore('thread', () => {
    * reply arrives via the stream push (→ `refresh`), renders greyed, and settles
    * on ack. `mentions` ride the existing optional field (the composer resolves them).
    */
-  async function sendReply(text: string, mentions: string[] = []): Promise<void> {
+  async function sendReply(
+    text: string,
+    mentions: string[] = [],
+    fileIds: string[] = [],
+  ): Promise<void> {
     const id = rootId.value
     const stream = streamId.value
     const body = text.trim()
-    if (id === null || stream === null || body.length === 0) return
+    // A FILE-ONLY reply (ENG-121) is allowed: empty body with attachments still sends.
+    if (id === null || stream === null || (body.length === 0 && fileIds.length === 0)) return
     const client = await resolveWorkerClient()
     const res = await client.mutate({
       m: 'outbox.send',
@@ -214,6 +219,7 @@ export const useThreadStore = defineStore('thread', () => {
       text: body,
       thread_root_id: id,
       ...(mentions.length > 0 ? { mentions } : {}),
+      ...(fileIds.length > 0 ? { file_ids: fileIds } : {}),
     })
     sendEventIds.set(res.message_id, res.event_id)
   }

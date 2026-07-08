@@ -8,17 +8,27 @@
 //
 // Internals are TipTap (StarterKit + two Mention instances) instead of a
 // `<textarea>`, but the behavior contract is preserved: Enter sends, Shift-Enter
-// inserts a newline, whitespace-only is blocked. New for M3: markdown input
-// shortcuts render rich and serialize back to source (composer/serialize.ts),
-// `@`/`#` autocomplete from the projection, and two clearly-marked SEAMS —
-// ArrowUp-on-empty emits `edit-last` (ENG-102 wires the edit round-trip) and
-// dropped/pasted files emit `files` (M3.5 wires uploads). XSS: pasted HTML is
-// stripped to inert text (composer/sanitize.ts); nothing here uses v-html.
+// inserts a newline. New for M3: markdown input shortcuts render rich and serialize
+// back to source (composer/serialize.ts), `@`/`#` autocomplete from the projection,
+// and ArrowUp-on-empty emits `edit-last` (ENG-102 wires the edit round-trip).
+//
+// ATTACHMENTS (ENG-121, Option A — upload DECOUPLED from message-send): dropped/
+// pasted files and the paperclip file-picker add PENDING chips to a strip above the
+// editor (`useComposerAttachments`, a PER-COMPOSER instance so this composer and the
+// thread-pane composer never share state). Each chip uploads in the worker (emitting
+// ONLY `file.uploaded`); on Send the composer collects the resolved `file_id`s and
+// passes them to the parent, which authors the ONE `message.created` via
+// `outbox.send`. Send is gated CLOSED while any upload is in-flight/failed; a
+// FILE-ONLY message (attachments, empty body) is allowed. XSS: pasted HTML is
+// stripped to inert text (composer/sanitize.ts); attachment names render only via
+// text/`:alt`; nothing here uses v-html.
 import { computed, ref, watch } from 'vue'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Mention from '@tiptap/extension-mention'
 
+import { useComposerAttachments } from '../../composables/useComposerAttachments'
+import { formatBytes } from '../../lib/bytes'
 import { buildSuggestion, type MentionItem } from './composer/mentions'
 import { sanitizePastedHtml } from './composer/sanitize'
 import { serializeDoc } from './composer/serialize'
@@ -31,25 +41,41 @@ const props = withDefaults(
     disabled?: boolean
     /** Autocomplete candidates (users + channels) from the workspace projection. */
     mentionItems?: MentionItem[]
+    /** The stream attachments upload into (the parent knows it). */
+    streamId?: string | undefined
   }>(),
-  { placeholder: 'Write a message…', disabled: false, mentionItems: () => [] },
+  { placeholder: 'Write a message…', disabled: false, mentionItems: () => [], streamId: undefined },
 )
 
 const emit = defineEmits<{
-  /** A composed message: markdown source text + resolved `u_` mention ids. */
-  send: [text: string, mentions: string[]]
+  /**
+   * A composed message: markdown source text, resolved `u_` mention ids, and the
+   * resolved attachment `file_ids` (ENG-121; empty when none). The parent authors
+   * the single `message.created` via `outbox.send`.
+   */
+  send: [text: string, mentions: string[], fileIds: string[]]
   /**
    * SEAM (ENG-102): ArrowUp on an empty composer requests loading the user's last
    * own message for editing. ENG-101 only wires the keybinding; the edit
    * round-trip (`message.edited`) lands in ENG-102 — connect this emit there.
    */
   'edit-last': []
-  /**
-   * SEAM (M3.5): files dropped or pasted into the composer. ENG-101 surfaces them
-   * but wires NO upload — M3.5 connects this to the attachment flow (§6).
-   */
-  files: [files: File[]]
 }>()
+
+// Per-composer attachment strip (ENG-121). `streamId` is read lazily (the selected
+// stream can change under a live composer).
+const {
+  attachments: pendingAttachments,
+  add: addAttachments,
+  remove: removeAttachment,
+  retry: retryAttachment,
+  clear: clearAttachments,
+  allDone: attachmentsAllDone,
+  resolvedFileIds,
+} = useComposerAttachments(() => props.streamId)
+
+/** The hidden native file input the paperclip button proxies to. */
+const fileInput = ref<HTMLInputElement | null>(null)
 
 /** True while a mention popup is open, so Enter/ArrowUp defer to it (not send). */
 const suggestionActive = ref(false)
@@ -93,9 +119,10 @@ const editor = useEditor({
     // XSS boundary: pasted HTML is reduced to inert text before ProseMirror ever
     // parses it (no `<img onerror>` / `<script>` can survive as live markup).
     transformPastedHTML: (html) => sanitizePastedHtml(html),
-    // File SEAM (M3.5): surface dropped/pasted files, insert nothing.
-    handleDrop: (_view, event) => emitFiles(event.dataTransfer?.files),
-    handlePaste: (_view, event) => emitFiles(event.clipboardData?.files),
+    // Attachments (ENG-121): a dropped/pasted file becomes a pending chip, inserted
+    // nowhere in the doc. Returning true tells ProseMirror we handled it.
+    handleDrop: (_view, event) => onFiles(event.dataTransfer?.files),
+    handlePaste: (_view, event) => onFiles(event.clipboardData?.files),
   },
   onCreate: ({ editor }) => {
     empty.value = editor.isEmpty
@@ -105,7 +132,13 @@ const editor = useEditor({
   },
 })
 
-const canSend = computed(() => !props.disabled && !empty.value)
+// Send gate (ENG-121): text OR at least one attachment must be present, AND — when
+// there are attachments — every one must have finished uploading (blocks Send while
+// any upload is in-flight or failed). A FILE-ONLY message (no text) is allowed.
+const canSend = computed(() => {
+  const count = pendingAttachments.value.length
+  return !props.disabled && (!empty.value || count > 0) && (count === 0 || attachmentsAllDone.value)
+})
 
 /** Keyboard contract. Returns true when handled (ProseMirror then stops). */
 function handleKeyDown(event: KeyboardEvent): boolean {
@@ -123,22 +156,39 @@ function handleKeyDown(event: KeyboardEvent): boolean {
   return false
 }
 
-/** File SEAM helper: emit any files, swallow the event, insert nothing. */
-function emitFiles(files: FileList | null | undefined): boolean {
+/** Add any dropped/pasted files as pending chips; insert nothing into the doc. */
+function onFiles(files: FileList | null | undefined): boolean {
   if (!files || files.length === 0) return false
-  emit('files', Array.from(files))
+  addAttachments(Array.from(files))
   return true // handled — do not drop/paste the file as content
 }
 
-/** Serialize the editor to markdown source + mentions, emit, and clear. */
+/** The paperclip button proxies to the hidden native file input. */
+function openFilePicker(): void {
+  fileInput.value?.click()
+}
+
+/** File-picker change: add the chosen files, then reset so re-picking the same fires. */
+function onFilePicked(event: Event): void {
+  const input = event.target as HTMLInputElement
+  if (input.files) addAttachments(Array.from(input.files))
+  input.value = ''
+}
+
+/** Serialize the editor to markdown source + mentions + attachment ids, emit, clear. */
 function submit(): void {
   const instance = editor.value
   if (!instance || props.disabled) return
+  // Block while any upload is in-flight/failed (the button is also disabled).
+  if (pendingAttachments.value.length > 0 && !attachmentsAllDone.value) return
   const { text, mentions } = serializeDoc(instance.getJSON())
-  if (text.trim().length === 0) return // whitespace-only blocked (M2 parity)
-  emit('send', text, mentions)
+  const fileIds = resolvedFileIds.value
+  // Whitespace-only text AND no attachments → no-op. A file-only message is allowed.
+  if (text.trim().length === 0 && fileIds.length === 0) return
+  emit('send', text, mentions, fileIds)
   instance.commands.clearContent(true)
   empty.value = true
+  clearAttachments()
 }
 
 // Reflect the disabled prop into the editor (read-only while no writable stream).
@@ -147,8 +197,8 @@ watch(
   (disabled) => editor.value?.setEditable(!disabled),
 )
 
-// Exposed for the shell (focus) and for unit tests to drive the editor directly.
-defineExpose({ editor, submit, handleKeyDown })
+// Exposed for the shell (focus) and for unit tests to drive the editor / attachments.
+defineExpose({ editor, submit, handleKeyDown, addFiles: addAttachments })
 
 // Re-export the type for parents that map projection rows to candidates.
 export type { MentionItem }
@@ -156,10 +206,87 @@ export type { MentionItem }
 
 <template>
   <div class="border-t border-slate-200 bg-white p-3">
+    <!-- Pending attachment chips (ENG-121), above the editor. Names/sizes are
+         attacker-controlled and rendered ONLY via text; previews are LOCAL blob: URLs. -->
+    <div
+      v-if="pendingAttachments.length > 0"
+      class="mb-2 flex flex-wrap gap-2"
+      data-testid="composer-attachments"
+    >
+      <div
+        v-for="a in pendingAttachments"
+        :key="a.localId"
+        class="flex max-w-xs items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1"
+        data-testid="composer-attachment"
+        :data-phase="a.phase"
+      >
+        <img
+          v-if="a.previewUrl"
+          :src="a.previewUrl"
+          :alt="a.name"
+          class="h-8 w-8 rounded object-cover"
+        />
+        <span v-else class="text-base" aria-hidden="true">📄</span>
+        <span class="min-w-0 truncate text-xs font-medium text-slate-700">{{ a.name }}</span>
+        <span class="whitespace-nowrap text-[11px] text-slate-400">{{ formatBytes(a.size) }}</span>
+        <!-- Phase cue: spinner while uploading, check on done, error on failed. -->
+        <span
+          v-if="a.phase === 'failed'"
+          class="text-[11px] font-medium text-red-600"
+          data-testid="composer-attachment-error"
+          >failed</span
+        >
+        <span
+          v-else-if="a.phase === 'done'"
+          class="text-[11px] text-green-600"
+          aria-label="uploaded"
+          >✓</span
+        >
+        <span v-else class="text-[11px] text-slate-400" aria-label="uploading">…</span>
+        <button
+          v-if="a.phase === 'failed'"
+          type="button"
+          class="text-[11px] font-medium text-slate-600 underline hover:text-slate-900"
+          data-testid="composer-attachment-retry"
+          @click="retryAttachment(a.localId)"
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          class="text-xs text-slate-400 hover:text-slate-700"
+          data-testid="composer-attachment-remove"
+          aria-label="Remove attachment"
+          @click="removeAttachment(a.localId)"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+
     <div
       class="flex items-end gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 focus-within:border-slate-500"
       :class="{ 'opacity-50': props.disabled }"
     >
+      <!-- Paperclip file-picker (ENG-121) → hidden native multi-file input. -->
+      <button
+        type="button"
+        :disabled="props.disabled"
+        class="shrink-0 rounded-md px-1.5 py-1 text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+        data-testid="attach-file"
+        aria-label="Attach file"
+        @click="openFilePicker"
+      >
+        📎
+      </button>
+      <input
+        ref="fileInput"
+        type="file"
+        multiple
+        class="hidden"
+        data-testid="attach-file-input"
+        @change="onFilePicked"
+      />
       <div class="relative min-w-0 flex-1">
         <!-- Placeholder overlay (StarterKit has no placeholder node; avoid a dep). -->
         <div

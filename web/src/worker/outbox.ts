@@ -268,22 +268,24 @@ export class Outbox {
   /**
    * Enqueue a `file.uploaded` v1 event (ENG-119) — the durable log record of an
    * already-uploaded blob, built + hashed worker-side from the ENG-76 core spine.
-   * Called by the {@link FileManager} at the `emitting` step, BEFORE the companion
-   * `message.created`, so the drain sends `file.uploaded` then `message.created` in
-   * one ordered batch (the blob is already present, so the server's referential
-   * validation — ENG-117 — sees a present file and never `unknown_file`).
+   * Called by the {@link FileManager} at the `emitting` step. Under the ENG-121
+   * DECOUPLE (Option A) an upload is INDEPENDENT of message-send: it enqueues ONLY
+   * this record and kicks its own drain; the referencing `message.created` is
+   * authored LATER, once, by the composer's `outbox.send` on Send. This is safe under
+   * ENG-117 because the drain has already homed+PUT the blob (present + homed file
+   * ROW) before the chip reaches `done`, so any later `message.created.file_ids`
+   * referencing it passes the referential check and never `unknown_file`.
    *
    * Two deliberate deviations from {@link enqueue}:
    *   • `file.uploaded` has NO `payload.message_id`, so it can't ride the send tail
    *     that reads it — the outbox row's `message_id` slot is keyed on the `file_id`
    *     SENTINEL instead (a stable, unique link for settle/reapply bookkeeping);
-   *   • NO optimistic projection overlay is applied (the client projection of
-   *     `file.uploaded` is ENG-120, explicitly out of scope) — `applyPendingOutboxRow`
-   *     / `applyEventsToProjection` already DEFAULT-SKIP the type, so settle is inert.
+   *   • NO optimistic projection overlay is applied here — the client projection of
+   *     `file.uploaded` (ENG-120) lands when the event SETTLES from the server;
+   *     `applyPendingOutboxRow` DEFAULT-SKIPs the type, so the pending overlay is inert.
    *
-   * It does NOT kick the drain itself: the caller enqueues this THEN `send`s the
-   * message, and `send`'s single drain-kick flushes both rows together (one ordered
-   * batch). Returns the minted `event_id` (the server-dedup key on retry).
+   * Kicks the drain itself (no companion send to piggyback on). Returns the minted
+   * `event_id` (the server-dedup key on retry).
    */
   async enqueueFileUploaded(opts: {
     stream_id: string
@@ -318,9 +320,11 @@ export class Outbox {
       state: 'queued',
     }
     await this.db.putOutbox([outboxRow])
-    // Deliberately NO applyPendingOutboxRow (no optimistic overlay — ENG-120) and NO
-    // drain kick (the caller's subsequent send drives the single ordered batch).
+    // Deliberately NO applyPendingOutboxRow (no optimistic overlay — ENG-120 projects
+    // on settle). Kick the drain: the upload is decoupled from message-send, so there
+    // is no companion send to flush this record for us (ENG-121).
     this.publishStream(outboxRow.stream_id)
+    this.drain()
     return { event_id: outboxRow.event_id }
   }
 

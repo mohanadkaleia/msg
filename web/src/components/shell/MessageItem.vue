@@ -17,7 +17,11 @@
 import { computed, ref, watch } from 'vue'
 
 import type { DisplayMessage } from '../../stores/messages'
+import { useAttachments } from '../../composables/useAttachments'
 import { formatTime } from '../../lib/time'
+import type { FileRow } from '../../worker'
+import AttachmentFile from './AttachmentFile.vue'
+import AttachmentImage from './AttachmentImage.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -78,6 +82,24 @@ const participants = computed(() => props.message.threadParticipants ?? [])
  * a reply-of-reply). Keeps the client from ever composing an illegal root.
  */
 const threadTarget = computed(() => props.message.thread_root_id ?? props.message.message_id)
+
+/**
+ * Attachments (ENG-121): resolve this message's `file_ids` against the LOCAL
+ * `attachments.forMessage` projection (ZERO network). An empty `file_ids` never
+ * touches the worker. Rendering branches image-vs-card on `mime_type` (a boolean
+ * use) — the mime type is never itself rendered into a sink.
+ */
+const attachmentFileIds = computed(() => props.message.file_ids ?? [])
+const { files: attachmentFiles, pendingFileIds } = useAttachments(
+  props.message.message_id,
+  attachmentFileIds,
+)
+const hasAttachments = computed(
+  () => attachmentFiles.value.length > 0 || pendingFileIds.value.length > 0,
+)
+function isImage(file: FileRow): boolean {
+  return file.mime_type.startsWith('image/')
+}
 
 /** First letter of a display name for the avatar chip (safe-interpolated). */
 function initial(name: string): string {
@@ -212,6 +234,29 @@ function confirmDelete(): void {
       >
         {{ props.message.text }}
       </p>
+
+      <!-- Attachments (ENG-121). Resolved from the local `attachments.forMessage`
+           projection. image (by mime_type) → thumbnail + lightbox; other → file
+           card + download; not-yet-projected ids → a muted pending placeholder.
+           Names/sizes are attacker-controlled and render ONLY via text / :alt. -->
+      <div
+        v-if="hasAttachments"
+        class="mt-1 flex flex-col gap-1.5"
+        data-testid="message-attachments"
+      >
+        <template v-for="file in attachmentFiles" :key="file.file_id">
+          <AttachmentImage v-if="isImage(file)" :file="file" />
+          <AttachmentFile v-else :file="file" />
+        </template>
+        <div
+          v-for="id in pendingFileIds"
+          :key="id"
+          class="flex h-10 max-w-sm items-center rounded-md border border-dashed border-slate-200 px-3 text-xs italic text-slate-400"
+          data-testid="attachment-pending"
+        >
+          attachment loading…
+        </div>
+      </div>
 
       <!-- Reaction chips (aggregated, present-only). Clicking toggles YOUR reaction. -->
       <div v-if="reactions.length > 0" class="mt-1 flex flex-wrap gap-1">

@@ -12,14 +12,14 @@ import { onScopeDispose } from 'vue'
 import type { Unsubscribe, UploadProgress } from '../worker'
 import { resolveWorkerClient } from './useWorkerClient'
 
-/** The message fields the companion `message.created` carries (mirrors outbox.send). */
+/**
+ * What an upload needs: the target stream + the opaque `File`. The upload is
+ * DECOUPLED from message-send (ENG-121) — no text/mentions ride here; the composer
+ * references the resolved `file_id` on Send. The worker hashes/homes/PUTs the blob.
+ */
 export interface StartUploadInput {
   stream_id: string
   file: File
-  text?: string
-  format?: 'markdown' | 'plain'
-  thread_root_id?: string
-  mentions?: string[]
 }
 
 export function useFileUpload(): {

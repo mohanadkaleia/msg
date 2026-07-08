@@ -14,15 +14,22 @@
 // Idempotent retry (why a blip at any step is safe): the job holds the `File` for
 // its whole life, so it can re-hash/re-PUT; `initiate` is content-addressed (same
 // sha → same file_id, never a duplicate file); `putBlob` is idempotent server-side;
-// and `file.uploaded`/`message.created` carry persisted client-minted event_ids the
-// server dedups. So a network/timeout/5xx blip retries cleanly — no orphaned files,
-// no duplicate events.
+// and `file.uploaded` carries a persisted client-minted event_id the server dedups.
+// So a network/timeout/5xx blip retries cleanly — no orphaned files, no dup events.
+//
+// DECOUPLED from message-send (ENG-121, Option A): an upload homes+PUTs the blob and
+// enqueues ONLY the durable `file.uploaded` log record (ENG-120 projects it), then
+// drives the chip to `done` carrying the resolved `file_id`. It does NOT author a
+// `message.created` — the composer collects the `file_id`s of its finished uploads
+// and sends ONE `message.created` (referencing all of them) through `outbox.send` on
+// Send. This is safe under ENG-117: its `unknown_file` check validates the server
+// `files` ROW (present via PUT + homed via initiate), NOT event order — so a message
+// sent after each chip reaches `done` always references a present, homed file.
 //
 // OUT OF SCOPE (deliberate): durable resume across a full page reload. The in-memory
 // job + `File` handle die on reload; re-selecting the same file hits the
 // `upload_needed:false` dedup path and re-emits cheaply. We do NOT persist the (up to
-// 50 MB) Blob to IndexedDB. The client PROJECTION of `file.uploaded` is ENG-120; the
-// composer chips / thumbnails / progress-bar UI is ENG-121 — this ships the plumbing.
+// 50 MB) Blob to IndexedDB.
 
 import { sha256Hex } from '../core'
 
@@ -50,17 +57,11 @@ interface UploadJob {
   readonly upload_id: string
   readonly file: File
   readonly stream_id: string
-  readonly text: string
-  readonly format?: 'markdown' | 'plain'
-  readonly thread_root_id?: string
-  readonly mentions?: string[]
   /** Aborts the in-flight `putBlob` on `file.cancel`. */
   readonly controller: AbortController
   phase: UploadPhase
   sha256?: string
   file_id?: string
-  message_id?: string
-  event_id?: string
   /** Consecutive transient-failure count for the current step → backoff exponent. */
   attempt: number
   retryTimer: TimerId | undefined
@@ -148,10 +149,6 @@ export class FileManager {
         upload_id: params.upload_id,
         file: params.file,
         stream_id: params.stream_id,
-        text: params.text ?? '',
-        ...(params.format !== undefined ? { format: params.format } : {}),
-        ...(params.thread_root_id !== undefined ? { thread_root_id: params.thread_root_id } : {}),
-        ...(params.mentions !== undefined ? { mentions: params.mentions } : {}),
         controller: new AbortController(),
         phase: 'queued',
         attempt: 0,
@@ -270,16 +267,14 @@ export class FileManager {
         }
         case 'emitting': {
           this.enter(job, 'emitting')
-          // Enqueue the durable file.uploaded log record + the referencing message —
-          // both land in the SAME drained batch. The REAL correctness invariant is
-          // that we only reach `emitting` AFTER initiate homed the file row and the
-          // PUT flipped it `present` (the prior phases), so ENG-117's referential
-          // check — which validates the `files` ROW (present + homed to this stream),
-          // NOT the event order — always sees a present, homed file. The intra-batch
-          // ORDER of file.uploaded vs message.created is therefore COSMETIC and is NOT
-          // relied upon: a real Dexie `listOutbox()` returns primary-key (event_id)
-          // order on a `created_at` tie, so message.created may precede file.uploaded
-          // in the batch — harmless, since both reference the already-present file.
+          // Enqueue ONLY the durable file.uploaded log record (ENG-120 projects it).
+          // The upload is DECOUPLED from message-send (ENG-121): the referencing
+          // `message.created` is authored later, once, by the composer's `outbox.send`
+          // on Send — NOT here. We reach `emitting` only AFTER initiate homed the file
+          // row and the PUT flipped it `present` (the prior phases), so by the time the
+          // chip is `done` and Send fires, ENG-117's referential check — which
+          // validates the `files` ROW (present + homed to this stream), NOT event
+          // order — always sees a present, homed file for every referenced `file_id`.
           await this.outbox.enqueueFileUploaded({
             stream_id: job.stream_id,
             file_id: job.file_id!,
@@ -288,29 +283,20 @@ export class FileManager {
             mime_type: job.file.type || 'application/octet-stream',
             size_bytes: job.file.size,
           })
-          const sent = await this.outbox.send({
-            m: 'outbox.send',
-            stream_id: job.stream_id,
-            text: job.text,
-            file_ids: [job.file_id!],
-            ...(job.format !== undefined ? { format: job.format } : {}),
-            ...(job.thread_root_id !== undefined ? { thread_root_id: job.thread_root_id } : {}),
-            ...(job.mentions !== undefined ? { mentions: job.mentions } : {}),
-          })
           if (job.cancelled) return
-          job.message_id = sent.message_id
-          job.event_id = sent.event_id
+          // `done` carries the resolved `file_id` (via the frame builder) — the composer
+          // collects these to pass as `file_ids` on Send. No new phase is needed.
           job.phase = 'done'
           this.enter(job, 'done')
-          this.jobs.delete(job.upload_id) // terminal — the tab holds its ids via the push
+          this.jobs.delete(job.upload_id) // terminal — the tab holds file_id via the push
           return
         }
         default:
           return
       }
     } catch (err) {
-      // enqueueFileUploaded / send can throw a coded error (e.g. not_authenticated)
-      // or a JCS/build error — all hard failures. Never let the job promise reject.
+      // enqueueFileUploaded can throw a coded error (e.g. not_authenticated) or a
+      // JCS/build error — all hard failures. Never let the job promise reject.
       this.fail(job, err instanceof Error ? codeOf(err) : 'upload_failed')
     }
   }
@@ -370,8 +356,6 @@ export class FileManager {
       upload_id: job.upload_id,
       phase: job.phase,
       ...(job.file_id !== undefined ? { file_id: job.file_id } : {}),
-      ...(job.message_id !== undefined ? { message_id: job.message_id } : {}),
-      ...(job.event_id !== undefined ? { event_id: job.event_id } : {}),
       ...(code !== undefined ? { code } : {}),
     }
   }

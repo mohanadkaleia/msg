@@ -54,8 +54,9 @@ describe('MessageComposer (TipTap, ENG-101)', () => {
 
     expect(vm.handleKeyDown(keyEvent('Enter'))).toBe(true)
 
-    // Serialized BACK to markdown source — the same shape the M2 textarea produced.
-    expect(wrapper.emitted('send')?.[0]).toEqual(['hi **bold**', []])
+    // Serialized BACK to markdown source — the same shape the M2 textarea produced,
+    // now with an empty attachment file_ids array (ENG-121).
+    expect(wrapper.emitted('send')?.[0]).toEqual(['hi **bold**', [], []])
     // Field cleared after send (M2 parity).
     expect(vm.editor.isEmpty).toBe(true)
   })
@@ -77,9 +78,10 @@ describe('MessageComposer (TipTap, ENG-101)', () => {
     await flushPromises()
     vm.submit()
 
-    const [text, mentions] = wrapper.emitted('send')?.[0] as [string, string[]]
+    const [text, mentions, fileIds] = wrapper.emitted('send')?.[0] as [string, string[], string[]]
     expect(text).toBe('hey @Dana ping')
     expect(mentions).toEqual(['u_dana'])
+    expect(fileIds).toEqual([])
   })
 
   it('inserts a newline (does not send) on Shift+Enter', async () => {

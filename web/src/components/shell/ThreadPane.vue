@@ -21,7 +21,7 @@ import MessageItem from './MessageItem.vue'
 
 const thread = useThreadStore()
 const workspace = useWorkspaceStore()
-const { displayRoot, displayReplies, participants, hasMore } = storeToRefs(thread)
+const { displayRoot, displayReplies, participants, hasMore, streamId } = storeToRefs(thread)
 const { mentionItems } = storeToRefs(workspace)
 
 /** The reply currently in inline edit (null = none) — pane-local, like the main list. */
@@ -52,8 +52,8 @@ function onClose(): void {
   thread.close()
 }
 
-function onSendReply(text: string, mentions: string[]): void {
-  void thread.sendReply(text, mentions)
+function onSendReply(text: string, mentions: string[], fileIds: string[]): void {
+  void thread.sendReply(text, mentions, fileIds)
 }
 
 function onReact(messageId: string, emoji: string, remove: boolean): void {
@@ -143,6 +143,7 @@ function onDelete(messageId: string): void {
         placeholder="Reply…"
         :disabled="!displayRoot"
         :mention-items="mentionItems"
+        :stream-id="streamId ?? undefined"
         @send="onSendReply"
       />
     </div>

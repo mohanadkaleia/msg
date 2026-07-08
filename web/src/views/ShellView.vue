@@ -80,8 +80,8 @@ function onPaletteSelect(streamId: string): void {
   paletteOpen.value = false
 }
 
-function onSend(text: string, mentions: string[]): void {
-  void messages.send(text, mentions)
+function onSend(text: string, mentions: string[], fileIds: string[]): void {
+  void messages.send(text, mentions, fileIds)
 }
 
 /**
@@ -196,6 +196,7 @@ onBeforeUnmount(() => {
         :placeholder="composerPlaceholder"
         :disabled="!selectedStream"
         :mention-items="mentionItems"
+        :stream-id="selectedStreamId ?? undefined"
         @send="onSend"
         @edit-last="onEditLast"
       />

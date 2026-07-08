@@ -1,8 +1,10 @@
-// tests/unit/worker/files.spec.ts — the ENG-119 FileManager suite. The upload
-// state machine (hash → initiate → PUT → file.uploaded + message.created, in one
-// ordered batch), server-side dedup, idempotent retry-on-blip, hard-failure +
-// explicit retry, the download LRU, and the token boundary. MemoryDb + a real
-// Outbox + a fake Files-API server — no browser, no real network, no token.
+// tests/unit/worker/files.spec.ts — the ENG-119 FileManager suite, updated for the
+// ENG-121 DECOUPLE (Option A): an upload homes+PUTs the blob and enqueues ONLY the
+// durable `file.uploaded` record — NO `message.created` (the composer authors that
+// once, on Send, via outbox.send). Covers the upload state machine (hash → initiate
+// → PUT → emit file.uploaded → done), server-side dedup, idempotent retry-on-blip,
+// hard-failure + explicit retry, the download LRU, and the token boundary. MemoryDb
+// + a real Outbox + a fake Files-API server — no browser, no real network, no token.
 
 import { describe, expect, it, vi } from 'vitest'
 
@@ -71,15 +73,14 @@ const batchBody = (http: FakeHttpClient): { events: { body: { type: string } }[]
 const phases = (frames: UploadProgress[]): string[] => frames.map((f) => f.phase)
 
 describe('FileManager upload — end-to-end (hash → initiate → PUT → emit)', () => {
-  it('completes the PUT before emitting, and lands BOTH events in one drained batch', async () => {
+  it('completes the PUT before emitting ONLY file.uploaded (no message.created)', async () => {
     const { db, server, http, outbox, manager, frames } = makeFiles()
-    server.pauseBatch() // hold the drain so the pending state is observable
+    server.pauseBatch() // hold the drain so the pre-drain state is observable
 
-    // Record the real-time ORDER of the load-bearing calls across http + outbox: the
-    // REAL invariant is that initiate + PUT complete BEFORE either event is enqueued
-    // (so the server's referential check sees a present, homed file). The intra-batch
-    // order of the two events is cosmetic and deliberately NOT asserted (a real Dexie
-    // could return them in either order on a created_at tie).
+    // Record the real-time ORDER of the load-bearing calls: the REAL invariant is
+    // that initiate + PUT complete BEFORE `file.uploaded` is enqueued, so by the time
+    // the composer's later `outbox.send` references this file, its ROW is present +
+    // homed. NO outbox.send happens HERE (the upload is decoupled from message-send).
     const order: string[] = []
     const origPost = http.post.bind(http)
     vi.spyOn(http, 'post').mockImplementation((path, body) => {
@@ -96,20 +97,18 @@ describe('FileManager upload — end-to-end (hash → initiate → PUT → emit)
       order.push('enqueue')
       return origEnqueue(...args)
     })
-    const origSend = outbox.send.bind(outbox)
-    vi.spyOn(outbox, 'send').mockImplementation((...args) => {
-      order.push('send')
-      return origSend(...args)
-    })
+    const sendSpy = vi.spyOn(outbox, 'send')
 
-    void manager.startUpload({ upload_id: 'up1', stream_id: 's_1', file: makeFile(), text: 'hi' })
+    void manager.startUpload({ upload_id: 'up1', stream_id: 's_1', file: makeFile() })
     await until(() => frames.some((f) => f.phase === 'done'))
 
     // The phase machine ran in order, uploading included (no dedup).
     expect(phases(frames)).toEqual(['hashing', 'initiating', 'uploading', 'emitting', 'done'])
 
-    // Real invariant: initiate + PUT strictly precede BOTH enqueue and send.
-    expect(order).toEqual(['initiate', 'putBlob', 'enqueue', 'send'])
+    // Real invariant: initiate + PUT strictly precede the file.uploaded enqueue, and
+    // the upload NEVER authors a message.created (that is the composer's job on Send).
+    expect(order).toEqual(['initiate', 'putBlob', 'enqueue'])
+    expect(sendSpy).not.toHaveBeenCalled()
 
     // Exactly one initiate + one PUT to the file's own blob path.
     expect(http.postCalls.filter((p) => p.path === '/v1/files/initiate')).toHaveLength(1)
@@ -118,49 +117,36 @@ describe('FileManager upload — end-to-end (hash → initiate → PUT → emit)
     expect(fileId).toBeDefined()
     expect(http.putBlobCalls[0]?.path).toBe(`/v1/files/${fileId}/blob`)
 
-    // BOTH events are enqueued and drain in the SAME batch — order-AGNOSTIC (sorted),
-    // since the intra-batch order is cosmetic, not a correctness guarantee.
-    const outboxTypes = (await db.listOutbox()).map((r) => (r.body as { type: string }).type).sort()
-    expect(outboxTypes).toEqual(['file.uploaded', 'message.created'])
-    const batchTypes = batchBody(http)
-      ?.events.map((e) => e.body.type)
-      .sort()
-    expect(batchTypes).toEqual(['file.uploaded', 'message.created'])
+    // ONLY file.uploaded is enqueued — no message row, no message.created.
+    const outboxTypes = (await db.listOutbox()).map((r) => (r.body as { type: string }).type)
+    expect(outboxTypes).toEqual(['file.uploaded'])
+    expect(await db.getAllMessages()).toHaveLength(0)
 
-    // The optimistic (pending) message row appears meanwhile.
-    const pending = await db.getAllMessages()
-    expect(pending).toHaveLength(1)
-    expect(pending[0]?.state).toBe('pending')
-
-    // Resume: both settle, the outbox drains, the message row is no longer pending.
+    // Resume: the file.uploaded record drains cleanly.
     server.resumeBatch()
     await flush()
     expect(await db.listOutbox()).toHaveLength(0)
-    const settled = await db.getAllMessages()
-    expect(settled[0]?.state).toBeUndefined()
+    const batchTypes = batchBody(http)?.events.map((e) => e.body.type)
+    expect(batchTypes).toEqual(['file.uploaded'])
   })
 })
 
 describe('FileManager upload — server-side dedup (upload_needed:false)', () => {
-  it('skips the PUT entirely but still emits both events', async () => {
+  it('skips the PUT entirely but still emits file.uploaded', async () => {
     const { http, server, db, manager, frames } = makeFiles()
     // Pre-mark the content present so initiate reports the blob is already there.
     const sha = await sha256Hex(await makeFile().arrayBuffer())
     server.markShaPresent(sha)
 
-    void manager.startUpload({ upload_id: 'up1', stream_id: 's_1', file: makeFile(), text: 'hi' })
+    void manager.startUpload({ upload_id: 'up1', stream_id: 's_1', file: makeFile() })
     await until(() => frames.some((f) => f.phase === 'done'))
 
-    // uploading is SKIPPED — no PUT — yet both events are emitted and settle.
+    // uploading is SKIPPED — no PUT — yet file.uploaded is emitted and drains.
     expect(phases(frames)).toEqual(['hashing', 'initiating', 'emitting', 'done'])
     expect(http.putBlobCalls).toHaveLength(0)
     await flush()
-    expect(
-      batchBody(http)
-        ?.events.map((e) => e.body.type)
-        .sort(),
-    ).toEqual(['file.uploaded', 'message.created'])
-    expect(await db.getAllMessages()).toHaveLength(1)
+    expect(batchBody(http)?.events.map((e) => e.body.type)).toEqual(['file.uploaded'])
+    expect(await db.getAllMessages()).toHaveLength(0)
   })
 })
 
@@ -181,12 +167,11 @@ describe('FileManager upload — idempotent retry on a transient blip', () => {
     expect(http.putBlobCalls).toHaveLength(2)
     expect(http.putBlobCalls[0]?.path).toBe(http.putBlobCalls[1]?.path)
 
-    // No duplicate events — exactly one file.uploaded + one message.created
-    // (order-agnostic: the intra-batch order is cosmetic).
+    // No duplicate events — exactly one file.uploaded, no message.created.
     await flush()
-    const batchTypes = (batchBody(http)?.events.map((e) => e.body.type) ?? []).sort()
-    expect(batchTypes).toEqual(['file.uploaded', 'message.created'])
-    expect(await db.getAllMessages()).toHaveLength(1)
+    const batchTypes = batchBody(http)?.events.map((e) => e.body.type) ?? []
+    expect(batchTypes).toEqual(['file.uploaded'])
+    expect(await db.getAllMessages()).toHaveLength(0)
   })
 })
 
@@ -247,11 +232,18 @@ describe('FileManager upload — concurrency', () => {
     // Each upload reached done independently, under its own upload_id.
     expect(frames.filter((f) => f.upload_id === 'a').some((f) => f.phase === 'done')).toBe(true)
     expect(frames.filter((f) => f.upload_id === 'b').some((f) => f.phase === 'done')).toBe(true)
-    // Two initiates, two PUTs, two settled messages — no cross-contamination.
+    // Two initiates, two PUTs, two file.uploaded records — no cross-contamination.
     expect(http.postCalls.filter((p) => p.path === '/v1/files/initiate')).toHaveLength(2)
     expect(http.putBlobCalls).toHaveLength(2)
     expect(manager.activeUploads).toBe(0) // both terminal → dropped
-    expect(await db.getAllMessages()).toHaveLength(2)
+    expect(await db.getAllMessages()).toHaveLength(0) // no message.created (decoupled)
+    // Two file.uploaded records reached the server; no message.created anywhere.
+    const sentTypes = http.postCalls
+      .filter((p) => p.path.startsWith('/v1/events/batch'))
+      .flatMap((p) => (p.body as { events: { body: { type: string } }[] }).events)
+      .map((e) => e.body.type)
+    expect(sentTypes.filter((t) => t === 'file.uploaded')).toHaveLength(2)
+    expect(sentTypes).not.toContain('message.created')
   })
 })
 
@@ -331,7 +323,7 @@ describe('FileManager — token boundary', () => {
     const serialized = JSON.stringify(frames)
     expect(serialized.toLowerCase()).not.toContain('bearer')
     expect(serialized.toLowerCase()).not.toContain('token')
-    const allowed = new Set(['upload_id', 'phase', 'file_id', 'message_id', 'event_id', 'code'])
+    const allowed = new Set(['upload_id', 'phase', 'file_id', 'code'])
     for (const frame of frames) {
       for (const key of Object.keys(frame)) expect(allowed.has(key)).toBe(true)
     }
