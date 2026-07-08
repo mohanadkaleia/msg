@@ -17,8 +17,10 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 
 import type { QuickItem } from '../components/shell/CommandPalette.vue'
+import { resolveWorkerClient } from './useWorkerClient'
 import { useAuthStore } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
+import { useNotificationsStore } from '../stores/notifications'
 import { usePresenceStore } from '../stores/presence'
 import { useSyncStore } from '../stores/sync'
 import { useThreadStore } from '../stores/thread'
@@ -56,6 +58,7 @@ export function useShellController() {
   const thread = useThreadStore()
   const sync = useSyncStore()
   const presence = usePresenceStore()
+  const notifications = useNotificationsStore()
 
   const { myUserId, role } = storeToRefs(auth)
   // Live presence snapshot (ENG-128): `user_id → status`, threaded to the message
@@ -63,7 +66,7 @@ export function useShellController() {
   const { statuses: presenceStatuses } = storeToRefs(presence)
   const { selectedStream, selectedStreamId, channels, dms, mentionItems, directory } =
     storeToRefs(workspace)
-  const { displayMessages, hasMore } = storeToRefs(messages)
+  const { displayMessages, hasMore, rows: messageRows, currentStreamId } = storeToRefs(messages)
   const { isOpen: threadOpen } = storeToRefs(thread)
 
   const paletteOpen = ref(false)
@@ -169,6 +172,51 @@ export function useShellController() {
     { immediate: false },
   )
 
+  // -- Mark-read on channel view (ENG-129) ----------------------------------
+  //
+  // The stream shown in the conversation panel (null on Inbox / scaffold views).
+  // Threaded to the notifications store so the decision matrix can suppress
+  // toasts for the conversation the user is already looking at.
+  const activeConversationId = computed(() =>
+    activeView.value === 'conversation' ? selectedStreamId.value : null,
+  )
+  watch(activeConversationId, (id) => notifications.setActiveStream(id), { immediate: true })
+
+  /** Newest SETTLED seq in the loaded window (pending rows carry a ms-epoch
+   * sentinel `created_seq` and must never advance read-state). 0 = nothing. */
+  const latestLoadedSeq = computed(() => {
+    if (currentStreamId.value !== selectedStreamId.value) return 0
+    let max = 0
+    for (const r of messageRows.value) {
+      if (r.state === undefined && r.created_seq > max) max = r.created_seq
+    }
+    return max
+  })
+
+  /**
+   * What to mark read: the ACTIVE conversation up to the stream's `head_seq`
+   * (the badge is `head_seq − last_read_seq`, so marking only the newest
+   * message seq would leave a trailing reaction/edit event counted as unread),
+   * falling back to the newest loaded settled message seq when the projection's
+   * stream row lags. Fires on open/focus AND when a new message lands while the
+   * stream is active — so the badge stays cleared while you're looking at it.
+   */
+  const markTarget = computed(() => {
+    const id = activeConversationId.value
+    if (!id) return null
+    const head = selectedStream.value?.head_seq ?? 0
+    const seq = Math.max(head, latestLoadedSeq.value)
+    return seq > 0 ? { id, seq } : null
+  })
+  /** Last seq marked per stream — dedupes the (monotonic) worker mark RPC. */
+  const lastMarked = new Map<string, number>()
+  watch(markTarget, (target) => {
+    if (!target) return
+    if ((lastMarked.get(target.id) ?? 0) >= target.seq) return
+    lastMarked.set(target.id, target.seq)
+    void resolveWorkerClient().then((client) => client.readState.mark(target.id, target.seq))
+  })
+
   /** Flip the main panel to a section (Inbox/Apps/Files/Admin) or the timeline. */
   function setActiveView(view: ActiveView): void {
     // Navigating away from the conversation closes any open drawer (thread OR
@@ -237,11 +285,12 @@ export function useShellController() {
   }
 
   /**
-   * Open a stream from the Inbox triage list (ENG-136): select it + flip the main
-   * panel to the conversation. Explicit `activeView` set because re-opening the
-   * ALREADY-selected stream must still leave the Inbox (the selection watch only
-   * fires on a changed id). Read-state is NOT marked here — there is no tab-side
-   * mark-read flow yet; unreads clear through the existing sync path.
+   * Open a stream (Inbox triage row, search jump, toast click — ENG-136/129):
+   * select it + flip the main panel to the conversation. Explicit `activeView`
+   * set because re-opening the ALREADY-selected stream must still leave the
+   * Inbox (the selection watch only fires on a changed id). Read-state marks
+   * automatically through the `markTarget` watch above (ENG-129 — the earlier
+   * "no tab-side mark-read yet" note is resolved).
    */
   function onOpenStream(streamId: string): void {
     workspace.selectStream(streamId)
@@ -314,6 +363,10 @@ export function useShellController() {
     // REAL presence (ENG-126): subscribe to the ephemeral snapshot; the footer
     // UserCard dot reads the signed-in user's status (online by default).
     void presence.start(myUserId.value)
+    // Notifications (ENG-129): toast/Notification decisions off new inbound
+    // messages; toast + Notification clicks jump through the shell's open-stream.
+    notifications.setJumpHandler(onOpenStream)
+    void notifications.start(myUserId.value ?? '')
     await workspace.load()
     if (selectedStreamId.value) void messages.selectStream(selectedStreamId.value)
     window.addEventListener('keydown', onGlobalKeydown)
@@ -326,6 +379,7 @@ export function useShellController() {
     thread.dispose()
     sync.stop()
     presence.stop()
+    notifications.stop()
   })
 
   return {

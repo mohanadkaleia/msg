@@ -247,6 +247,61 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.selectedStreamId.value).toBe('s_b')
   })
 
+  // -- ENG-129 mark-read on channel view ------------------------------------
+
+  it('marks the opened stream read up to max(head_seq, newest loaded seq)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel', head_seq: 3 })
+    fake.addMessage('s_a', { created_seq: 1, text: 'one' })
+    fake.addMessage('s_a', { created_seq: 2, text: 'two' })
+    setWorkerClient(fake.client)
+
+    await mountController(router)
+    expect(fake.markSpy).toHaveBeenCalledWith('s_a', 3)
+    expect(fake.fetch).not.toHaveBeenCalled()
+  })
+
+  it('re-marks when a new message arrives while the stream is ACTIVE', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel', head_seq: 1 })
+    fake.addMessage('s_a', { created_seq: 1, text: 'one' })
+    setWorkerClient(fake.client)
+
+    await mountController(router)
+    expect(fake.markSpy).toHaveBeenCalledWith('s_a', 1)
+
+    // A live inbound message lands while the user is looking at the stream.
+    fake.deliver('s_a', { created_seq: 2, text: 'two', author_user_id: 'u_other' })
+    await flushPromises()
+    expect(fake.markSpy).toHaveBeenCalledWith('s_a', 2)
+  })
+
+  it('marks a stream opened from the Inbox (open-stream path)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel', head_seq: 1 })
+    fake.addStream({ stream_id: 's_b', name: 'bravo', kind: 'channel', head_seq: 7 })
+    setWorkerClient(fake.client)
+
+    const { ctrl } = await mountController(router)
+    ctrl.setActiveView('inbox')
+    ctrl.onOpenStream('s_b')
+    await flushPromises()
+    expect(fake.markSpy).toHaveBeenCalledWith('s_b', 7)
+  })
+
+  it('a pending own send (sentinel seq) never advances read-state', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel', head_seq: 1 })
+    fake.addMessage('s_a', { created_seq: 1, text: 'one' })
+    setWorkerClient(fake.client)
+
+    const { ctrl } = await mountController(router)
+    expect(fake.markSpy).toHaveBeenCalledTimes(1)
+    expect(fake.markSpy).toHaveBeenCalledWith('s_a', 1)
+
+    // The optimistic pending row carries a ms-epoch `created_seq` sentinel — the
+    // mark watch must skip it (else read-state would jump into the far future).
+    ctrl.onSend('hello', [], [])
+    await flushPromises()
+    expect(fake.markSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('gates the Admin scaffold on a privileged role', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     setWorkerClient(fake.client)

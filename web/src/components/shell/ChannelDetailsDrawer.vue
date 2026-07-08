@@ -23,6 +23,7 @@ import Icon, { type IconName } from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
 import { resolveWorkerClient } from '../../composables/useWorkerClient'
 import { useAuthStore } from '../../stores/auth'
+import { useNotificationsStore } from '../../stores/notifications'
 import { useWorkspaceStore, type SidebarStream } from '../../stores/workspace'
 import type { PrefLevel, Unsubscribe } from '../../worker'
 
@@ -42,6 +43,7 @@ const emit = defineEmits<{
 
 const auth = useAuthStore()
 const workspace = useWorkspaceStore()
+const notifications = useNotificationsStore()
 const { myUserId } = storeToRefs(auth)
 const { directory } = storeToRefs(workspace)
 
@@ -273,6 +275,25 @@ const bottomScaffoldRows: DetailRow[] = [
             <Icon v-if="level === opt.level" name="check" :size="14" class="shrink-0 text-accent" />
           </button>
         </div>
+
+        <!-- ENG-129 browser-Notification opt-in: shown ONCE while permission is
+             still `default`; requesting is an explicit user gesture (never on
+             load). Granted/denied/unsupported states render honest quiet copy. -->
+        <button
+          v-if="notifications.permission === 'default'"
+          type="button"
+          class="block w-full px-4 pb-2 pl-11 text-left text-xs font-medium text-accent hover:underline"
+          data-testid="enable-notifications"
+          @click="notifications.requestPermission()"
+        >
+          Enable desktop notifications
+        </button>
+        <p
+          v-else-if="notifications.permission === 'denied'"
+          class="px-4 pb-2 pl-11 text-xs text-muted"
+        >
+          Desktop notifications are blocked in your browser settings.
+        </p>
       </div>
 
       <div class="my-2 border-t border-subtle" />
