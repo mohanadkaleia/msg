@@ -10,15 +10,18 @@
 //
 // Behavior and every load-bearing E2E test-id are preserved: it composes SpaceRail
 // | AppSidebar | TopBar | main (channel-header + virtualized MessageList +
-// MessageComposer, OR a scaffold EmptyState) | RightDrawer (thread) + the
+// MessageComposer, OR the REAL InboxView triage page — ENG-136, the Feeds concept
+// folded into Inbox — OR a scaffold EmptyState) | RightDrawer (thread) + the
 // CommandPalette overlay, and delegates ALL cross-store wiring to
-// `useShellController`. No message data ever comes from the HTTP API — the shell
-// reads exclusively through the worker client (via the stores).
+// `useShellController`. The Inbox brings its own header + filter tabs, so the
+// ChannelHeader is skipped for it. No message data ever comes from the HTTP API —
+// the shell reads exclusively through the worker client (via the stores).
 import { ref } from 'vue'
 
 import AppSidebar from './AppSidebar.vue'
 import ChannelHeader from './ChannelHeader.vue'
 import CommandPalette from './CommandPalette.vue'
+import InboxView from './InboxView.vue'
 import MessageComposer from './MessageComposer.vue'
 import MessageList from './MessageList.vue'
 import NewDmDialog from './NewDmDialog.vue'
@@ -52,6 +55,7 @@ const {
   setActiveView,
   openPalette,
   onPaletteSelect,
+  onOpenStream,
   onSend,
   onEditLast,
   onReact,
@@ -102,9 +106,11 @@ function onToggleDetails(): void {
         class="grid min-h-0 flex-1"
         :class="threadOpen ? 'grid-cols-[1fr_24rem]' : 'grid-cols-[1fr]'"
       >
-        <!-- Main column. -->
+        <!-- Main column. The Inbox brings its own header + tabs, so the shared
+             channel-header is skipped for it (preserved for every other view). -->
         <main role="main" class="flex min-h-0 min-w-0 flex-col">
           <ChannelHeader
+            v-if="activeView !== 'inbox'"
             :title="mainTitle"
             :member-count="memberCount"
             @add-member="onHeaderAddMember"
@@ -141,7 +147,10 @@ function onToggleDetails(): void {
             />
           </template>
 
-          <!-- Scaffold placeholder (Inbox / Apps / Files / Admin). -->
+          <!-- REAL Inbox triage view (ENG-136): tabs over derived stream activity. -->
+          <InboxView v-else-if="activeView === 'inbox'" @open-stream="onOpenStream" />
+
+          <!-- Scaffold placeholder (Apps / Files / Admin). -->
           <div v-else class="flex flex-1 items-center justify-center">
             <EmptyState v-if="scaffold" :title="scaffold.title" :description="scaffold.body" />
           </div>

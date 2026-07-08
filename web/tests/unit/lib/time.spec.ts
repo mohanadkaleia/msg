@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { newMessageId } from '../../../src/core'
-import { decodeUlidTime, formatDayDivider, messageTimestamp } from '../../../src/lib/time'
+import {
+  decodeUlidTime,
+  formatActivityTime,
+  formatDayDivider,
+  messageTimestamp,
+} from '../../../src/lib/time'
 
 describe('decodeUlidTime', () => {
   it('recovers the mint time from a freshly minted message id', () => {
@@ -46,5 +51,27 @@ describe('formatDayDivider', () => {
     expect(label).not.toBe('Today')
     expect(label).not.toBe('Yesterday')
     expect(label).toMatch(/2026/)
+  })
+})
+
+describe('formatActivityTime (ENG-136 Inbox)', () => {
+  const now = new Date('2026-07-06T12:00:00').getTime()
+  const DAY = 24 * 60 * 60 * 1000
+
+  it('shows the clock time for today', () => {
+    // Same instant → the locale clock time (e.g. "12:00 PM"), never a day label.
+    const label = formatActivityTime(now, now)
+    expect(label).toMatch(/12/)
+    expect(label).not.toBe('Yesterday')
+  })
+
+  it('shows "Yesterday" for the previous calendar day', () => {
+    expect(formatActivityTime(now - DAY, now)).toBe('Yesterday')
+  })
+
+  it('shows a short date for anything older', () => {
+    const label = formatActivityTime(now - 5 * DAY, now)
+    expect(label).not.toBe('Yesterday')
+    expect(label).toMatch(/Jul|1/) // locale short date, e.g. "Jul 1"
   })
 })

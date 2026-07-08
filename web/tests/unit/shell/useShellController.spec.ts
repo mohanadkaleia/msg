@@ -121,6 +121,25 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.threadOpen.value).toBe(false)
   })
 
+  it('opens a stream from the Inbox: selects it + returns to the conversation', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.setActiveView('inbox')
+    // Inbox is a REAL view now (ENG-136) — no scaffold copy; its own header titles it.
+    expect(ctrl.scaffold.value).toBeNull()
+    expect(ctrl.mainTitle.value).toBe('Inbox')
+
+    // Re-opening the ALREADY-selected stream must still leave the Inbox (the
+    // selection watch only fires on a changed id).
+    expect(ctrl.selectedStreamId.value).toBe('s_a')
+    ctrl.onOpenStream('s_a')
+    await flushPromises()
+    expect(ctrl.activeView.value).toBe('conversation')
+    expect(ctrl.selectedStreamId.value).toBe('s_a')
+  })
+
   it('closes an open thread when navigating to a scaffold view (PR-B review #4)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     const root = fake.addMessage('s_a', { created_seq: 1, text: 'root' })

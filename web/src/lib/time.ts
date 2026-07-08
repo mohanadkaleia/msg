@@ -73,3 +73,15 @@ export function formatDayDivider(ms: number, now: number = Date.now()): string {
 export function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
 }
+
+/**
+ * Relative activity stamp for a triage row (ENG-136 Inbox): today shows the
+ * clock time ("10:32 AM"), yesterday shows "Yesterday", anything older shows a
+ * short date ("Jun 3").
+ */
+export function formatActivityTime(ms: number, now: number = Date.now()): string {
+  const key = dayKey(ms)
+  if (key === dayKey(now)) return formatTime(ms)
+  if (key === dayKey(now - 24 * 60 * 60 * 1000)) return 'Yesterday'
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}

@@ -2,7 +2,8 @@
 // of the old `views/ShellView.vue` assembly into a CSS-grid layout component; behavior
 // and every test-id are identical (only the wrapping element changed). This proves the
 // grid COMPOSITION: the rail/sidebar/main/drawer landmarks render, a real conversation
-// mounts channel-header + MessageList + MessageComposer, a scaffold section flips main to
+// mounts channel-header + MessageList + MessageComposer, the Inbox section mounts the
+// REAL InboxView (ENG-136 — no longer a placeholder), a scaffold section flips main to
 // an EmptyState, the thread drawer mounts when a thread is open and unmounts
 // synchronously on close, and the sync indicator is unique. The heavy leaves
 // (MessageList/MessageComposer/ThreadPane) are stubbed — their own testids are covered by
@@ -121,6 +122,34 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(main.find('[data-testid="channel-header"]').exists()).toBe(true)
     expect(main.find('[data-testid="message-list"]').exists()).toBe(true)
     expect(main.find('[data-testid="composer-input"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# alpha')
+  })
+
+  it('renders the REAL InboxView for the Inbox section (not a placeholder)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel', unread: 1 })
+    fake.addMessage('s_a', { created_seq: 1, text: 'hello inbox' })
+    const wrapper = await mountShell(fake, router)
+
+    await wrapper.get('[data-testid="nav-inbox"]').trigger('click')
+    await flushPromises()
+
+    // The conversation leaves (and its channel-header) are gone; InboxView owns main.
+    expect(wrapper.find('[data-testid="message-list"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="channel-header"]').exists()).toBe(false)
+    const main = wrapper.get('main[role="main"]')
+    expect(main.find('[data-testid="inbox-view"]').exists()).toBe(true)
+    expect(main.find('[data-testid="inbox-tab-all"]').exists()).toBe(true)
+    expect(main.text()).not.toContain('coming soon')
+
+    // A real derived activity row is listed for the seeded stream.
+    const row = main.get('[data-testid="inbox-item"]')
+    expect(row.attributes('data-stream-id')).toBe('s_a')
+
+    // Clicking the row returns to that stream's conversation timeline.
+    await row.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="inbox-view"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="message-list"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# alpha')
   })
 

@@ -8,9 +8,10 @@
 // It owns cross-store wiring only: workspace selection drives the messages store
 // (a ZERO-network projection read), the global Cmd+K opens the palette, the sync
 // store feeds the reconnect indicator, and a lightweight `activeView` flips the
-// main panel between the live conversation timeline and the scaffold placeholder
-// sections (Inbox / Apps / Files / Admin). No message data ever comes from the
-// HTTP API — the shell reads exclusively through the worker client (via stores).
+// main panel between the live conversation timeline, the REAL Inbox triage view
+// (ENG-136 — the single triage surface; Feeds folded in), and the scaffold
+// placeholder sections (Apps / Files / Admin). No message data ever comes from
+// the HTTP API — the shell reads exclusively through the worker client (via stores).
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -23,18 +24,17 @@ import { useSyncStore } from '../stores/sync'
 import { useThreadStore } from '../stores/thread'
 import { useWorkspaceStore } from '../stores/workspace'
 
-/** Which panel the main column renders: the live timeline vs a scaffold section. */
+/** Which panel the main column renders: the live timeline, the Inbox, or a scaffold. */
 export type ActiveView = 'conversation' | 'inbox' | 'apps' | 'files' | 'admin'
+
+/** The views that still render a scaffold placeholder (Inbox is REAL — ENG-136). */
+type ScaffoldView = Exclude<ActiveView, 'conversation' | 'inbox'>
 
 /** The neutral workspace name shown in the sidebar header + rail glyph (NOT "Ranin"). */
 const WORKSPACE_NAME = 'msg'
 
 /** Copy for the scaffold placeholder EmptyState shown in the main panel. */
-const SCAFFOLD_COPY: Record<
-  Exclude<ActiveView, 'conversation'>,
-  { title: string; body: string }
-> = {
-  inbox: { title: 'Inbox', body: 'A unified inbox of your unreads and mentions is on the way.' },
+const SCAFFOLD_COPY: Record<ScaffoldView, { title: string; body: string }> = {
   apps: { title: 'Apps', body: 'Apps are coming soon.' },
   files: { title: 'Files', body: 'A workspace file browser is coming soon.' },
   admin: { title: 'Admin', body: 'Workspace administration is coming soon.' },
@@ -75,9 +75,10 @@ export function useShellController() {
     return s.kind === 'dm' ? name : `# ${name}`
   })
 
-  /** Title shown in the channel-header for the current view. */
+  /** Title shown in the channel-header for the current view (Inbox brings its own). */
   const mainTitle = computed(() => {
     if (activeView.value === 'conversation') return headerLabel.value || 'No channel selected'
+    if (activeView.value === 'inbox') return 'Inbox'
     return SCAFFOLD_COPY[activeView.value].title
   })
 
@@ -102,9 +103,11 @@ export function useShellController() {
   /** INTERIM unread count for the "New" divider (see MessageList's `unreadCount`). */
   const unreadCount = computed(() => selectedStream.value?.unread ?? 0)
 
-  /** Copy for the scaffold EmptyState (null when a conversation is shown). */
+  /** Copy for the scaffold EmptyState (null for the real conversation/Inbox views). */
   const scaffold = computed(() =>
-    activeView.value === 'conversation' ? null : SCAFFOLD_COPY[activeView.value],
+    activeView.value === 'conversation' || activeView.value === 'inbox'
+      ? null
+      : SCAFFOLD_COPY[activeView.value],
   )
 
   const composerPlaceholder = computed(() =>
@@ -135,10 +138,10 @@ export function useShellController() {
     { immediate: false },
   )
 
-  /** Flip the main panel to a scaffold section (Inbox/Apps/Files/Admin) or the timeline. */
+  /** Flip the main panel to a section (Inbox/Apps/Files/Admin) or the timeline. */
   function setActiveView(view: ActiveView): void {
-    // Navigating to a scaffold view closes any open thread so the drawer doesn't dock
-    // beside a placeholder (PR-B review #4). The conversation view keeps its thread.
+    // Navigating away from the conversation closes any open thread so the drawer
+    // doesn't dock beside it (PR-B review #4). The conversation view keeps its thread.
     if (view !== 'conversation') thread.close()
     activeView.value = view
   }
@@ -158,6 +161,18 @@ export function useShellController() {
     workspace.selectStream(streamId)
     activeView.value = 'conversation'
     paletteOpen.value = false
+  }
+
+  /**
+   * Open a stream from the Inbox triage list (ENG-136): select it + flip the main
+   * panel to the conversation. Explicit `activeView` set because re-opening the
+   * ALREADY-selected stream must still leave the Inbox (the selection watch only
+   * fires on a changed id). Read-state is NOT marked here — there is no tab-side
+   * mark-read flow yet; unreads clear through the existing sync path.
+   */
+  function onOpenStream(streamId: string): void {
+    workspace.selectStream(streamId)
+    activeView.value = 'conversation'
   }
 
   function onSend(text: string, mentions: string[], fileIds: string[]): void {
@@ -269,6 +284,7 @@ export function useShellController() {
     setActiveView,
     openPalette,
     onPaletteSelect,
+    onOpenStream,
     onSend,
     onEditLast,
     onReact,

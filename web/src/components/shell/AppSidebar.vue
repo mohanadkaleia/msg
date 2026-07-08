@@ -7,8 +7,8 @@
 // signed-in user with a REAL presence dot (ENG-126 presence store).
 //
 // IA NOTE (user decision): the former "Feeds" section was REMOVED — Inbox and
-// Feeds were the same triage concept, so Inbox becomes the single triage surface
-// (filter tabs land in a follow-up); a separate Feeds section was redundant.
+// Feeds were the same triage concept, so Inbox is the single triage surface
+// (InboxView with filter tabs); a separate Feeds section was redundant.
 //
 // Clicking a channel/DM selects a stream (a local flip; the message load is a
 // separate ZERO-network projection read) and switches the main panel to the
