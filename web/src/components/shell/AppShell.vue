@@ -1,22 +1,31 @@
 <script setup lang="ts">
-// ShellView — the authed app shell (ENG-82, TDD §5.4; restructured in ENG-136
-// "Ranin" PR-B). It composes the Ranin three-column layout — SpaceRail | feed-first
-// AppSidebar | main (channel-header + virtualized MessageList + MessageComposer, OR
-// a scaffold EmptyState) | RightDrawer (thread) — over the worker RPC, and delegates
-// ALL cross-store wiring to `useShellController` so PR-C's AppShell swap is a pure
-// reshuffle with identical behavior. No message data ever comes from the HTTP API —
-// the shell reads exclusively through the worker client (via the stores).
+// AppShell — the authed app shell (ENG-82, TDD §5.4; ENG-136 "Ranin" PR-C).
 //
-// STILL LIGHT theme (dark ships in PR-D); the message/composer components are NOT
-// restyled here (that's PR-D too) — this PR only restructures the shell chrome.
-import AppSidebar from '../components/shell/AppSidebar.vue'
-import CommandPalette from '../components/shell/CommandPalette.vue'
-import MessageComposer from '../components/shell/MessageComposer.vue'
-import MessageList from '../components/shell/MessageList.vue'
-import RightDrawer from '../components/shell/RightDrawer.vue'
-import SpaceRail from '../components/shell/SpaceRail.vue'
-import EmptyState from '../components/ui/EmptyState.vue'
-import { useShellController } from '../composables/useShellController'
+// PR-C promotes the shell assembly out of `views/ShellView.vue` into a proper
+// CSS-grid layout component. The regions are laid out on a single grid row with
+// explicit tracks — rail | sidebar | main — and the right drawer appears as a
+// fourth track only while a thread is open (a clean, resize-friendly grid rather
+// than the old nested flex). The track widths match each region component's own
+// width exactly (rail 3.5rem, sidebar 16rem, drawer 24rem), so the layout is
+// pixel-identical to PR-B; ONLY the wrapping layout element changed.
+//
+// Behavior and every E2E test-id are IDENTICAL to the old ShellView: it composes
+// SpaceRail | feed-first AppSidebar | main (channel-header + virtualized
+// MessageList + MessageComposer, OR a scaffold EmptyState) | RightDrawer (thread)
+// + the CommandPalette overlay, and delegates ALL cross-store wiring to
+// `useShellController`. No message data ever comes from the HTTP API — the shell
+// reads exclusively through the worker client (via the stores).
+//
+// STILL LIGHT theme (dark mode ships in PR-D); the message/composer components are
+// NOT restyled here (that's PR-D too) — this PR only restructures the shell chrome.
+import AppSidebar from './AppSidebar.vue'
+import CommandPalette from './CommandPalette.vue'
+import MessageComposer from './MessageComposer.vue'
+import MessageList from './MessageList.vue'
+import RightDrawer from './RightDrawer.vue'
+import SpaceRail from './SpaceRail.vue'
+import EmptyState from '../ui/EmptyState.vue'
+import { useShellController } from '../../composables/useShellController'
 
 const {
   messages,
@@ -52,13 +61,19 @@ const {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen overflow-hidden bg-background text-primary">
+  <div
+    role="application"
+    class="grid h-screen w-screen overflow-hidden bg-background text-primary"
+    :class="threadOpen ? 'grid-cols-[3.5rem_16rem_1fr_24rem]' : 'grid-cols-[3.5rem_16rem_1fr]'"
+  >
+    <!-- Rail track. -->
     <SpaceRail
       :workspace-initials="workspaceInitials"
       :workspace-name="workspaceName"
       @logout="onLogout"
     />
 
+    <!-- Sidebar track. -->
     <AppSidebar
       :active-view="activeView"
       :workspace-name="workspaceName"
@@ -67,7 +82,8 @@ const {
       @select-view="setActiveView"
     />
 
-    <main class="flex min-w-0 flex-1 flex-col">
+    <!-- Main track. -->
+    <main role="main" class="flex min-h-0 min-w-0 flex-col">
       <header
         class="flex items-center justify-between border-b border-subtle px-4 py-3"
         data-testid="channel-header"
@@ -109,7 +125,7 @@ const {
       </div>
     </main>
 
-    <!-- M3 thread pane (ENG-103) — hosted in the Ranin right drawer. -->
+    <!-- Drawer track (M3 thread pane, ENG-103) — appears only while a thread is open. -->
     <RightDrawer :open="threadOpen" />
 
     <CommandPalette

@@ -62,7 +62,11 @@ function labelFor(stream: SidebarStream): string {
 </script>
 
 <template>
-  <aside class="flex h-full w-64 flex-col border-r border-subtle bg-surface">
+  <aside
+    role="navigation"
+    aria-label="Channels and direct messages"
+    class="flex h-full w-64 flex-col border-r border-subtle bg-surface"
+  >
     <div class="flex items-center justify-between px-3 py-3">
       <span class="truncate text-sm font-semibold text-primary">{{ workspaceName }}</span>
       <button
@@ -76,7 +80,10 @@ function labelFor(stream: SidebarStream): string {
       </button>
     </div>
 
-    <nav class="flex-1 space-y-3 overflow-y-auto px-2 pb-3">
+    <!-- Scroll region for the feed list. The root <aside> is the (labeled)
+         navigation landmark, so this stays a plain div to avoid a nested,
+         unlabeled second nav landmark. -->
+    <div class="flex-1 space-y-3 overflow-y-auto px-2 pb-3">
       <!-- Feed-first: Inbox scaffold at the top. -->
       <SidebarItem
         :active="activeView === 'inbox'"
@@ -208,7 +215,7 @@ function labelFor(stream: SidebarStream): string {
           Coming soon
         </SidebarItem>
       </NavSection>
-    </nav>
+    </div>
   </aside>
 
   <CreateChannelDialog v-if="showCreateChannel" @close="showCreateChannel = false" />

@@ -1,18 +1,20 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+import AppShell from '../components/shell/AppShell.vue'
 import { useAuthStore } from '../stores/auth'
 import AcceptInviteView from '../views/AcceptInviteView.vue'
 import LoginView from '../views/LoginView.vue'
 import SetupView from '../views/SetupView.vue'
-import ShellView from '../views/ShellView.vue'
 
 // History mode (D-4): deep links like /channel/abc are client routes; the
 // FastAPI SPA fallback (SPAStaticFiles) returns index.html for them in prod.
 export const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    // Authed app shell (ENG-82): sidebar, virtualized message list, composer, Cmd+K.
-    { path: '/', name: 'home', component: ShellView },
+    // Authed app shell (ENG-82; ENG-136 "Ranin" PR-C): the AppShell CSS-grid
+    // assembly — SpaceRail | sidebar | virtualized message list + composer |
+    // thread drawer, with Cmd+K.
+    { path: '/', name: 'home', component: AppShell },
     // Public auth routes (ENG-78).
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
     { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },

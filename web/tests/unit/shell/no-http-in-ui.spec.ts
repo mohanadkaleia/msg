@@ -55,15 +55,20 @@ describe('shell UI never touches HTTP or the token', () => {
     expect(violations).toEqual([])
   })
 
-  it('covers every views/ file (recursively), so a new view cannot escape the guard', () => {
+  it('covers the shell + every views/ file (recursively), so nothing can escape the guard', () => {
     const scanned = uiSourceFiles()
     const viewFiles = scanned.filter((f) => f.includes(`${SRC}/views/`))
     // Every existing view is in the scanned set (LoginView, SetupView, etc.).
     expect(viewFiles.length).toBeGreaterThan(0)
-    expect(scanned).toContain(`${SRC}/views/ShellView.vue`)
     expect(scanned).toContain(`${SRC}/views/LoginView.vue`)
 
-    // And an http-client import in a views/ file WOULD be flagged.
+    // ENG-136 PR-C: the shell assembly moved from `views/ShellView.vue` into
+    // `components/shell/AppShell.vue`. Anchor the guard on AppShell's real
+    // location so the shell — the file most tempted to reach for the API — stays
+    // provably in the scanned set (the recursive walk of `components/` covers it).
+    expect(scanned).toContain(`${SRC}/components/shell/AppShell.vue`)
+
+    // And an http-client import in a scanned file WOULD be flagged.
     const sample = `import { createHttpClient } from '../worker/http'`
     expect(FORBIDDEN.some(({ pattern }) => pattern.test(sample))).toBe(true)
   })

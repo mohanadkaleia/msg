@@ -12,6 +12,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { useSyncStore } from '../../stores/sync'
+import IconButton from '../ui/IconButton.vue'
 import StatusBadge from '../ui/StatusBadge.vue'
 
 defineProps<{ workspaceInitials: string; workspaceName: string }>()
@@ -59,15 +60,9 @@ const badgeTone = computed<'online' | 'syncing' | 'offline'>(() => {
     <!-- PR-D mounts <ThemeToggle> here. -->
     <slot name="theme" />
 
-    <!-- Account affordance: sign out lives in the rail (§ Ranin PR-B). -->
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 items-center justify-center rounded text-secondary transition-colors hover:bg-background hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-      aria-label="Sign out"
-      title="Sign out"
-      data-testid="logout"
-      @click="emit('logout')"
-    >
+    <!-- Account affordance: sign out lives in the rail (§ Ranin PR-B). PR-C: this
+         is the first IconButton call site, proving the `label` primitive. -->
+    <IconButton label="Sign out" title="Sign out" data-testid="logout" @click="emit('logout')">
       <svg
         aria-hidden="true"
         viewBox="0 0 16 16"
@@ -81,6 +76,6 @@ const badgeTone = computed<'online' | 'syncing' | 'offline'>(() => {
         <path d="M6 2H3.5A1.5 1.5 0 0 0 2 3.5v9A1.5 1.5 0 0 0 3.5 14H6" />
         <path d="M10.5 11 14 8l-3.5-3M14 8H6" />
       </svg>
-    </button>
+    </IconButton>
   </nav>
 </template>
