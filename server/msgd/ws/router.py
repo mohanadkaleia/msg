@@ -156,7 +156,18 @@ async def _relay_presence_safely(connection: Connection, *, status: str) -> None
 
     Presence is a convenience hint, never authoritative — a wedged peer socket or a
     resolver hiccup must never fail this connection's accept or teardown path.
+
+    Guest exclusion (ENG-125 follow-up, §3.6 roster-consistency): a GUEST subject
+    broadcasts NO presence — their connect/disconnect produces no frame to anyone.
+    Presence is a workspace-ROSTER signal (opaque ``user_id`` + online bit) that
+    ``permissions.py`` withholds from guests (guests get no ``workspace-meta``
+    roster), so a guest is scoped out of presence on BOTH sides: this no-broadcast
+    guard, plus the non-guest recipient filter in :meth:`Hub.publish_presence`.
+    Typing is unaffected (stream-membership-scoped — guests still type in joined
+    streams).
     """
+    if connection.role == "guest":
+        return
     with contextlib.suppress(Exception):
         await hub.publish_presence(
             user_id=connection.user_id,

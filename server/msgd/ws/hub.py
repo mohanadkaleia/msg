@@ -184,28 +184,43 @@ class Hub:
         await self._send_all(recipients, frame)
 
     async def publish_presence(self, *, user_id: str, workspace_id: str, status: str) -> None:
-        """Relay a ``presence`` frame for ``user_id`` to their SAME-workspace peers (D3).
+        """Relay a ``presence`` frame for ``user_id`` to their SAME-workspace NON-GUEST peers (D3).
 
         Presence is the D3 **ephemeral** class — WS-only, never persisted, projected,
         or exported. The router calls this best-effort on ``user_id``'s 0→1
         (``online``) and 1→0 (``offline``) connection transitions (presence is
-        DERIVED from the live registry, not stored). Scope = the WHOLE workspace:
-        every OTHER connection whose ``workspace_id`` matches receives the frame, so
-        connected members observe each other's presence — coarse, standard, and
-        cross-workspace-ISOLATED (``workspace_id`` rides on the Connection, so this
-        is a pure in-memory registry filter with NO DB round trip, and a different
-        workspace's socket is structurally never selected). The subject's own
-        sockets are excluded (a client does not need to hear about itself). Delivery
-        is a hint (§3.3): :meth:`_send_all` timeout-guards + drops a wedged socket
-        without propagating, so a relay failure can NEVER break the connection
-        lifecycle. No same-workspace peer connected is a no-op.
+        DERIVED from the live registry, not stored). Scope = the workspace's NON-GUEST
+        roster: every OTHER connection whose ``workspace_id`` matches AND whose
+        ``role != "guest"`` receives the frame, so connected members observe each
+        other's presence — coarse, standard, and cross-workspace-ISOLATED
+        (``workspace_id`` rides on the Connection, so this is a pure in-memory
+        registry filter with NO DB round trip, and a different workspace's socket is
+        structurally never selected). The subject's own sockets are excluded (a
+        client does not need to hear about itself).
+
+        Guest exclusion (ENG-125 follow-up, §3.6 roster-consistency): a guest socket
+        is NEVER selected as a recipient here, and the router additionally skips this
+        relay entirely for a guest subject (a guest's connect/disconnect broadcasts
+        NO presence). Presence is a workspace-ROSTER signal — an opaque ``user_id`` +
+        online bit for members across the workspace — exactly the roster
+        ``permissions.py`` deliberately withholds from guests: a guest is a member
+        with restricted scope and does NOT receive the ``workspace-meta`` roster
+        stream (the FLAGGED DEVIATION in ``readable_streams_predicate``). Relaying
+        presence to/from guests would leak that same roster sliver, so presence is
+        scoped out of guests just like ``workspace-meta``. (Typing is UNCHANGED — it
+        is stream-membership-scoped via ``readable_streams_predicate``, so a guest
+        still gets/sends typing in streams they explicitly joined.)
+
+        Delivery is a hint (§3.3): :meth:`_send_all` timeout-guards + drops a wedged
+        socket without propagating, so a relay failure can NEVER break the connection
+        lifecycle. No eligible same-workspace peer connected is a no-op.
         """
         recipients = [
             conn
             for uid, conns in self._registry.snapshot().items()
             if uid != user_id
             for conn in conns
-            if conn.workspace_id == workspace_id
+            if conn.workspace_id == workspace_id and conn.role != "guest"
         ]
         if not recipients:
             return

@@ -267,6 +267,70 @@ async def test_presence_never_crosses_workspace(ws_app: FastAPI, db_session: Asy
                 await _expect_no(ws_other, "presence")
 
 
+# --- presence: guests are scoped OUT entirely (§3.6 roster-consistency) -----------
+
+
+async def test_presence_guest_broadcasts_nothing(ws_app: FastAPI, db_session: AsyncSession) -> None:
+    """A GUEST connecting/disconnecting relays NO presence; a member in the same setup still does.
+
+    Non-vacuous: the SAME observer (owner) sees a non-guest member's online/offline
+    in this exact setup, so the assertion would catch a regression that started
+    broadcasting guest presence.
+    """
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        guest = await _invite_user(client, owner, role="guest")
+        member = await _invite_user(client, owner, role="member")
+
+        async with _connect(client, owner["token"]) as ws_owner:
+            await _sync(ws_owner)
+            # A guest's 0→1 connect broadcasts NOTHING to the owner.
+            async with _connect(client, guest["token"]) as ws_guest:
+                await _sync(ws_guest)
+                await _expect_no(ws_owner, "presence")
+                # Non-vacuous: a NON-guest member connecting DOES still broadcast.
+                async with _connect(client, member["token"]) as ws_member:
+                    await _sync(ws_member)
+                    frame = await _read_until(ws_owner, "presence")
+                    assert frame == {
+                        "t": "presence",
+                        "user_id": member["user_id"],
+                        "status": "online",
+                    }
+                # member's last socket closed (1→0) → owner sees offline (relay is live).
+                assert (await _read_until(ws_owner, "presence"))["status"] == "offline"
+            # The guest's 1→0 disconnect ALSO broadcasts nothing.
+            await _expect_no(ws_owner, "presence")
+
+
+async def test_presence_guest_receives_nothing(ws_app: FastAPI, db_session: AsyncSession) -> None:
+    """When a non-guest MEMBER goes online/offline, a connected GUEST receives NO presence.
+
+    A non-guest observer (owner) DOES see the same transitions — the asymmetry proves
+    the recipient filter excludes only the guest socket.
+    """
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        guest = await _invite_user(client, owner, role="guest")
+        member = await _invite_user(client, owner, role="member")
+
+        async with (
+            _connect(client, owner["token"]) as ws_owner,
+            _connect(client, guest["token"]) as ws_guest,
+        ):
+            await _sync(ws_owner)
+            await _sync(ws_guest)
+            # A non-guest member goes online: the owner (member) sees it, the guest does not.
+            async with _connect(client, member["token"]) as ws_member:
+                await _sync(ws_member)
+                frame = await _read_until(ws_owner, "presence")
+                assert frame == {"t": "presence", "user_id": member["user_id"], "status": "online"}
+                await _expect_no(ws_guest, "presence")
+            # ...and offline: same asymmetry — owner sees it, the guest never does.
+            assert (await _read_until(ws_owner, "presence"))["status"] == "offline"
+            await _expect_no(ws_guest, "presence")
+
+
 # --- typing: relay scope (the crux) ----------------------------------------------
 
 
@@ -343,6 +407,41 @@ async def test_typing_guest_only_in_joined_streams(
             # it (§3.6) → typing is dropped, the owner sees nothing.
             await ws_guest.send_json({"t": "typing", "stream_id": public})
             await _expect_no(ws_owner, "typing")
+
+
+async def test_typing_guest_works_in_joined_stream(
+    ws_app: FastAPI, db_session: AsyncSession
+) -> None:
+    """A guest explicitly added to a channel still SENDS and RECEIVES typing there.
+
+    Regression guard for the ENG-125 presence follow-up: excluding guests from
+    presence must NOT touch typing, which stays stream-membership-scoped — a guest
+    with an explicit ``stream_members`` row participates in that stream's typing
+    both ways.
+    """
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        guest = await _invite_user(client, owner, role="guest")
+        private = await bootstrap_channel(client, db_session, owner, visibility="private")
+        # The guest is EXPLICITLY added to the private channel (§3.6 guest scope).
+        await _member_event(client, owner, private_stream=private, target=guest, added=True)
+
+        async with (
+            _connect(client, owner["token"]) as ws_owner,
+            _connect(client, guest["token"]) as ws_guest,
+        ):
+            await _sync(ws_owner)
+            await _sync(ws_guest)
+
+            # The guest can read the channel (explicit membership) → their typing relays.
+            await ws_guest.send_json({"t": "typing", "stream_id": private})
+            frame = await _read_until(ws_owner, "typing")
+            assert frame == {"t": "typing", "stream_id": private, "user_id": guest["user_id"]}
+
+            # ...and the guest RECEIVES the other member's typing (bidirectional).
+            await ws_owner.send_json({"t": "typing", "stream_id": private})
+            frame = await _read_until(ws_guest, "typing")
+            assert frame == {"t": "typing", "stream_id": private, "user_id": owner["user_id"]}
 
 
 async def test_typing_never_crosses_workspace(ws_app: FastAPI, db_session: AsyncSession) -> None:
