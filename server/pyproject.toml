@@ -21,6 +21,13 @@ dependencies = [
     # Password hashing (TDD §7/D6). Argon2id is argon2-cffi's default algorithm;
     # cost parameters are pinned explicitly in Settings for auditability (D8).
     "argon2-cffi>=23.1",
+    # Image thumbnailing (ENG-118, §6). Pillow decodes UNTRUSTED upload bytes to
+    # generate WEBP thumbnails, so it is a hostile-input attack surface: the decode
+    # is bounded (Image.MAX_IMAGE_PIXELS decompression-bomb guard), offloaded to a
+    # thread, and best-effort (a decode failure never fails the upload). Recent
+    # Pillow ships PEP 561 inline type stubs, so mypy --strict resolves it without a
+    # separate stubs package or a blanket ignore.
+    "pillow>=12.3.0",
 ]
 
 [build-system]

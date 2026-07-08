@@ -311,6 +311,18 @@ class File(Base):
     # row is NEVER downloadable and NEVER reveals its bytes to a same-sha initiate
     # (so an initiate that never completed its upload is invisible as content).
     present: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
+    # sha256 of the server-GENERATED WEBP thumbnail blob for this file, or NULL
+    # (ENG-118). Set best-effort in the PUT path when the uploaded bytes decode as a
+    # raster image (Pillow); a non-image, a hostile/undecodable input, or a decode
+    # that trips the decompression-bomb guard all leave it NULL — thumbnails never
+    # fail an upload. The thumbnail is a DERIVED, content-addressed blob in the same
+    # BlobStore (its own sha256, re-encoded by us to a known-safe WEBP raster, so it
+    # carries no active content). ``GET /v1/files/{id}/thumbnail`` gates on this
+    # being non-NULL and returns the uniform 404 otherwise — a NULL thumbnail is
+    # indistinguishable from an unknown/forbidden file (no existence oracle). A
+    # deduped initiate copies this from the readable present row so the derived blob
+    # is generated at most once per content sha.
+    thumbnail_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )

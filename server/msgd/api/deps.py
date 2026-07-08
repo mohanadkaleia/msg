@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated
 
 from fastapi import Depends, Request
@@ -69,6 +70,20 @@ def get_blob_store(request: Request) -> BlobStore:
     """
     store: BlobStore = request.app.state.blob_store
     return store
+
+
+def get_thumbnail_executor(request: Request) -> ThreadPoolExecutor:
+    """Return the dedicated bounded thumbnail-decode pool (app.state, ENG-118).
+
+    One :class:`~concurrent.futures.ThreadPoolExecutor` is constructed in
+    ``create_app`` (``thumbnail_max_concurrency`` workers) and shared by every request.
+    UNTRUSTED image decodes (``render_thumbnail``) run HERE, isolated from the event
+    loop's default pool — which also serves argon2 hashing and BlobStore fs I/O — so a
+    decode flood cannot starve auth or blob I/O. The pool is shut down in the app's
+    lifespan ``finally``.
+    """
+    executor: ThreadPoolExecutor = request.app.state.thumbnail_executor
+    return executor
 
 
 AppSettings = Annotated[Settings, Depends(get_app_settings)]

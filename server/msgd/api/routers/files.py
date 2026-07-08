@@ -20,6 +20,12 @@ security-critical surface, so every gate here is deliberate and documented.
     with a sanitized filename, so a stored ``.html``/``.svg``/``.js`` blob can
     never be rendered inline by the browser (stored-XSS neutralized).
 
+``GET /v1/files/{file_id}/thumbnail``
+    Same authz as the download, plus a NULL-``thumbnail_sha256`` → uniform 404 (no
+    existence oracle). Streams the SERVER-GENERATED WEBP thumbnail (ENG-118) inline
+    as ``image/webp`` — safe precisely because WE decoded and re-encoded these bytes,
+    unlike the attacker-controlled full download.
+
 Invariants this module upholds (each mapped to code below):
 
 * **404-not-403 uniformity (§3.6.2):** an unknown ``file_id``/``stream_id``, a
@@ -42,8 +48,11 @@ Invariants this module upholds (each mapped to code below):
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import urllib.parse
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -58,6 +67,7 @@ from msgd.api.deps import (
     file_download_rate_limit,
     file_rate_limit,
     get_blob_store,
+    get_thumbnail_executor,
 )
 from msgd.api.schemas.files import (
     FileBlobResponse,
@@ -65,6 +75,7 @@ from msgd.api.schemas.files import (
     FileInitiateResponse,
 )
 from msgd.blobs.store import BlobHashMismatchError, BlobStore
+from msgd.blobs.thumbnails import render_thumbnail
 from msgd.core import ids
 from msgd.db.engine import get_session
 from msgd.db.models import File, Stream, Workspace
@@ -76,6 +87,7 @@ router = APIRouter(prefix="/v1", tags=["files"])
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 Blobs = Annotated[BlobStore, Depends(get_blob_store)]
+ThumbnailExecutor = Annotated[ThreadPoolExecutor, Depends(get_thumbnail_executor)]
 
 
 class _StreamTooLarge(Exception):
@@ -103,6 +115,16 @@ async def _capped_stream(source: AsyncIterator[bytes], max_bytes: int) -> AsyncI
         if total > max_bytes:
             raise _StreamTooLarge()
         yield chunk
+
+
+async def _bytes_to_async_iter(data: bytes) -> AsyncIterator[bytes]:
+    """Yield ``data`` once as an async stream to feed :meth:`BlobStore.put`.
+
+    The store consumes an ``AsyncIterator[bytes]`` (the shape of a streamed request
+    body). A generated thumbnail is already a small in-memory ``bytes`` object, so a
+    single-yield adapter is all that is needed to content-address it through the store.
+    """
+    yield data
 
 
 def _content_disposition(name: str) -> str:
@@ -193,25 +215,38 @@ async def initiate_file(
     #     a stream the caller CAN READ. Its presence is the ONLY thing that flips
     #     upload_needed to false, and its size is what the new row copies — both held
     #     to the download gate's can_read bar (F3, no cross-stream existence oracle).
-    #     The join + readable_streams_predicate reuse the ONE shared access check.
+    #     The join + readable_streams_predicate reuse the ONE shared access check. Its
+    #     thumbnail_sha256 (ENG-118) is copied too, so a deduped image inherits the
+    #     already-generated WEBP thumbnail — the derived blob is made at most once per
+    #     content sha (on the source row's PUT), never on the dedup path.
     #   * any_exists → this sha is already reserved anywhere in the workspace
     #     (present or pending, readable or not). This is disk reality, NOT client-
     #     observable, and only governs whether the reservation adds bytes to quota.
     readable = readable_streams_predicate(
         user_id=ctx.user_id, role=ctx.role, workspace_id=ctx.workspace_id
     )
-    present_row_size = await db.scalar(
-        select(File.size_bytes)
-        .select_from(File)
-        .join(Stream, Stream.stream_id == File.stream_id)
-        .where(
-            File.workspace_id == ctx.workspace_id,
-            File.sha256 == req.sha256,
-            File.present.is_(True),
-            readable,
+    # Both the TRUE size AND the already-generated thumbnail sha are read from the
+    # SAME readable present row (a single tuple SELECT keeps them consistent): a
+    # deduped image file inherits the thumbnail that the source row's PUT already
+    # produced, so the derived WEBP blob is generated at most once per content sha.
+    # ``thumbnail_sha256`` may be NULL (the source was a non-image / hostile input);
+    # inheriting NULL is correct — the new row is simply thumbnail-less too.
+    present_row = (
+        await db.execute(
+            select(File.size_bytes, File.thumbnail_sha256)
+            .select_from(File)
+            .join(Stream, Stream.stream_id == File.stream_id)
+            .where(
+                File.workspace_id == ctx.workspace_id,
+                File.sha256 == req.sha256,
+                File.present.is_(True),
+                readable,
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
+    ).first()
+    present_row_size = present_row.size_bytes if present_row is not None else None
+    present_row_thumbnail = present_row.thumbnail_sha256 if present_row is not None else None
     any_exists = await db.scalar(
         select(literal(1))
         .select_from(File)
@@ -259,6 +294,10 @@ async def initiate_file(
             uploaded_by=ctx.user_id,
             stream_id=req.stream_id,
             present=present,
+            # Inherit the source present row's thumbnail (possibly NULL). Only a
+            # dedup-present row can carry one; a fresh upload_needed row is NULL until
+            # its own PUT generates the thumbnail.
+            thumbnail_sha256=present_row_thumbnail,
         )
     )
     # Commit releases the workspace row lock immediately (tight serialization of
@@ -280,6 +319,7 @@ async def upload_blob(
     db: DbSession,
     settings: AppSettings,
     blobs: Blobs,
+    thumbnail_executor: ThumbnailExecutor,
 ) -> FileBlobResponse:
     """Stream the raw request body into the store for ``file_id`` and mark it present.
 
@@ -299,6 +339,10 @@ async def upload_blob(
     5. **Declared-size honesty.** The stored byte length must equal the ``size_bytes``
        reserved at initiate (what the quota was charged against); a mismatch is
        rejected so every present row's ``size_bytes`` is truthful.
+    6. **Best-effort thumbnail (ENG-118).** For an ``image/*`` upload the bytes are
+       decoded by Pillow (offloaded to a thread) and a WEBP thumbnail stored as its own
+       derived blob. This is best-effort and NEVER fails the PUT — a hostile or
+       non-image input just leaves ``thumbnail_sha256`` NULL.
     """
     file = await db.get(File, file_id)
     # 1. Uniform 404 for every non-authorized shape (no existence oracle). Note the
@@ -348,6 +392,33 @@ async def upload_blob(
         raise problems.blob_size_mismatch()
 
     file.present = True
+
+    # 6. Best-effort image thumbnail (ENG-118). STRICTLY best-effort: a hostile,
+    #    oversized, or non-image upload must NEVER fail or block this PUT. The
+    #    declared ``mime_type`` is only a cheap "is this worth decoding" hint — it is
+    #    NOT trusted for safety; render_thumbnail treats the bytes as hostile and is
+    #    the real guard (decompression-bomb bound + catch-all → None). The CPU-bound
+    #    decode/encode runs on the DEDICATED bounded ``thumbnail_executor`` (NOT the
+    #    event loop's default pool, which serves argon2 + BlobStore fs I/O), so a decode
+    #    flood cannot block the loop OR starve auth/blob I/O server-wide. On success the
+    #    thumbnail is stored as its OWN content-addressed derived blob (a re-encoded,
+    #    known-safe WEBP) and its sha recorded; on failure ``thumbnail_sha256`` stays
+    #    NULL and the upload still succeeds.
+    if settings.thumbnails_enabled and file.mime_type.startswith("image/"):
+        source = await blobs.get_bytes(file.sha256)
+        loop = asyncio.get_running_loop()
+        thumb = await loop.run_in_executor(
+            thumbnail_executor,
+            functools.partial(
+                render_thumbnail,
+                source,
+                max_px=settings.thumbnail_max_px,
+                max_source_pixels=settings.thumbnail_max_source_pixels,
+            ),
+        )
+        if thumb is not None:
+            file.thumbnail_sha256 = await blobs.put(_bytes_to_async_iter(thumb))
+
     await db.commit()
     return FileBlobResponse(file_id=file.file_id, present=True)
 
@@ -400,4 +471,58 @@ async def download_file(
         blobs.get(file.sha256),
         media_type="application/octet-stream",
         headers=headers,
+    )
+
+
+@router.get(
+    "/files/{file_id}/thumbnail",
+    dependencies=[Depends(file_download_rate_limit)],
+)
+async def download_thumbnail(
+    file_id: str,
+    ctx: CurrentAuth,
+    db: DbSession,
+    blobs: Blobs,
+) -> StreamingResponse:
+    """Stream ``file_id``'s server-generated WEBP thumbnail, served inline as an image.
+
+    Authorization is IDENTICAL to :func:`download_file` — by ``file_id → stream_id →
+    membership``, NEVER by hash (D8) — with one extra gate: a NULL ``thumbnail_sha256``
+    is folded into the SAME uniform ``404 /problems/not-found`` as an unknown id, a
+    cross-workspace file, a not-present file, a null ``stream_id``, and a forbidden
+    stream. So "this file has no thumbnail" is indistinguishable from "no such file":
+    no existence oracle, and no way to probe which files are images. There is
+    deliberately no by-hash thumbnail route.
+
+    WHY inline + ``image/webp`` is safe HERE but is FORBIDDEN for the full download:
+    the full download (:func:`download_file`) streams ATTACKER-CONTROLLED bytes
+    verbatim — a stored ``.html``/``.svg``/``.js`` blob — so it is forced to
+    ``application/octet-stream`` + ``attachment`` to make inline rendering (stored XSS)
+    impossible. THIS response streams bytes WE generated: Pillow decoded the upload to a
+    pixel raster and we RE-ENCODED it to WEBP (ENG-118), discarding any active content
+    (no SVG script, no HTML, no EXIF payload). The output is a known-safe raster, so it
+    is safe to render inline for a real image preview. Even so, ``nosniff`` is kept and
+    the client's declared ``mime_type`` is NEVER echoed — the ``image/webp`` type is a
+    fact about bytes we produced, not a claim we are trusting from the uploader.
+    """
+    file = await db.get(File, file_id)
+    if (
+        file is None
+        or not file.present
+        or file.workspace_id != ctx.workspace_id
+        or file.stream_id is None
+        or file.thumbnail_sha256 is None
+        or not await can_read(db, ctx=ctx, stream_id=file.stream_id)
+    ):
+        raise problems.not_found("no such file")
+
+    # Server-generated, re-encoded WEBP (see docstring): inline + a real image type is
+    # safe here. nosniff stays as defense-in-depth; the type is ours, not the client's.
+    return StreamingResponse(
+        blobs.get(file.thumbnail_sha256),
+        media_type="image/webp",
+        headers={
+            "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

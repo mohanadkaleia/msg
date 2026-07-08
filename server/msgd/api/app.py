@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -50,6 +51,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             set_sessionmaker(None)
             await engine.dispose()
+            # Tear down the dedicated thumbnail-decode pool: cancel any queued decodes
+            # and do not block shutdown on in-flight ones (they are best-effort work).
+            thumbnail_executor.shutdown(wait=False, cancel_futures=True)
             logger.info("msgd shutdown complete", extra={"event": "shutdown"})
 
     # Config-gate the interactive docs + schema (PR #12 security review): when
@@ -68,6 +72,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Content-addressed blob store for file attachments (ENG-116, D8). One shared
     # instance rooted under the configured data dir; ``get_blob_store`` reads it.
     app.state.blob_store = LocalDiskBlobStore(root=settings.data_dir / "blobs")
+    # Dedicated, bounded pool for UNTRUSTED image decodes (ENG-118 review hardening).
+    # render_thumbnail runs here — NEVER on the event loop's default ThreadPoolExecutor
+    # (which also serves argon2 + BlobStore fs I/O) — so a decode flood cannot starve
+    # auth or blob I/O, and transient decode memory is capped at max_workers × ~168 MB.
+    # Torn down in the lifespan finally (shutdown(wait=False, cancel_futures=True)).
+    thumbnail_executor = ThreadPoolExecutor(
+        max_workers=settings.thumbnail_max_concurrency, thread_name_prefix="thumbnail"
+    )
+    app.state.thumbnail_executor = thumbnail_executor
     # File limiters (ENG-116, per user): a tighter budget for the mutating/disk
     # writes (initiate + blob) and a more generous one for read-only downloads.
     app.state.file_limiter_minute = RateLimiter(settings.file_rate_limit_per_minute, 60)

@@ -34,6 +34,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
+import struct
+import zlib
 from datetime import timedelta
 from typing import Any
 
@@ -57,6 +60,7 @@ from msgd.blobs.store import LocalDiskBlobStore
 from msgd.core import ids
 from msgd.db.models import Device, File, Session, Stream, User, Workspace
 from msgd.settings import Settings
+from PIL import Image
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -102,6 +106,52 @@ async def _put_blob(client: AsyncClient, token: str, file_id: str, data: bytes) 
 
 async def _download(client: AsyncClient, token: str, file_id: str) -> Response:
     return await client.get(f"/v1/files/{file_id}", headers=auth_header(token))
+
+
+async def _thumbnail(client: AsyncClient, token: str, file_id: str) -> Response:
+    return await client.get(f"/v1/files/{file_id}/thumbnail", headers=auth_header(token))
+
+
+def _png_bytes(width: int, height: int, color: tuple[int, int, int] = (10, 120, 200)) -> bytes:
+    """A real PNG of the given dimensions (ENG-118 thumbnail tests)."""
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _decompression_bomb_png() -> bytes:
+    """A tiny PNG whose IHDR CLAIMS 100000×100000 pixels — a decompression bomb.
+
+    A few dozen bytes on disk, but 10^10 declared pixels. Crafted by hand (Pillow would
+    refuse to WRITE such an image) so the upload PUT stores a small, valid-header blob;
+    the thumbnailer then rejects it at ``Image.open`` via the ``MAX_IMAGE_PIXELS`` guard,
+    before decoding, so no giant buffer is ever allocated.
+    """
+
+    def chunk(typ: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + typ
+            + data
+            + struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
+        )
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", 100000, 100000, 8, 2, 0, 0, 0)  # width, height, bit depth, ...
+    return (
+        sig
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(b"\x00" * 16))
+        + chunk(b"IEND", b"")
+    )
+
+
+async def _thumbnail_sha(db: Any, file_id: str) -> str | None:
+    """Read a file row's stored ``thumbnail_sha256`` (or None)."""
+    value: str | None = await db.scalar(
+        select(File.thumbnail_sha256).where(File.file_id == file_id)
+    )
+    return value
 
 
 async def _upload(
@@ -886,3 +936,162 @@ async def test_guest_member_can_use_files_and_is_isolated(
     )
     denied_dl = await _download(client, guest["token"], owner_file)
     assert denied_dl.status_code == 404
+
+
+# --- image thumbnails (ENG-118) ----------------------------------------------
+
+
+async def test_image_upload_generates_thumbnail(client: AsyncClient, db_session: Any) -> None:
+    """An image PUT generates a thumbnail; GET .../thumbnail serves it inline as WEBP."""
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+    data = _png_bytes(1600, 900)  # larger than the 720px bound → will be downscaled
+    file_id = await _upload(
+        client, owner["token"], stream_id=channel, data=data, name="pic.png", mime_type="image/png"
+    )
+
+    # A derived thumbnail blob was recorded on the row.
+    thumb_sha = await _thumbnail_sha(db_session, file_id)
+    assert thumb_sha is not None
+
+    resp = await _thumbnail(client, owner["token"], file_id)
+    assert resp.status_code == 200, resp.text
+    # Server-generated, re-encoded → safe to serve inline as a real image type.
+    assert resp.headers["content-type"] == "image/webp"
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["content-disposition"] == "inline"
+    # The body is a genuine WEBP whose long edge respects the 720px bound.
+    with Image.open(io.BytesIO(resp.content)) as thumb:
+        assert thumb.format == "WEBP"
+        assert max(thumb.size) <= 720
+
+
+async def test_non_image_upload_has_no_thumbnail(client: AsyncClient, db_session: Any) -> None:
+    """Non-image bytes (even declaring an image mime) get NO thumbnail; .../thumbnail 404s.
+
+    The declared ``mime_type`` is only a cheap hint — here it LIES (``image/png`` on
+    plain text). Pillow is the real guard: it fails to decode, so ``thumbnail_sha256``
+    stays NULL and the thumbnail endpoint returns the uniform 404.
+    """
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+    data = b"this is definitely not a PNG despite the mime type" * 4
+    file_id = await _upload(
+        client, owner["token"], stream_id=channel, data=data, name="fake.png", mime_type="image/png"
+    )
+
+    assert await _thumbnail_sha(db_session, file_id) is None
+    resp = await _thumbnail(client, owner["token"], file_id)
+    assert resp.status_code == 404
+    assert resp.json()["type"] == "/problems/not-found"
+
+
+async def test_thumbnail_no_thumb_404_matches_unknown_id(
+    client: AsyncClient, db_session: Any
+) -> None:
+    """A file-with-no-thumbnail 404 is byte-identical to an unknown-id 404 (no oracle)."""
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+    file_id = await _upload(
+        client, owner["token"], stream_id=channel, data=b"plain text", mime_type="text/plain"
+    )
+    # A non-image mime skips decoding entirely — still NULL, still a uniform 404.
+    assert await _thumbnail_sha(db_session, file_id) is None
+
+    no_thumb = await _thumbnail(client, owner["token"], file_id)
+    unknown = await _thumbnail(client, owner["token"], ids.new_file_id())
+    assert no_thumb.status_code == 404
+    assert unknown.status_code == 404
+    assert _problem_without_instance(no_thumb) == _problem_without_instance(unknown)
+
+
+async def test_thumbnail_non_member_uniform_404(client: AsyncClient, db_session: Any) -> None:
+    """A non-member cannot reach a private-stream file's thumbnail; 404 == unknown id."""
+    owner = await do_setup(client)
+    private = await bootstrap_channel(client, db_session, owner, visibility="private")
+    file_id = await _upload(client, owner["token"], stream_id=private, data=_png_bytes(200, 200))
+    # The owner's thumbnail exists and serves.
+    assert (await _thumbnail(client, owner["token"], file_id)).status_code == 200
+
+    invite = await create_invite(client, owner["token"])
+    accepted = await accept_invite(
+        client, join_token(invite.json()["url"]), email="outsider@example.com"
+    )
+    outsider_token = accepted.json()["token"]
+
+    forbidden = await _thumbnail(client, outsider_token, file_id)
+    unknown = await _thumbnail(client, outsider_token, ids.new_file_id())
+    assert forbidden.status_code == 404
+    assert unknown.status_code == 404
+    # "exists but forbidden" is indistinguishable from "unknown" — no existence oracle.
+    assert _problem_without_instance(forbidden) == _problem_without_instance(unknown)
+
+
+async def test_no_by_hash_thumbnail_route(client: AsyncClient, db_session: Any) -> None:
+    """There is no by-hash thumbnail route — a hash-shaped id is just an unknown file."""
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+    data = _png_bytes(120, 120)
+    await _upload(client, owner["token"], stream_id=channel, data=data)
+
+    # Knowing the content sha buys nothing: the only thumbnail route takes a file_id.
+    resp = await _thumbnail(client, owner["token"], _sha(data))
+    assert resp.status_code == 404
+    assert resp.json()["type"] == "/problems/not-found"
+
+
+async def test_decompression_bomb_via_api_best_effort_no_thumbnail(
+    client: AsyncClient, db_session: Any
+) -> None:
+    """A bomb image uploads as a FILE (best-effort) but yields NO thumbnail, no hang.
+
+    The crafted PNG declares 100000×100000 pixels. Its bytes upload fine (small, valid
+    header), but the thumbnailer rejects it at the decompression-bomb guard → NULL
+    thumbnail, 404 thumbnail endpoint. Wrapping the upload in a timeout asserts the PUT
+    returns PROMPTLY (never hangs on the hostile decode); a follow-up request proves the
+    server stayed responsive.
+    """
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+    bomb = _decompression_bomb_png()
+
+    # The whole initiate+PUT completes well within the timeout (no hang on the decode).
+    file_id = await asyncio.wait_for(
+        _upload(client, owner["token"], stream_id=channel, data=bomb, mime_type="image/png"),
+        timeout=30,
+    )
+
+    # File succeeded; thumbnail did not (best-effort).
+    assert await _thumbnail_sha(db_session, file_id) is None
+    thumb = await _thumbnail(client, owner["token"], file_id)
+    assert thumb.status_code == 404
+    # The file itself is still downloadable and the server is responsive.
+    dl = await _download(client, owner["token"], file_id)
+    assert dl.status_code == 200 and dl.content == bomb
+
+
+async def test_dedup_inherits_thumbnail(client: AsyncClient, db_session: Any) -> None:
+    """A deduped image row inherits the source row's thumbnail (generated once per sha)."""
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+    data = _png_bytes(400, 300)
+    sha = _sha(data)
+    first = await _upload(client, owner["token"], stream_id=channel, data=data)
+    original_thumb = await _thumbnail_sha(db_session, first)
+    assert original_thumb is not None
+
+    # Re-initiate the SAME sha: dedup-present, no upload needed.
+    again = await _initiate(client, owner["token"], sha256=sha, stream_id=channel, data=data)
+    assert again.status_code == 200, again.text
+    assert again.json()["upload_needed"] is False
+    new_file_id = again.json()["file_id"]
+    assert new_file_id != first
+
+    # The new row inherited the identical derived-blob sha — no re-generation.
+    assert await _thumbnail_sha(db_session, new_file_id) == original_thumb
+
+    # And it serves the byte-identical thumbnail.
+    from_first = await _thumbnail(client, owner["token"], first)
+    from_dedup = await _thumbnail(client, owner["token"], new_file_id)
+    assert from_first.status_code == 200 and from_dedup.status_code == 200
+    assert from_dedup.content == from_first.content
