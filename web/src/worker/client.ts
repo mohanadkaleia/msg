@@ -14,6 +14,8 @@ import {
   type AuthResult,
   type AuthStatus,
   type BackfillResult,
+  type FileFetchResult,
+  type FileUploadParams,
   type FromWorker,
   type LoginCredentials,
   type MsgDb,
@@ -28,6 +30,8 @@ import {
   type ToWorker,
   type Transport,
   type Unsubscribe,
+  type UploadAck,
+  type UploadProgress,
   type WorkerClient,
   type WorkerStatus,
 } from './types'
@@ -115,6 +119,38 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
           method: 'sync.backfill',
           params: { stream_id: streamId },
         }) as Promise<BackfillResult>,
+    },
+    // Files namespace (ENG-119): thin wrappers over the worker file.* RPCs. The tab
+    // mints `upload_id` and subscribes via `onProgress` BEFORE `upload` (no
+    // lost-first-frame race); `download`/`thumbnail` return opaque bytes only. Every
+    // `fetch`/token/`/v1/files` call is worker-side — nothing token-ish crosses here.
+    files: {
+      upload: (params: FileUploadParams) =>
+        caller.request({ method: 'file.upload', params }) as Promise<UploadAck>,
+      retry: (uploadId: string) =>
+        caller.request({
+          method: 'file.retry',
+          params: { upload_id: uploadId },
+        }) as Promise<UploadAck>,
+      cancel: (uploadId: string) =>
+        caller.request({
+          method: 'file.cancel',
+          params: { upload_id: uploadId },
+        }) as Promise<UploadAck>,
+      download: (fileId: string) =>
+        caller.request({
+          method: 'file.fetch',
+          params: { file_id: fileId, variant: 'blob' },
+        }) as Promise<FileFetchResult>,
+      thumbnail: (fileId: string) =>
+        caller.request({
+          method: 'file.fetch',
+          params: { file_id: fileId, variant: 'thumbnail' },
+        }) as Promise<FileFetchResult>,
+      onProgress: (uploadId: string, cb: (payload: UploadProgress) => void): Unsubscribe =>
+        caller.subscribe({ kind: 'upload', upload_id: uploadId }, (payload) => {
+          cb(payload as UploadProgress)
+        }),
     },
     dispose: () => {
       caller.dispose()

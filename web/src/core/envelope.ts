@@ -24,6 +24,7 @@ import {
   buildChannelRenamedPayload,
   buildDmCreatedPayload,
 } from './payloads/meta'
+import { buildFileUploadedPayload } from './payloads/file'
 import {
   buildMessageCreatedPayload,
   buildMessageDeletedPayload,
@@ -321,6 +322,37 @@ export function buildDmCreatedBody(
     member_user_ids: options.member_user_ids,
   })
   return buildMetaBody('dm.created', payload, options)
+}
+
+/**
+ * Mint and assemble a `file.uploaded` v1 {@link Body} (ENG-119). The durable log
+ * record of an uploaded blob: it carries the content identity (`sha256`,
+ * `size_bytes`) + opaque `name`/`mime_type` the server referential-validates
+ * (ENG-117). Homed like the other message-stream events via `stream_id`.
+ *
+ * The `file_id` is the SERVER-returned id from `POST /v1/files/initiate` — file
+ * ids are minted server-side, NEVER client-side (unlike `event_id`/`message_id`),
+ * so this builder takes it as an input rather than minting one.
+ *
+ * @throws {Error} on a malformed `file_id`/`sha256`/`name`/`mime_type`/`size_bytes`.
+ */
+export function buildFileUploadedBody(
+  options: BuildMetaBodyOptions & {
+    file_id: string
+    sha256: string
+    name: string
+    mime_type: string
+    size_bytes: number
+  },
+): Body {
+  const payload = buildFileUploadedPayload({
+    file_id: options.file_id,
+    sha256: options.sha256,
+    name: options.name,
+    mime_type: options.mime_type,
+    size_bytes: options.size_bytes,
+  })
+  return buildMetaBody('file.uploaded', payload, options)
 }
 
 /**

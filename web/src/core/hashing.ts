@@ -26,6 +26,11 @@ import { canonicalize, type JSONValue } from './jcs'
 /** The one hash algorithm msg uses for `event_hash` (D1); travels in the prefix. */
 export const HASH_ALGORITHM = 'sha256'
 
+/** Lowercase-hex-encode a raw digest — the shared encoder for both hash forms. */
+function toHex(digest: ArrayBuffer): string {
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 /**
  * Return `event_hash` = `"sha256:<hex>"` over the JCS bytes of `body`.
  *
@@ -37,6 +42,27 @@ export async function hashEvent(body: JSONValue): Promise<string> {
   // type rejects because it could in principle be a SharedArrayBuffer).
   const bytes = new Uint8Array(canonicalize(body))
   const digest = await crypto.subtle.digest('SHA-256', bytes)
-  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
-  return `${HASH_ALGORITHM}:${hex}`
+  return `${HASH_ALGORITHM}:${toHex(digest)}`
+}
+
+/**
+ * SHA-256 of raw bytes as a BARE 64-char lowercase hex string (ENG-119) — the
+ * `^[0-9a-f]{64}$` content-hash form the server recomputes and the content-
+ * addressed BlobStore keys on (ENG-115). DISTINCT from {@link hashEvent}'s
+ * `sha256:`-prefixed `event_hash` form: this hashes file bytes, not a JCS body,
+ * and carries no algorithm prefix.
+ *
+ * `crypto.subtle.digest('SHA-256', …)` is ONE-SHOT — WebCrypto has no streaming
+ * digest — so the whole buffer is resident while it hashes. For a file upload the
+ * caller passes `await file.arrayBuffer()`; a ~50 MB buffer resident is acceptable
+ * (the server enforces the real size cap independently, so the client need not).
+ */
+export async function sha256Hex(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+  // Wrapping an ArrayBuffer in a Uint8Array is a VIEW, not a copy — so the 50 MB
+  // file buffer is not doubled. The `BufferSource` assertion sidesteps the purely
+  // theoretical SharedArrayBuffer arm of the lib type (a real file buffer is never
+  // shared), matching the discipline in `hashEvent` above.
+  const view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes
+  const digest = await crypto.subtle.digest('SHA-256', view as BufferSource)
+  return toHex(digest)
 }

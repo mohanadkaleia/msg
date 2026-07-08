@@ -688,6 +688,77 @@ export type MutateResult<M extends MutateParams> = M extends {
       ? OutboxActionResult
       : never
 
+// ---------------------------------------------------------------------------
+// File upload/download (ENG-119). The worker owns ALL of it — the token, the
+// `fetch`, the `/v1/files/...` calls, the hashing — behind this RPC surface. A
+// tab passes the `File` as an opaque structured clone and reads back only bytes
+// (a `Blob`) + phase pushes; the session token NEVER crosses the boundary (R1).
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload state-machine phases (ENG-119), pushed to the tab on every transition:
+ * `queued → hashing → initiating → uploading → emitting → done`. `uploading` is
+ * SKIPPED when `initiate` returns `upload_needed:false` (server-side content
+ * dedup — the blob is already present). A hard failure (413/quota/401/…) lands in
+ * `failed` with the error `code`; a transient blip backs off and retries the same
+ * step, never surfacing `failed`.
+ */
+export type UploadPhase =
+  'queued' | 'hashing' | 'initiating' | 'uploading' | 'emitting' | 'done' | 'failed'
+
+/**
+ * One upload-progress frame (ENG-119) — PHASE-level, not byte-level. The composer
+ * shows the phase while the blob uploads; the optimistic message row only appears
+ * at `emitting` (a `message.created.file_ids` referencing a not-yet-present file is
+ * server-rejected `unknown_file`, so the row must wait for the blob). Ids fill in as
+ * they become known: `file_id` after `initiating`, `message_id`/`event_id` after
+ * `emitting`; `code` is set only on `failed`.
+ */
+export interface UploadProgress {
+  upload_id: string
+  phase: UploadPhase
+  file_id?: string
+  message_id?: string
+  event_id?: string
+  code?: string
+}
+
+/**
+ * `file.upload` params (ENG-119). The tab MINTS `upload_id` (`crypto.randomUUID()`)
+ * so it can subscribe to the `{kind:'upload'}` push BEFORE issuing the request (no
+ * lost-first-frame race). The `file` is a STRUCTURED CLONE of the `File` handle —
+ * cloneable (not transferable); the clone shares the blob handle, not the bytes, so
+ * it is cheap. The worker (never the tab) calls `file.arrayBuffer()`/hashes it. The
+ * message fields mirror `outbox.send` — the companion `message.created` carries them.
+ */
+export interface FileUploadParams {
+  upload_id: string
+  stream_id: string
+  file: File
+  text?: string
+  format?: 'markdown' | 'plain'
+  thread_root_id?: string
+  mentions?: string[]
+}
+
+/** `file.upload`/`file.retry`/`file.cancel` result — echoes the tab-minted id. */
+export interface UploadAck {
+  upload_id: string
+}
+
+/**
+ * `file.fetch` result (ENG-119): opaque bytes + the response `mime_type`, or a
+ * `null` blob on a 404 (the file/thumbnail does not exist or is not readable — the
+ * server folds all non-authorized shapes into one uniform 404, no existence oracle).
+ * Only bytes cross the boundary; the TAB (not the worker) mints the `blob:` object
+ * URL, since such a URL is context-scoped and a worker-minted one is unusable in the
+ * tab DOM.
+ */
+export interface FileFetchResult {
+  blob: Blob | null
+  mime_type?: string
+}
+
 export interface RpcError {
   code: string
   detail?: string
@@ -839,11 +910,22 @@ export type RpcRequest =
   | { method: 'sync.backfill'; params: { stream_id: string } }
   | { method: 'sync.start'; params: Record<string, never> }
   | { method: 'sync.stop'; params: Record<string, never> }
+  // ENG-119 file upload/download — all `fetch`/token/`/v1/files` stay worker-side.
+  | { method: 'file.upload'; params: FileUploadParams }
+  | { method: 'file.retry'; params: { upload_id: string } }
+  | { method: 'file.cancel'; params: { upload_id: string } }
+  | { method: 'file.fetch'; params: { file_id: string; variant: 'blob' | 'thumbnail' } }
 
 export type RpcMethod = RpcRequest['method']
 
 /** Push topics — ENG-79/80 add topics without touching the transport. */
-export type Topic = { kind: 'stream'; stream_id: string } | { kind: 'status' } | { kind: 'sync' }
+export type Topic =
+  | { kind: 'stream'; stream_id: string }
+  | { kind: 'status' }
+  | { kind: 'sync' }
+  // ENG-119: per-upload progress. The tab subscribes on its minted `upload_id`
+  // before issuing `file.upload`, then reads the phase machine off these pushes.
+  | { kind: 'upload'; upload_id: string }
 
 /** Payload delivered on a push, keyed to the topic. */
 export interface StreamPush {
@@ -855,7 +937,9 @@ export type PushPayload<T extends Topic> = T extends { kind: 'status' }
     ? SyncStatus
     : T extends { kind: 'stream' }
       ? StreamPush
-      : never
+      : T extends { kind: 'upload' }
+        ? UploadProgress
+        : never
 
 // Tab → Worker frames. Every frame carries `clientId` so the leader's
 // BroadcastChannel can fan responses to the right follower.
@@ -945,6 +1029,22 @@ export interface WorkerClient {
     backfill(streamId: string): Promise<BackfillResult>
   }
 
+  /**
+   * Files namespace (ENG-119). Thin wrappers over the worker `file.*` RPCs. The tab
+   * mints `upload_id` and subscribes via `onProgress` BEFORE calling `upload` (no
+   * lost-first-frame race); `download`/`thumbnail` return opaque bytes the TAB turns
+   * into a `blob:` URL. Every `fetch`/token/`/v1/files` call lives worker-side —
+   * this namespace only shuttles clone-safe data across the RPC boundary (R1).
+   */
+  files: {
+    upload(params: FileUploadParams): Promise<UploadAck>
+    retry(uploadId: string): Promise<UploadAck>
+    cancel(uploadId: string): Promise<UploadAck>
+    download(fileId: string): Promise<FileFetchResult>
+    thumbnail(fileId: string): Promise<FileFetchResult>
+    onProgress(uploadId: string, cb: (payload: UploadProgress) => void): Unsubscribe
+  }
+
   /** Detach this tab (close port / leave channel). Idempotent. */
   dispose(): void
 }
@@ -962,5 +1062,7 @@ export function topicKey(topic: Topic): string {
       return 'sync'
     case 'stream':
       return `stream:${topic.stream_id}`
+    case 'upload':
+      return `upload:${topic.upload_id}`
   }
 }

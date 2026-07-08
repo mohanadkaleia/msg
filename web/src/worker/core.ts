@@ -7,6 +7,7 @@
 
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
+import { FileManager } from './files'
 import { createHttpClient, type HttpClient } from './http'
 import { MetaAuthor } from './meta'
 import { Outbox } from './outbox'
@@ -29,6 +30,7 @@ import {
   type ApplyEventsToProjection,
   type AuthResult,
   type BackfillResult,
+  type FileFetchResult,
   type MessageSink,
   type MsgDb,
   type MutateParams,
@@ -42,6 +44,7 @@ import {
   type SyncStatus,
   type ToWorker,
   type Topic,
+  type UploadAck,
 } from './types'
 
 /**
@@ -63,6 +66,10 @@ export interface RpcResultMap {
   'sync.backfill': BackfillResult
   'sync.start': { ok: true }
   'sync.stop': { ok: true }
+  'file.upload': UploadAck
+  'file.retry': UploadAck
+  'file.cancel': UploadAck
+  'file.fetch': FileFetchResult
 }
 
 /** A handler typed to exactly one method's request variant and result. */
@@ -116,6 +123,8 @@ export class WorkerCore {
   private readonly sync: SyncEngine
   /** The optimistic send + drain loop (ENG-81). */
   private readonly outbox: Outbox
+  /** Client file upload/download state machine (ENG-119). */
+  private readonly files: FileManager
   /** Channel & member management + DM creation authoring (ENG-104). */
   private readonly meta: MetaAuthor
   /** Latest sync state — gates the outbox drain to `live` + detects the rising edge. */
@@ -168,6 +177,14 @@ export class WorkerCore {
       // sits `queued`; the rising-edge-into-`live` kick (onSyncStatus) sends it.
       canDrain: () => this.syncLive,
     })
+    this.files = new FileManager({
+      http,
+      outbox: this.outbox,
+      authStatus: () => this.auth.status(),
+      // Fan an upload-progress frame to the tab that subscribed on this upload_id.
+      publishUpload: (uploadId, progress) =>
+        this.publish({ kind: 'upload', upload_id: uploadId }, progress),
+    })
     this.meta = new MetaAuthor({
       db,
       http,
@@ -180,6 +197,7 @@ export class WorkerCore {
     this.registerDefaults()
     this.registerAuth()
     this.registerSync()
+    this.registerFiles()
   }
 
   /**
@@ -436,6 +454,18 @@ export class WorkerCore {
       this.sync.stop()
       return Promise.resolve({ ok: true as const })
     })
+  }
+
+  // -- ENG-119 file handlers -----------------------------------------------
+  // Delegate the four file.* RPCs to the FileManager. `upload` returns immediately
+  // (progress rides the `{kind:'upload'}` push); `fetch` returns opaque bytes. All
+  // `fetch`/token/`/v1/files` logic stays inside the FileManager (token boundary).
+
+  private registerFiles(): void {
+    this.register('file.upload', (req) => this.files.startUpload(req.params))
+    this.register('file.retry', (req) => this.files.retry(req.params.upload_id))
+    this.register('file.cancel', (req) => this.files.cancel(req.params.upload_id))
+    this.register('file.fetch', (req) => this.files.fetch(req.params))
   }
 }
 

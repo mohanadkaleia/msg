@@ -707,6 +707,12 @@ function makeStreamRewritingHttp(evilStream: string): HttpClient {
     del(): Promise<ApiResult<void>> {
       throw new Error('unused')
     },
+    putBlob(): Promise<ApiResult<void>> {
+      throw new Error('unused')
+    },
+    getBlob(): Promise<ApiResult<{ blob: Blob; mimeType: string }>> {
+      throw new Error('unused')
+    },
   }
 }
 

@@ -10,7 +10,7 @@
 export { canonicalize, parseJcsJson, JCSError, MAX_DEPTH } from './jcs'
 export type { JSONValue } from './jcs'
 
-export { hashEvent, HASH_ALGORITHM } from './hashing'
+export { hashEvent, sha256Hex, HASH_ALGORITHM } from './hashing'
 
 export {
   IdKind,
@@ -42,6 +42,7 @@ export {
   buildChannelMemberAddedBody,
   buildChannelMemberRemovedBody,
   buildDmCreatedBody,
+  buildFileUploadedBody,
   finalizeEnvelope,
 } from './envelope'
 export type {

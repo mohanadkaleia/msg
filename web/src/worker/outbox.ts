@@ -17,6 +17,7 @@
 // the RPC surface or a log.
 
 import {
+  buildFileUploadedBody,
   buildMessageCreatedBody,
   buildMessageDeletedBody,
   buildMessageEditedBody,
@@ -262,6 +263,65 @@ export class Outbox {
     this.publishStream(outboxRow.stream_id)
     this.drain()
     return { message_id: messageId, event_id: outboxRow.event_id, created_seq: createdAt }
+  }
+
+  /**
+   * Enqueue a `file.uploaded` v1 event (ENG-119) — the durable log record of an
+   * already-uploaded blob, built + hashed worker-side from the ENG-76 core spine.
+   * Called by the {@link FileManager} at the `emitting` step, BEFORE the companion
+   * `message.created`, so the drain sends `file.uploaded` then `message.created` in
+   * one ordered batch (the blob is already present, so the server's referential
+   * validation — ENG-117 — sees a present file and never `unknown_file`).
+   *
+   * Two deliberate deviations from {@link enqueue}:
+   *   • `file.uploaded` has NO `payload.message_id`, so it can't ride the send tail
+   *     that reads it — the outbox row's `message_id` slot is keyed on the `file_id`
+   *     SENTINEL instead (a stable, unique link for settle/reapply bookkeeping);
+   *   • NO optimistic projection overlay is applied (the client projection of
+   *     `file.uploaded` is ENG-120, explicitly out of scope) — `applyPendingOutboxRow`
+   *     / `applyEventsToProjection` already DEFAULT-SKIP the type, so settle is inert.
+   *
+   * It does NOT kick the drain itself: the caller enqueues this THEN `send`s the
+   * message, and `send`'s single drain-kick flushes both rows together (one ordered
+   * batch). Returns the minted `event_id` (the server-dedup key on retry).
+   */
+  async enqueueFileUploaded(opts: {
+    stream_id: string
+    file_id: string
+    sha256: string
+    name: string
+    mime_type: string
+    size_bytes: number
+  }): Promise<{ event_id: string }> {
+    const { my_user_id, workspace_id, deviceId } = await this.identity()
+    const body = buildFileUploadedBody({
+      workspace_id,
+      stream_id: opts.stream_id,
+      author_user_id: my_user_id,
+      author_device_id: deviceId,
+      client_created_at: new Date(this.now()).toISOString(),
+      file_id: opts.file_id,
+      sha256: opts.sha256,
+      name: opts.name,
+      mime_type: opts.mime_type,
+      size_bytes: opts.size_bytes,
+    })
+    const { body: finalBody, event_hash } = await finalizeEnvelope(body)
+    const outboxRow: OutboxRow = {
+      event_id: finalBody.event_id,
+      created_at: this.now(),
+      body: finalBody,
+      event_hash,
+      // No payload.message_id on file.uploaded — key the row on the file_id sentinel.
+      message_id: opts.file_id,
+      stream_id: finalBody.stream_id,
+      state: 'queued',
+    }
+    await this.db.putOutbox([outboxRow])
+    // Deliberately NO applyPendingOutboxRow (no optimistic overlay — ENG-120) and NO
+    // drain kick (the caller's subsequent send drives the single ordered batch).
+    this.publishStream(outboxRow.stream_id)
+    return { event_id: outboxRow.event_id }
   }
 
   /** Re-queue a `rejected` send: clear the failed marker, re-apply the overlay, kick the drain. */

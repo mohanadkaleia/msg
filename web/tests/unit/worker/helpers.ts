@@ -5,7 +5,7 @@
 import { IDBFactory, IDBKeyRange as FakeIDBKeyRange } from 'fake-indexeddb'
 import type { DexieOptions } from 'dexie'
 
-import { buildMessageCreatedBody, hashEvent } from '../../../src/core'
+import { buildMessageCreatedBody, hashEvent, newFileId } from '../../../src/core'
 import { DexieDb, MsgDB } from '../../../src/worker/db'
 import type { ApiError, ApiResult, HttpClient } from '../../../src/worker/http'
 import type { ChannelLike, LockManagerLike } from '../../../src/worker/leader'
@@ -238,6 +238,20 @@ interface FakeStream {
   headOverride?: number
 }
 
+/** A reserved file row in the {@link FakeSyncServer} Files API model (ENG-119). */
+interface FakeFileRow {
+  file_id: string
+  sha256: string
+  name: string
+  mime_type: string
+  size_bytes: number
+  stream_id: string
+  present: boolean
+  thumbnail: boolean
+  /** The bytes stored by a successful PUT (streamed back on download). */
+  bytes?: Blob | ArrayBuffer
+}
+
 /**
  * A hermetic model of the read-side server: answers `GET /v1/sync` and
  * `GET /v1/events` from an in-memory, gapless-per-stream event log. Tests mutate
@@ -280,6 +294,14 @@ export class FakeSyncServer {
   eventsError: ApiError | undefined
   /** When set, every `POST /v1/events/batch` fails transiently with this error. */
   batchError: ApiError | undefined
+
+  // -- ENG-119 Files API model --------------------------------------------
+  /** `file_id` → the reserved file row (models the server `files` table). */
+  private readonly files = new Map<string, FakeFileRow>()
+  /** Shas whose bytes are PRESENT anywhere (drives the dedup `upload_needed` answer). */
+  private readonly presentShas = new Set<string>()
+  /** Consumed by the NEXT `POST /v1/files/initiate` (a hard 413/quota/etc. arm). */
+  nextInitiateError: ApiError | undefined
 
   addStream(meta: Partial<SyncStreamMeta> & { stream_id: string; kind?: string }): void {
     this.streams.set(meta.stream_id, {
@@ -424,6 +446,88 @@ export class FakeSyncServer {
     return { ok: true, value: this.processBatch(events) }
   }
 
+  // -- ENG-119 Files API responders ---------------------------------------
+
+  /** Pre-mark a sha as PRESENT so the next initiate dedups (`upload_needed:false`). */
+  markShaPresent(sha256: string): void {
+    this.presentShas.add(sha256)
+  }
+
+  /**
+   * `POST /v1/files/initiate`: reserve a NEW file row (server mints the id — even a
+   * re-used sha gets a fresh row) and report whether bytes are still needed
+   * (`upload_needed:false` only when this sha is already present — the dedup path).
+   * A configured {@link nextInitiateError} (413/quota/…) is returned once instead.
+   */
+  respondInitiate(body: {
+    sha256: string
+    name: string
+    mime_type: string
+    size_bytes: number
+    stream_id: string
+  }): ApiResult<{ file_id: string; upload_needed: boolean }> {
+    if (this.nextInitiateError) {
+      const error = this.nextInitiateError
+      this.nextInitiateError = undefined
+      return { ok: false, error }
+    }
+    const present = this.presentShas.has(body.sha256)
+    const file_id = newFileId()
+    this.files.set(file_id, {
+      file_id,
+      sha256: body.sha256,
+      name: body.name,
+      mime_type: body.mime_type,
+      size_bytes: body.size_bytes,
+      stream_id: body.stream_id,
+      present,
+      thumbnail: present && body.mime_type.startsWith('image/'),
+    })
+    return { ok: true, value: { file_id, upload_needed: !present } }
+  }
+
+  /**
+   * `PUT /v1/files/{file_id}/blob`: store the raw bytes, flip the row PRESENT
+   * (idempotent — a repeat PUT is a safe success), and record the sha as present so
+   * a later initiate of the same content dedups. Best-effort thumbnail for images.
+   */
+  respondPutBlob(fileId: string, body: Blob | ArrayBuffer): ApiResult<void> {
+    const row = this.files.get(fileId)
+    if (!row) return { ok: false, error: { status: 404, code: 'not-found', title: 'Not found' } }
+    row.bytes = body
+    row.present = true
+    if (row.mime_type.startsWith('image/')) row.thumbnail = true
+    this.presentShas.add(row.sha256)
+    return { ok: true, value: undefined }
+  }
+
+  /**
+   * `GET /v1/files/{file_id}[/thumbnail]`: stream the present blob back as an opaque
+   * `application/octet-stream` attachment (or the WEBP thumbnail inline). A missing /
+   * not-present file, or a missing thumbnail, is the uniform 404 (no existence oracle).
+   */
+  respondGetBlob(path: string): ApiResult<{ blob: Blob; mimeType: string }> {
+    const notFound = {
+      ok: false as const,
+      error: { status: 404, code: 'not-found', title: 'Not found' },
+    }
+    const thumb = path.endsWith('/thumbnail')
+    const fileId = thumb
+      ? path.slice('/v1/files/'.length, -'/thumbnail'.length)
+      : path.slice('/v1/files/'.length)
+    const row = this.files.get(fileId)
+    if (!row || !row.present) return notFound
+    if (thumb) {
+      if (!row.thumbnail) return notFound
+      return { ok: true, value: { blob: new Blob([new Uint8Array([1])]), mimeType: 'image/webp' } }
+    }
+    const bytes = row.bytes ?? new Uint8Array()
+    return {
+      ok: true,
+      value: { blob: new Blob([bytes]), mimeType: 'application/octet-stream' },
+    }
+  }
+
   /** The stored wire event for an `event_id` (to emit as a WS frame in a test). */
   wireFor(eventId: string): WireEvent | undefined {
     for (const s of this.streams.values()) {
@@ -482,10 +586,20 @@ export class FakeSyncServer {
 export class FakeHttpClient implements HttpClient {
   readonly getCalls: string[] = []
   readonly postCalls: { path: string; body: unknown }[] = []
+  /** Every `putBlob` call — the raw body + declared content type (never JSON). */
+  readonly putBlobCalls: { path: string; body: Blob | ArrayBuffer; contentType?: string }[] = []
+  readonly getBlobCalls: string[] = []
   inFlight = 0
   maxInFlight = 0
+  /** Queued transient failures — one per `putBlob` (a blip injector for retry tests). */
+  private readonly putBlips: ApiError[] = []
 
   constructor(private readonly server: FakeSyncServer) {}
+
+  /** Make the NEXT `putBlob` fail transiently (default a `network` blip). */
+  failNextPutBlob(error: ApiError = { status: 0, code: 'network', title: 'Network error' }): void {
+    this.putBlips.push(error)
+  }
 
   async get<T>(path: string): Promise<ApiResult<T>> {
     this.getCalls.push(path)
@@ -510,11 +624,44 @@ export class FakeHttpClient implements HttpClient {
         this.inFlight--
       }
     }
+    if (path.startsWith('/v1/files/initiate')) {
+      return this.server.respondInitiate(
+        body as {
+          sha256: string
+          name: string
+          mime_type: string
+          size_bytes: number
+          stream_id: string
+        },
+      ) as ApiResult<T>
+    }
     return { ok: true, value: undefined as T }
   }
 
   del(): Promise<ApiResult<void>> {
     return Promise.resolve({ ok: true, value: undefined })
+  }
+
+  putBlob(
+    path: string,
+    body: Blob | ArrayBuffer,
+    opts?: { contentType?: string },
+  ): Promise<ApiResult<void>> {
+    this.putBlobCalls.push({
+      path,
+      body,
+      ...(opts?.contentType ? { contentType: opts.contentType } : {}),
+    })
+    const blip = this.putBlips.shift()
+    if (blip) return Promise.resolve({ ok: false, error: blip })
+    // path = /v1/files/{file_id}/blob
+    const fileId = path.slice('/v1/files/'.length, -'/blob'.length)
+    return Promise.resolve(this.server.respondPutBlob(fileId, body))
+  }
+
+  getBlob(path: string): Promise<ApiResult<{ blob: Blob; mimeType: string }>> {
+    this.getBlobCalls.push(path)
+    return Promise.resolve(this.server.respondGetBlob(path))
   }
 
   /** Count of GET calls whose path matches `pattern`. */

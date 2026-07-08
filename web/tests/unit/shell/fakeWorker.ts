@@ -478,6 +478,16 @@ export class FakeWorker {
           })
         },
       },
+      // ENG-119: the shell tests don't drive file uploads yet (ENG-121); a minimal
+      // token-free stub keeps the WorkerClient surface satisfied.
+      files: {
+        upload: (params) => Promise.resolve({ upload_id: params.upload_id }),
+        retry: (uploadId: string) => Promise.resolve({ upload_id: uploadId }),
+        cancel: (uploadId: string) => Promise.resolve({ upload_id: uploadId }),
+        download: () => Promise.resolve({ blob: null }),
+        thumbnail: () => Promise.resolve({ blob: null }),
+        onProgress: () => () => {},
+      },
       dispose: () => {},
     }
   }

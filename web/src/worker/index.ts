@@ -52,6 +52,12 @@ export {
   type SyncState,
   type BackfillResult,
   type StreamPush,
+  // ENG-119 file upload/download surface (tab seams: useFileUpload / useFileUrl).
+  type FileUploadParams,
+  type UploadAck,
+  type UploadPhase,
+  type UploadProgress,
+  type FileFetchResult,
 } from './types'
 
 // ENG-80 projection functions — the ENG-79 apply seam + the ENG-83 dump surface.
