@@ -37,7 +37,7 @@ const props = withDefaults(
 defineEmits<{
   /** Open the add-member affordance (wired by the parent to channel settings). */
   'add-member': []
-  /** Toggle the details drawer (no-op today; the drawer lands in a later PR). */
+  /** Toggle the channel Details drawer (wired in AppShell — ENG-136/ENG-129). */
   'toggle-details': []
 }>()
 
@@ -73,7 +73,12 @@ const favorite = ref(false)
       <IconButton size="sm" label="Pinned messages">
         <Icon name="pin" :size="18" />
       </IconButton>
-      <IconButton size="sm" label="Details" @click="$emit('toggle-details')">
+      <IconButton
+        size="sm"
+        label="Details"
+        data-testid="channel-header-details"
+        @click="$emit('toggle-details')"
+      >
         <Icon name="more-horizontal" :size="18" />
       </IconButton>
     </div>

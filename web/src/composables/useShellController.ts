@@ -27,6 +27,14 @@ import { useWorkspaceStore } from '../stores/workspace'
 /** Which panel the main column renders: the live timeline, the Inbox, or a scaffold. */
 export type ActiveView = 'conversation' | 'inbox' | 'apps' | 'files' | 'admin'
 
+/**
+ * What the right drawer hosts (ENG-136 details drawer). The two panels are
+ * MUTUALLY EXCLUSIVE: opening a thread closes the details drawer and vice versa.
+ * `'thread'` derives from the thread store's `isOpen` (so thread open/close
+ * behavior — including the synchronous close — is EXACTLY the pre-details flow).
+ */
+export type DrawerMode = 'none' | 'thread' | 'details'
+
 /** The views that still render a scaffold placeholder (Inbox is REAL — ENG-136). */
 type ScaffoldView = Exclude<ActiveView, 'conversation' | 'inbox'>
 
@@ -60,6 +68,26 @@ export function useShellController() {
   const editingMessageId = ref<string | null>(null)
   /** Which main panel is active: the conversation timeline vs a scaffold section. */
   const activeView: Ref<ActiveView> = ref('conversation')
+
+  /** Whether the channel Details drawer is requested open (ENG-136). */
+  const detailsOpen = ref(false)
+
+  /**
+   * The single drawer-mode truth the shell lays out on. Thread WINS: `'thread'`
+   * whenever the thread store is open (so a thread opened through any path —
+   * including directly on the store — always displaces the details drawer), else
+   * `'details'` when requested, else `'none'`.
+   */
+  const drawerMode = computed<DrawerMode>(() => {
+    if (threadOpen.value) return 'thread'
+    return detailsOpen.value ? 'details' : 'none'
+  })
+
+  // Mutual exclusion, store-side: a thread opened directly on the thread store
+  // (not just via onOpenThread) still closes the details drawer.
+  watch(threadOpen, (open) => {
+    if (open) detailsOpen.value = false
+  })
 
   /** Admin section is only offered to privileged roles. */
   const canAdmin = computed(() => role.value === 'admin' || role.value === 'owner')
@@ -140,10 +168,52 @@ export function useShellController() {
 
   /** Flip the main panel to a section (Inbox/Apps/Files/Admin) or the timeline. */
   function setActiveView(view: ActiveView): void {
-    // Navigating away from the conversation closes any open thread so the drawer
-    // doesn't dock beside it (PR-B review #4). The conversation view keeps its thread.
-    if (view !== 'conversation') thread.close()
+    // Navigating away from the conversation closes any open drawer (thread OR
+    // details) so neither docks beside a non-conversation panel (PR-B review #4).
+    if (view !== 'conversation') {
+      thread.close()
+      detailsOpen.value = false
+    }
     activeView.value = view
+  }
+
+  /**
+   * ChannelHeader's details button (ENG-136): toggle the Details drawer for the
+   * selected stream. Opening it displaces any open thread (mutual exclusion);
+   * a second press closes it. Only meaningful on the conversation view with a
+   * selected stream — otherwise a no-op.
+   */
+  function toggleDetails(): void {
+    if (detailsOpen.value) {
+      detailsOpen.value = false
+      return
+    }
+    if (activeView.value !== 'conversation' || !selectedStream.value) return
+    thread.close()
+    detailsOpen.value = true
+  }
+
+  /** The Details drawer's ✕ (or any programmatic close). */
+  function closeDetails(): void {
+    detailsOpen.value = false
+  }
+
+  /**
+   * After the user LEFT the selected channel from the Details drawer (the
+   * `channel.removeMember(streamId, myUserId)` mutation already ran): close the
+   * drawer and, if the stream dropped out of the sidebar, gracefully select the
+   * first remaining channel (else DM, else nothing).
+   */
+  function onChannelLeft(): void {
+    detailsOpen.value = false
+    const id = selectedStreamId.value
+    const stillVisible =
+      id !== null &&
+      [...channels.value, ...dms.value].some((s: { stream_id: string }) => s.stream_id === id)
+    if (!stillVisible) {
+      const next = channels.value[0] ?? dms.value[0]
+      workspace.selectedStreamId = next ? next.stream_id : null
+    }
   }
 
   function openPalette(): void {
@@ -223,7 +293,10 @@ export function useShellController() {
    */
   function onOpenThread(rootMessageId: string): void {
     const streamId = selectedStreamId.value
-    if (streamId) void thread.openThread(rootMessageId, streamId)
+    if (!streamId) return
+    // Mutual exclusion, synchronously: the thread displaces the details drawer.
+    detailsOpen.value = false
+    void thread.openThread(rootMessageId, streamId)
   }
 
   async function onLogout(): Promise<void> {
@@ -271,6 +344,7 @@ export function useShellController() {
     displayMessages,
     hasMore,
     threadOpen,
+    drawerMode,
     // computed view state
     headerLabel,
     mainTitle,
@@ -282,6 +356,9 @@ export function useShellController() {
     quickItems,
     // handlers
     setActiveView,
+    toggleDetails,
+    closeDetails,
+    onChannelLeft,
     openPalette,
     onPaletteSelect,
     onOpenStream,

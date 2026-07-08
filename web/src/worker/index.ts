@@ -65,6 +65,11 @@ export {
   type PresenceStatus,
   type PresenceEntry,
   type PresencePush,
+  // ENG-124/126 notification prefs (ENG-129 per-channel selector reads these).
+  type PrefLevel,
+  type PrefsRow,
+  type PrefsListResult,
+  type PrefsPush,
 } from './types'
 
 // ENG-80 projection functions — the ENG-79 apply seam + the ENG-83 dump surface.

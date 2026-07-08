@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { useShellController } from '../../../src/composables/useShellController'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
 import { useAuthStore } from '../../../src/stores/auth'
+import { useThreadStore } from '../../../src/stores/thread'
+import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
 
 type Controller = ReturnType<typeof useShellController>
@@ -155,6 +157,94 @@ describe('useShellController (ENG-136 PR-B)', () => {
     await flushPromises()
     expect(ctrl.threadOpen.value).toBe(false)
     expect(ctrl.activeView.value).toBe('inbox')
+  })
+
+  it('toggles the Details drawer from the header action (open → close)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    expect(ctrl.drawerMode.value).toBe('none')
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('details')
+    // A second press closes it again.
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('none')
+  })
+
+  it('keeps thread and details mutually exclusive (either direction)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const root = fake.addMessage('s_a', { created_seq: 1, text: 'root' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    // details → thread: opening a thread displaces the details drawer.
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('details')
+    ctrl.onOpenThread(root.message_id)
+    await flushPromises()
+    expect(ctrl.drawerMode.value).toBe('thread')
+    expect(ctrl.threadOpen.value).toBe(true)
+
+    // thread → details: the header details button closes the open thread.
+    ctrl.toggleDetails()
+    await flushPromises()
+    expect(ctrl.drawerMode.value).toBe('details')
+    expect(ctrl.threadOpen.value).toBe(false)
+  })
+
+  it('closeDetails and thread.close both land the drawer on none (synchronously)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const root = fake.addMessage('s_a', { created_seq: 1, text: 'root' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.toggleDetails()
+    ctrl.closeDetails()
+    expect(ctrl.drawerMode.value).toBe('none')
+
+    ctrl.onOpenThread(root.message_id)
+    await flushPromises()
+    expect(ctrl.drawerMode.value).toBe('thread')
+    // thread.close() must flip the mode back with NO awaited flush — the drawer's
+    // synchronous unmount contract (thread testids/behavior unchanged).
+    useThreadStore().close()
+    expect(ctrl.drawerMode.value).toBe('none')
+  })
+
+  it('closes the details drawer when navigating away from the conversation', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('details')
+    ctrl.setActiveView('inbox')
+    expect(ctrl.drawerMode.value).toBe('none')
+    // And details cannot open on a non-conversation view.
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('none')
+  })
+
+  it('after leaving the channel: closes the drawer and selects the next stream', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    fake.addStream({ stream_id: 's_b', name: 'bravo', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    expect(ctrl.selectedStreamId.value).toBe('s_a')
+    ctrl.toggleDetails()
+
+    // The drawer ran channel.removeMember(s_a, me); the fake flipped member:false.
+    const workspace = useWorkspaceStore()
+    await workspace.removeMember('s_a', 'u_me')
+    await flushPromises()
+
+    ctrl.onChannelLeft()
+    await flushPromises()
+    expect(ctrl.drawerMode.value).toBe('none')
+    // Gracefully reselected the remaining channel.
+    expect(ctrl.selectedStreamId.value).toBe('s_b')
   })
 
   it('gates the Admin scaffold on a privileged role', async () => {

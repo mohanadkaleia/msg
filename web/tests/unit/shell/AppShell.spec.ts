@@ -188,6 +188,65 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(wrapper.find('[data-testid="thread-pane"]').exists()).toBe(false)
   })
 
+  it('toggles the Details drawer from the channel-header details button', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const wrapper = await mountShell(fake, router)
+
+    expect(wrapper.find('[role="complementary"][aria-label="Details"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="channel-header-details"]').trigger('click')
+    await flushPromises()
+
+    // Details drawer opens in its own (16rem) grid track with the reference rows.
+    const drawer = wrapper.get('[role="complementary"][aria-label="Details"]')
+    expect(drawer.find('[data-testid="channel-details"]').exists()).toBe(true)
+    expect(drawer.text()).toContain('Notifications')
+    expect(wrapper.find('.grid-cols-\\[1fr_16rem\\]').exists()).toBe(true)
+
+    // The ✕ closes it and the grid column collapses.
+    await drawer.get('[data-testid="details-close"]').trigger('click')
+    expect(wrapper.find('[role="complementary"][aria-label="Details"]').exists()).toBe(false)
+    expect(wrapper.find('.grid-cols-\\[1fr_16rem\\]').exists()).toBe(false)
+  })
+
+  it('details displaces an open thread (mutual exclusion) and vice versa', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const root = fake.addMessage('s_a', { created_seq: 1, text: 'root' })
+    const wrapper = await mountShell(fake, router)
+
+    const thread = useThreadStore()
+    await thread.openThread(root.message_id, 's_a')
+    await flushPromises()
+    expect(wrapper.find('[role="complementary"][aria-label="Thread"]').exists()).toBe(true)
+
+    // Details button → thread closes, details opens (never both columns).
+    await wrapper.get('[data-testid="channel-header-details"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="complementary"][aria-label="Thread"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="thread-pane"]').exists()).toBe(false)
+    expect(wrapper.find('[role="complementary"][aria-label="Details"]').exists()).toBe(true)
+
+    // Re-opening a thread displaces the details drawer.
+    await thread.openThread(root.message_id, 's_a')
+    await flushPromises()
+    expect(wrapper.find('[role="complementary"][aria-label="Details"]').exists()).toBe(false)
+    expect(wrapper.find('[role="complementary"][aria-label="Thread"]').exists()).toBe(true)
+    expect(wrapper.find('.grid-cols-\\[1fr_24rem\\]').exists()).toBe(true)
+  })
+
+  it('opens the EXISTING channel-settings dialog from the details Members row', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const wrapper = await mountShell(fake, router)
+
+    await wrapper.get('[data-testid="channel-header-details"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="channel-settings"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="channel-members"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.get('[data-testid="channel-settings"]')
+    expect(dialog.text()).toContain('alpha')
+  })
+
   it('hosts exactly one sync indicator (unique selector for the golden path)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     const wrapper = await mountShell(fake, router)

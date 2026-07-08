@@ -16,6 +16,7 @@ import type {
   MessageRow,
   MutateParams,
   MutateResult,
+  PrefLevel,
   PushPayload,
   QueryParams,
   QueryResult,
@@ -44,6 +45,8 @@ export class FakeWorker {
   readonly sendSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.send' }>) => void>()
   /** Captures every ENG-104 meta mutation (create/rename/archive/member/dm). */
   readonly metaSpy = vi.fn<(params: MutateParams) => void>()
+  /** ENG-129 notification-prefs spy: every `prefs.set(streamId, level)` call. */
+  readonly prefsSetSpy = vi.fn<(streamId: string, level: PrefLevel) => void>()
   /** ENG-102 M3 optimistic-op spies. */
   readonly reactSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.react' }>) => void>()
   readonly editSpy = vi.fn<(params: Extract<MutateParams, { m: 'outbox.edit' }>) => void>()
@@ -73,6 +76,8 @@ export class FakeWorker {
   private subs = new Map<string, Set<(p: unknown) => void>>()
   private syncStatus: SyncStatus = { state: 'live', online: true }
   private myUserId = 'u_me'
+  /** ENG-129 notification prefs mirror: `stream_id → level` (absent ⇒ 'all'). */
+  private prefRows = new Map<string, PrefLevel>()
 
   /** A configurable older-page the next `sync.backfill` reveals (oldest first). */
   private pendingBackfill: MessageRow[] = []
@@ -290,6 +295,26 @@ export class FakeWorker {
     for (const h of this.subs.get('sync') ?? []) h(status)
   }
 
+  /** Seed a stored notification pref (ENG-129) the next `prefs.get` returns. */
+  setPref(streamId: string, level: PrefLevel): this {
+    this.prefRows.set(streamId, level)
+    return this
+  }
+
+  /** Fan the full prefs snapshot on `{kind:'prefs'}` (a set's publish / an echo). */
+  publishPrefs(): void {
+    const payload: PushPayload<{ kind: 'prefs' }> = {
+      prefs: [...this.prefRows.entries()].map(([stream_id, level]) => ({ stream_id, level })),
+    }
+    for (const h of this.subs.get('prefs') ?? []) h(payload)
+  }
+
+  /** Apply a cross-device prefs echo: LWW replace + publish (mirrors PrefsManager). */
+  echoPref(streamId: string, level: PrefLevel): void {
+    this.prefRows.set(streamId, level)
+    this.publishPrefs()
+  }
+
   publishStream(streamId: string): void {
     const payload: PushPayload<{ kind: 'stream'; stream_id: string }> = { stream_id: streamId }
     for (const h of this.subs.get(`stream:${streamId}`) ?? []) h(payload)
@@ -451,6 +476,15 @@ export class FakeWorker {
       params.m === 'channel.removeMember'
     ) {
       this.metaSpy(params)
+      // Removing YOURSELF (leave, ENG-129 drawer) mirrors the projection effect:
+      // the membership row flips to member:false, so the stream leaves the sidebar.
+      if (params.m === 'channel.removeMember' && params.user_id === this.myUserId) {
+        const stream = this.streams.get(params.stream_id)
+        if (stream) {
+          stream.member = false
+          this.publishStream(params.stream_id)
+        }
+      }
       return Promise.resolve({ ok: true } as MutateResult<M>)
     }
     // ENG-100/102 M3 optimistic ops — the fake applies the projection effect the
@@ -603,9 +637,23 @@ export class FakeWorker {
       readState: {
         mark: (streamId, seq) => Promise.resolve({ stream_id: streamId, last_read_seq: seq }),
       },
+      // ENG-129: a REAL-shaped prefs surface — `get` returns the seeded snapshot,
+      // `set` records the call, LWW-upserts, and fans the `{kind:'prefs'}` push
+      // (exactly the PrefsManager's optimistic publish/echo shape).
       prefs: {
-        get: () => Promise.resolve({ prefs: [] }),
-        set: (streamId, level) => Promise.resolve({ stream_id: streamId, level }),
+        get: () =>
+          Promise.resolve({
+            prefs: [...this.prefRows.entries()].map(([stream_id, level]) => ({
+              stream_id,
+              level,
+            })),
+          }),
+        set: (streamId, level) => {
+          this.prefsSetSpy(streamId, level)
+          this.prefRows.set(streamId, level)
+          this.publishPrefs()
+          return Promise.resolve({ stream_id: streamId, level })
+        },
       },
       presence: {
         subscribe: (cb) => this.subscribe({ kind: 'presence' }, cb),

@@ -16,10 +16,11 @@
 // `useShellController`. The Inbox brings its own header + filter tabs, so the
 // ChannelHeader is skipped for it. No message data ever comes from the HTTP API —
 // the shell reads exclusively through the worker client (via the stores).
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import AppSidebar from './AppSidebar.vue'
 import ChannelHeader from './ChannelHeader.vue'
+import ChannelSettingsDialog from './ChannelSettingsDialog.vue'
 import CommandPalette from './CommandPalette.vue'
 import InboxView from './InboxView.vue'
 import MessageComposer from './MessageComposer.vue'
@@ -30,6 +31,7 @@ import SpaceRail from './SpaceRail.vue'
 import TopBar from './TopBar.vue'
 import EmptyState from '../ui/EmptyState.vue'
 import { useShellController } from '../../composables/useShellController'
+import type { SidebarStream } from '../../stores/workspace'
 
 const {
   messages,
@@ -44,7 +46,7 @@ const {
   mentionItems,
   displayMessages,
   hasMore,
-  threadOpen,
+  drawerMode,
   mainTitle,
   names,
   memberCount,
@@ -53,6 +55,9 @@ const {
   composerPlaceholder,
   quickItems,
   setActiveView,
+  toggleDetails,
+  closeDetails,
+  onChannelLeft,
   openPalette,
   onPaletteSelect,
   onOpenStream,
@@ -71,13 +76,24 @@ const {
 const showCompose = ref(false)
 
 /** SCAFFOLD: the add-member affordance lives in the sidebar's channel settings
- * today; the header's button is a forward hook (details drawer lands in a later PR). */
+ * today; the header's button is a forward hook (a dedicated flow is a follow-up). */
 function onHeaderAddMember(): void {
   // No-op scaffold — a real add-member entry point is wired in a follow-up.
 }
-function onToggleDetails(): void {
-  // No-op scaffold — the details drawer is a later PR.
+
+/** The Details drawer's Members row → the EXISTING channel-settings dialog
+ * (rename/archive + add/remove member, ENG-104), targeted at the selected stream. */
+const settingsFor = ref<SidebarStream | null>(null)
+function onOpenMembers(): void {
+  if (selectedStream.value) settingsFor.value = selectedStream.value
 }
+
+/** Drawer grid column: 24rem for the thread (unchanged), 16rem (~250px) for details. */
+const gridCols = computed(() => {
+  if (drawerMode.value === 'thread') return 'grid-cols-[1fr_24rem]'
+  if (drawerMode.value === 'details') return 'grid-cols-[1fr_16rem]'
+  return 'grid-cols-[1fr]'
+})
 </script>
 
 <template>
@@ -102,10 +118,7 @@ function onToggleDetails(): void {
     <div class="flex min-w-0 flex-1 flex-col">
       <TopBar @search="openPalette" @compose="showCompose = true" />
 
-      <div
-        class="grid min-h-0 flex-1"
-        :class="threadOpen ? 'grid-cols-[1fr_24rem]' : 'grid-cols-[1fr]'"
-      >
+      <div class="grid min-h-0 flex-1" :class="gridCols">
         <!-- Main column. The Inbox brings its own header + tabs, so the shared
              channel-header is skipped for it (preserved for every other view). -->
         <main role="main" class="flex min-h-0 min-w-0 flex-col">
@@ -114,7 +127,7 @@ function onToggleDetails(): void {
             :title="mainTitle"
             :member-count="memberCount"
             @add-member="onHeaderAddMember"
-            @toggle-details="onToggleDetails"
+            @toggle-details="toggleDetails"
           />
 
           <!-- Live conversation timeline (real channel/DM). -->
@@ -156,8 +169,15 @@ function onToggleDetails(): void {
           </div>
         </main>
 
-        <!-- Drawer column (M3 thread pane, ENG-103) — only while a thread is open. -->
-        <RightDrawer :open="threadOpen" />
+        <!-- Drawer column: the thread pane (ENG-103) OR the channel Details panel
+             (ENG-136/129) — mutually exclusive, keyed on the shell's drawerMode. -->
+        <RightDrawer
+          :mode="drawerMode"
+          :stream="selectedStream"
+          @close="closeDetails"
+          @open-members="onOpenMembers"
+          @left="onChannelLeft"
+        />
       </div>
     </div>
 
@@ -170,5 +190,8 @@ function onToggleDetails(): void {
 
     <!-- REAL compose target: a New DM dialog opened from the TopBar compose button. -->
     <NewDmDialog v-if="showCompose" @close="showCompose = false" />
+
+    <!-- The Details drawer's Members row reuses the existing settings dialog. -->
+    <ChannelSettingsDialog v-if="settingsFor" :stream="settingsFor" @close="settingsFor = null" />
   </div>
 </template>
