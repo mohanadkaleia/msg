@@ -17,21 +17,18 @@ formatter shared by the ``GET /v1/events`` serializer:
 router clamps a client ``limit`` into ``[MIN_LIMIT, MAX_LIMIT]`` in code (never
 via ``Query(ge/le)``, which would 422 instead of clamp).
 
-:func:`_to_rfc3339` mirrors ``events.insert._format_rfc3339`` exactly (that
-helper is private to ENG-65's file; post-M1 both dedupe into ``core/time`` — a
-follow-up that would touch a shared module, so not this ticket).  ``server`` is
-unhashed metadata (D1), so µs→ms precision loss on the TIMESTAMPTZ read-back is
-not an integrity concern.
+The server-metadata time formatter this module used to carry (``_to_rfc3339``)
+is now :func:`msgd.core.time.to_rfc3339` (the earmarked ``core/time`` dedupe,
+landed with the ENG-155 shared-serialization refactor).  ``server`` is unhashed
+metadata (D1), so µs→ms precision loss on the TIMESTAMPTZ read-back is not an
+integrity concern.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
-
-from msgd.core.time import now_rfc3339
 
 __all__ = [
     "DEFAULT_LIMIT",
@@ -47,18 +44,6 @@ __all__ = [
 DEFAULT_LIMIT = 500
 MAX_LIMIT = 500
 MIN_LIMIT = 1
-
-
-def _to_rfc3339(moment: datetime) -> str:
-    """Render a server timestamp as RFC 3339 (millisecond ``Z``), matching D1.
-
-    Mirrors ``events.insert._format_rfc3339`` (kept private to that file). A
-    TIMESTAMPTZ read-back is always tz-aware; the naive fallback matches the
-    origin helper for total safety.
-    """
-    if moment.tzinfo is None:
-        return now_rfc3339()
-    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class EventsPage(BaseModel):

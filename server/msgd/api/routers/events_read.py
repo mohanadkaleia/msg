@@ -47,7 +47,7 @@ event, including unknown-type events (opaque bodies survive untouched).
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -59,10 +59,10 @@ from msgd.api.schemas.events_read import (
     MAX_LIMIT,
     MIN_LIMIT,
     EventsPage,
-    _to_rfc3339,
 )
 from msgd.db.engine import get_session
 from msgd.db.models import Event
+from msgd.events.serialize import serialize_stored_event
 
 router = APIRouter(prefix="/v1", tags=["events"])
 
@@ -84,23 +84,11 @@ def _invalid_cursor() -> ProblemException:
     )
 
 
-def _serialize_event(row: Event) -> dict[str, Any]:
-    """Assemble one wire event from **raw** DB row values (D1 raw-hash discipline).
-
-    ``body`` is the verbatim stored JSONB dict — the exact value the hash was
-    computed over — so ``hash_event(result["body"]) == result["event_hash"]``.
-    ``signature`` has no column (reserved-null). ``server`` is unhashed metadata.
-    """
-    return {
-        "body": row.body,
-        "event_hash": row.event_hash,
-        "signature": None,
-        "server": {
-            "server_sequence": row.server_sequence,
-            "server_received_at": _to_rfc3339(row.server_received_at),
-            "payload_redacted": row.payload_redacted,
-        },
-    }
+# The envelope-dict construction is SHARED with `msgctl export` (ENG-155): both
+# import msgd.events.serialize.serialize_stored_event, so the pull wire form and
+# the §9 export NDJSON form can never drift. The local name is kept for the
+# module docstring's "Serialization is raw (D1)" narrative and existing callers.
+_serialize_event = serialize_stored_event
 
 
 @router.get("/events", response_model=EventsPage)

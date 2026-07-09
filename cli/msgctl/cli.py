@@ -172,6 +172,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     invite_parser.set_defaults(handler=cmd_invite)
 
+    # ENG-155: `export` — append-only per the §6 cli.py collision protocol (a
+    # self-contained block at the end of build_parser, dispatched via
+    # set_defaults). Server-side like `rebuild-projections`: reads the DB +
+    # blob store directly, no workspace dir / HTTP involved.
+    export_parser = subparsers.add_parser(
+        "export",
+        help=(
+            "server-side: write a portable §9 workspace bundle (MSG_DATABASE_URL + MSG_DATA_DIR)"
+        ),
+    )
+    export_parser.add_argument("dir", help="target bundle directory (must be new or empty)")
+    export_parser.add_argument(
+        "--allow-missing-blobs",
+        action="store_true",
+        help=(
+            "do not fail when a present file's blob is absent from the store; "
+            "record its sha256 in manifest.missing_blobs instead"
+        ),
+    )
+    export_parser.set_defaults(handler=cmd_export)
+
     return parser
 
 
@@ -354,6 +375,90 @@ def cmd_rebuild_projections(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {"rebuilt": True, "applied": applied, "skipped": skipped},
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Thin adapter for the §9 workspace-bundle export (ENG-155, M4-1).
+
+    All bundle logic lives in ``msgd.export.bundle``; this only wires the
+    ``MSG_DATABASE_URL`` env var to an async engine, roots the blob store at
+    ``MSG_DATA_DIR/blobs`` (exactly where ``msgd`` serves blobs from), stamps
+    ``exported_at`` (the ONE nondeterministic input — the export body itself is
+    a pure function of DB + blob-store state), and prints a summary.
+
+    Imports are lazy (matching ``cmd_rebuild_projections``) so the M0 commands
+    keep their light, async-DB-free import cost.
+
+    SECURITY (same class as ``cmd_rebuild_projections``): an unexpected DB
+    failure is reported by exception *class name* only — SQLAlchemy URL/connect
+    errors embed the full DSN (credentials included), which must never reach
+    stderr / CI logs. :class:`~msgd.export.bundle.ExportError` messages are the
+    deliberate exception: they are operator-facing and name only paths, counts,
+    and content digests — never the DSN.
+    """
+    import asyncio
+    import os
+    from pathlib import Path
+
+    from msgd.blobs.store import LocalDiskBlobStore
+    from msgd.core.time import now_rfc3339
+    from msgd.db.engine import create_engine, create_sessionmaker
+    from msgd.export.bundle import ExportError, ExportResult, export_workspace
+
+    database_url = os.environ.get("MSG_DATABASE_URL")
+    if not database_url:
+        raise MsgctlError("MSG_DATABASE_URL is not set")
+    data_dir = os.environ.get("MSG_DATA_DIR")
+    if not data_dir:
+        raise MsgctlError("MSG_DATA_DIR is not set")
+
+    async def _run() -> ExportResult:
+        engine = create_engine(database_url)
+        try:
+            maker = create_sessionmaker(engine)
+            async with maker() as session:
+                return await export_workspace(
+                    session,
+                    LocalDiskBlobStore(Path(data_dir) / "blobs"),
+                    Path(args.dir),
+                    exported_at=now_rfc3339(),
+                    tool=f"msgctl/{__version__}",
+                    allow_missing_blobs=args.allow_missing_blobs,
+                )
+        finally:
+            await engine.dispose()
+
+    try:
+        result = asyncio.run(_run())
+    except ExportError as exc:
+        # Operator-facing by design (missing blobs, non-empty target, …): the
+        # message carries paths/digests only, never the DSN.
+        raise MsgctlError(f"export failed: {exc}") from None
+    except Exception as exc:
+        # Sanitized: name the error class only — never ``str(exc)``, which can
+        # embed the DSN (and its credentials). No ``from exc`` either, so the
+        # DSN-bearing traceback is not chained onto the MsgctlError.
+        raise MsgctlError(
+            f"export failed: {type(exc).__name__} "
+            "(check MSG_DATABASE_URL / MSG_DATA_DIR and connectivity)"
+        ) from None
+
+    print(
+        json.dumps(
+            {
+                "exported": True,
+                "dir": args.dir,
+                "streams": result.streams,
+                "events": result.events,
+                "blobs": result.blobs,
+                "blob_bytes": result.blob_bytes,
+                "missing_blobs": result.missing_blobs,
+                "bundle_digest": result.bundle_digest,
+            },
             ensure_ascii=False,
         )
     )

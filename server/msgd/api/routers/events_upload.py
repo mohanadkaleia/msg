@@ -41,11 +41,12 @@ from msgd.api import problems
 from msgd.api.deps import CurrentAuth, event_rate_limit
 from msgd.api.problems import ProblemException
 from msgd.api.schemas.events import AcceptedEvent, BatchUploadResponse, RejectedEvent
+from msgd.core.time import to_rfc3339
 from msgd.db.engine import get_session
 from msgd.db.models import Event
 from msgd.events.emit import emit_event
 from msgd.events.fanout import publish_event
-from msgd.events.insert import UnknownStreamError, _format_rfc3339
+from msgd.events.insert import UnknownStreamError
 from msgd.events.validate import Accepted, validate_event
 
 __all__ = ["router"]
@@ -289,7 +290,7 @@ async def _fetch_original(
     """Return the ORIGINAL acceptance's four ``accepted[]`` fields + its author.
 
     The four fields are the D7-idempotency response; ``server_received_at`` is
-    re-rendered from the stored TIMESTAMPTZ with the **same** ``_format_rfc3339``
+    re-rendered from the stored TIMESTAMPTZ with the **same** ``to_rfc3339``
     (millisecond-``Z`` truncation) ``insert_event`` used, so the idempotent
     response string is byte-identical to the first one. The second tuple element
     is the stored ``author_user_id`` — the caller compares it against the current
@@ -318,6 +319,6 @@ async def _fetch_original(
         event_id=event_id,
         stream_id=stream_id,
         server_sequence=server_sequence,
-        server_received_at=_format_rfc3339(server_received_at),
+        server_received_at=to_rfc3339(server_received_at),
     )
     return accepted, author_user_id

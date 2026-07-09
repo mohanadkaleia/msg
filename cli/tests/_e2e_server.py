@@ -26,6 +26,8 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -35,6 +37,22 @@ from msgctl.projection import PROJECTION_DB_NAME, dump_messages, open_db, projec
 from msgctl.workspace import Workspace
 from msgd.db.migrate import run_migrations
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
+
+
+@dataclass(frozen=True)
+class ServerHandle:
+    """Everything a test may need about the running E2E server.
+
+    ``live_server`` keeps yielding the historical ``(base_url, log_path)`` pair;
+    tests that also need the server's DB DSN / data dir (ENG-155's `msgctl
+    export` reads them directly) build their own fixture on
+    :func:`start_live_server` and take the full handle.
+    """
+
+    base_url: str
+    log_path: Path
+    database_url: str
+    data_dir: Path
 
 
 def _free_port() -> int:
@@ -58,9 +76,9 @@ def _wait_healthy(base_url: str, *, timeout: float = 40.0) -> None:
     raise RuntimeError(f"server did not become healthy at {base_url}: {last}")
 
 
-@pytest.fixture(scope="module")
-def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, Path]]:
-    """Start Postgres + a subprocess uvicorn; yield (base_url, server_log_path)."""
+@contextmanager
+def start_live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
+    """Start Postgres + a subprocess uvicorn; yield the full :class:`ServerHandle`."""
     with PostgresContainer("postgres:17") as container:
         raw_url: str = container.get_connection_url()
         asyncpg_url = raw_url.replace("postgresql+psycopg2", "postgresql+asyncpg")
@@ -106,7 +124,12 @@ def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str,
             )
             try:
                 _wait_healthy(base_url)
-                yield base_url, log_path
+                yield ServerHandle(
+                    base_url=base_url,
+                    log_path=log_path,
+                    database_url=asyncpg_url,
+                    data_dir=data_dir,
+                )
             finally:
                 proc.terminate()
                 try:
@@ -114,6 +137,13 @@ def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str,
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=10)
+
+
+@pytest.fixture(scope="module")
+def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, Path]]:
+    """Start Postgres + a subprocess uvicorn; yield (base_url, server_log_path)."""
+    with start_live_server(tmp_path_factory) as handle:
+        yield handle.base_url, handle.log_path
 
 
 def _run(capsys: pytest.CaptureFixture[str], sink: list[str], *args: str) -> str:
