@@ -42,8 +42,9 @@ export type ActiveView = 'conversation' | 'inbox' | 'apps' | 'files' | 'admin'
  */
 export type DrawerMode = 'none' | 'thread' | 'details'
 
-/** The views that still render a scaffold placeholder (Inbox is REAL — ENG-136). */
-type ScaffoldView = Exclude<ActiveView, 'conversation' | 'inbox'>
+/** The views that still render a scaffold placeholder (Inbox is REAL — ENG-136;
+ * Admin is REAL — ENG-151 PR-3). */
+type ScaffoldView = Exclude<ActiveView, 'conversation' | 'inbox' | 'admin'>
 
 /** The neutral workspace name shown in the sidebar header + rail glyph (NOT "Ranin"). */
 const WORKSPACE_NAME = 'msg'
@@ -52,7 +53,6 @@ const WORKSPACE_NAME = 'msg'
 const SCAFFOLD_COPY: Record<ScaffoldView, { title: string; body: string }> = {
   apps: { title: 'Apps', body: 'Apps are coming soon.' },
   files: { title: 'Files', body: 'A workspace file browser is coming soon.' },
-  admin: { title: 'Admin', body: 'Workspace administration is coming soon.' },
 }
 
 export function useShellController() {
@@ -141,6 +141,7 @@ export function useShellController() {
   const mainTitle = computed(() => {
     if (activeView.value === 'conversation') return headerLabel.value || 'No channel selected'
     if (activeView.value === 'inbox') return 'Inbox'
+    if (activeView.value === 'admin') return 'Admin'
     return SCAFFOLD_COPY[activeView.value].title
   })
 
@@ -168,9 +169,11 @@ export function useShellController() {
   /** INTERIM unread count for the "New" divider (see MessageList's `unreadCount`). */
   const unreadCount = computed(() => selectedStream.value?.unread ?? 0)
 
-  /** Copy for the scaffold EmptyState (null for the real conversation/Inbox views). */
+  /** Copy for the scaffold EmptyState (null for the real conversation/Inbox/Admin views). */
   const scaffold = computed(() =>
-    activeView.value === 'conversation' || activeView.value === 'inbox'
+    activeView.value === 'conversation' ||
+    activeView.value === 'inbox' ||
+    activeView.value === 'admin'
       ? null
       : SCAFFOLD_COPY[activeView.value],
   )

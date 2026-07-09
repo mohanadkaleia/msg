@@ -5,6 +5,7 @@ import {
   decodeUlidTime,
   formatActivityTime,
   formatDayDivider,
+  formatExpiresIn,
   messageTimestamp,
 } from '../../../src/lib/time'
 
@@ -73,5 +74,28 @@ describe('formatActivityTime (ENG-136 Inbox)', () => {
     const label = formatActivityTime(now - 5 * DAY, now)
     expect(label).not.toBe('Yesterday')
     expect(label).toMatch(/Jul|1/) // locale short date, e.g. "Jul 1"
+  })
+})
+
+describe('formatExpiresIn (ENG-151 Admin invites)', () => {
+  const now = new Date('2026-07-06T12:00:00Z').getTime()
+  const HOUR = 60 * 60 * 1000
+
+  it('shows minutes under an hour (floored at 1m)', () => {
+    expect(formatExpiresIn(new Date(now + 45 * 60 * 1000).toISOString(), now)).toBe('in 45m')
+    expect(formatExpiresIn(new Date(now + 10 * 1000).toISOString(), now)).toBe('in 1m')
+  })
+
+  it('shows hours under two days', () => {
+    expect(formatExpiresIn(new Date(now + 6 * HOUR).toISOString(), now)).toBe('in 6h')
+  })
+
+  it('shows days from two days out', () => {
+    expect(formatExpiresIn(new Date(now + 72 * HOUR).toISOString(), now)).toBe('in 3d')
+  })
+
+  it('reads "expired" for a past or unparseable instant', () => {
+    expect(formatExpiresIn(new Date(now - HOUR).toISOString(), now)).toBe('expired')
+    expect(formatExpiresIn('not-a-date', now)).toBe('expired')
   })
 })

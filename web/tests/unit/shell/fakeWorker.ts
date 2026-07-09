@@ -6,8 +6,11 @@
 import { vi } from 'vitest'
 
 import { newEventId, newMessageId, newStreamId } from '../../../src/core'
-import { topicKey } from '../../../src/worker/types'
+import { RpcCodedError, topicKey } from '../../../src/worker/types'
 import type {
+  AdminInvite,
+  AdminMember,
+  AdminMemberUpdateParams,
   BackfillResult,
   DirectoryChannel,
   DirectoryUser,
@@ -91,10 +94,54 @@ export class FakeWorker {
   /** A configurable older-page the next `sync.backfill` reveals (oldest first). */
   private pendingBackfill: MessageRow[] = []
 
+  // -- ENG-151 admin (PR-3 AdminView specs) ---------------------------------
+  // Seedable roster/invites served by the `admin.*` facade; `update`/`revoke`
+  // mutate the seeds like the server would, or reject with a queued coded
+  // error (`.code` mirrors the tab's `RpcCallError` surface).
+  readonly adminMembersListSpy = vi.fn()
+  readonly adminUpdateSpy = vi.fn<(params: AdminMemberUpdateParams) => void>()
+  readonly adminInvitesListSpy = vi.fn()
+  readonly adminRevokeSpy = vi.fn<(params: { id: string }) => void>()
+  private adminMembers: AdminMember[] = []
+  private adminInvites: AdminInvite[] = []
+  private adminListError: RpcCodedError | null = null
+  private adminUpdateError: RpcCodedError | null = null
+  private adminRevokeError: RpcCodedError | null = null
+
   // -- setup helpers -------------------------------------------------------
 
   setMyUserId(id: string): this {
     this.myUserId = id
+    return this
+  }
+
+  /** Seed the admin roster the `admin.members.list` facade serves (ENG-151). */
+  setAdminMembers(members: AdminMember[]): this {
+    this.adminMembers = members.map((m) => ({ ...m }))
+    return this
+  }
+
+  /** Seed the pending invites the `admin.invites.list` facade serves (ENG-151). */
+  setAdminInvites(invites: AdminInvite[]): this {
+    this.adminInvites = invites.map((i) => ({ ...i }))
+    return this
+  }
+
+  /** Make the NEXT `admin.members.list`/`admin.invites.list` reject with `code`. */
+  failNextAdminList(code: string): this {
+    this.adminListError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT `admin.members.update` reject with the coded error `code`. */
+  failNextAdminUpdate(code: string): this {
+    this.adminUpdateError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT `admin.invites.revoke` reject with the coded error `code`. */
+  failNextAdminRevoke(code: string): this {
+    this.adminRevokeError = new RpcCodedError(code, code)
     return this
   }
 
@@ -683,16 +730,58 @@ export class FakeWorker {
           return Promise.resolve({ stream_id: streamId, last_read_seq: seq })
         },
       },
-      // ENG-151 admin: inert pass-through stubs — the seam is worker-side HTTP
-      // (covered in tests/unit/worker/admin.spec.ts); shell tests don't drive it.
+      // ENG-151 admin: a seedable in-memory roster/invite list (the PR-3
+      // AdminView specs drive it); update/revoke mutate the seeds like the
+      // server would, or reject with a queued coded error.
       admin: {
         members: {
-          list: () => Promise.resolve({ members: [] }),
-          update: () => Promise.reject(new Error('admin.members.update not stubbed')),
+          list: () => {
+            this.adminMembersListSpy()
+            if (this.adminListError) {
+              const err = this.adminListError
+              this.adminListError = null
+              return Promise.reject(err)
+            }
+            return Promise.resolve({ members: this.adminMembers.map((m) => ({ ...m })) })
+          },
+          update: (params: AdminMemberUpdateParams) => {
+            this.adminUpdateSpy(params)
+            if (this.adminUpdateError) {
+              const err = this.adminUpdateError
+              this.adminUpdateError = null
+              return Promise.reject(err)
+            }
+            const row = this.adminMembers.find((m) => m.user_id === params.user_id)
+            if (!row) return Promise.reject(new RpcCodedError('not-found', 'no such user'))
+            if (params.role !== undefined) row.role = params.role
+            if (params.active !== undefined) row.deactivated = !params.active
+            return Promise.resolve({ ...row })
+          },
         },
         invites: {
-          list: () => Promise.resolve({ invites: [] }),
-          revoke: () => Promise.reject(new Error('admin.invites.revoke not stubbed')),
+          list: () => {
+            this.adminInvitesListSpy()
+            if (this.adminListError) {
+              const err = this.adminListError
+              this.adminListError = null
+              return Promise.reject(err)
+            }
+            return Promise.resolve({ invites: this.adminInvites.map((i) => ({ ...i })) })
+          },
+          revoke: (params: { id: string }) => {
+            this.adminRevokeSpy(params)
+            if (this.adminRevokeError) {
+              const err = this.adminRevokeError
+              this.adminRevokeError = null
+              return Promise.reject(err)
+            }
+            const before = this.adminInvites.length
+            this.adminInvites = this.adminInvites.filter((i) => i.id !== params.id)
+            if (this.adminInvites.length === before) {
+              return Promise.reject(new RpcCodedError('not-found', 'no such invite'))
+            }
+            return Promise.resolve({ ok: true as const })
+          },
         },
       },
       // ENG-129: a REAL-shaped prefs surface — `get` returns the seeded snapshot,
