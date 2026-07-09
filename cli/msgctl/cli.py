@@ -197,6 +197,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_parser.set_defaults(handler=cmd_export)
 
+    # ENG-157: `import` — append-only per the §6 cli.py collision protocol (a
+    # self-contained block at the end of build_parser, dispatched via
+    # set_defaults). Server-side like `export`: writes the DB + blob store
+    # directly, no workspace dir / HTTP involved. The target instance must be
+    # FRESH (empty database) — merge-import is out of scope.
+    import_parser = subparsers.add_parser(
+        "import",
+        help=(
+            "server-side: restore a §9 export bundle into a FRESH instance "
+            "(MSG_DATABASE_URL + MSG_DATA_DIR)"
+        ),
+    )
+    import_parser.add_argument("dir", help="export-bundle directory (written by `msgctl export`)")
+    import_parser.add_argument(
+        "--set-owner-password",
+        action="store_true",
+        help=(
+            "re-credential the workspace owner: reads the new password from "
+            "MSGCTL_OWNER_PASSWORD or an interactive prompt (never argv, never echoed); "
+            "without this flag NO imported user can log in until reset"
+        ),
+    )
+    import_parser.add_argument(
+        "--owner-email",
+        default=None,
+        help="which owner row to re-credential, should the bundle carry more than one",
+    )
+    import_parser.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help=(
+            "skip the full `msgctl verify` bundle walk before importing (DISCOURAGED; "
+            "per-event hashes and sequences are still re-checked during the import itself)"
+        ),
+    )
+    import_parser.set_defaults(handler=cmd_import)
+
     return parser
 
 
@@ -468,6 +505,155 @@ def cmd_export(args: argparse.Namespace) -> int:
             ensure_ascii=False,
         )
     )
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Thin adapter for the §9 bundle restore (ENG-157, M4-3).
+
+    All DB-writing logic lives in ``msgd.export.restore.import_workspace``;
+    this wires ``MSG_DATABASE_URL`` / ``MSG_DATA_DIR`` to an async engine +
+    blob store, runs the M4-2 ``verify_bundle`` walk as the entry gate, and
+    prints a summary. Imports are lazy (matching ``cmd_export``) so the M0
+    commands keep their light, async-DB-free import cost.
+
+    **Verify-first (the M4-2 gate).** Unless ``--skip-verify``, the FULL
+    bundle verification (per-event hashes, sequence contiguity, month-file
+    digests, sealed manifest, blob re-hash) runs before a single byte is
+    written; ANY failure refuses the import with the findings. The gate lives
+    HERE rather than in ``msgd.export.restore`` because the server package
+    cannot import the CLI (§1.1 layering — ``msgctl.verify`` owns the walk);
+    the restore core independently re-proves every event hash + sequence
+    fail-closed, so a skipped gate never admits a tampered log.
+
+    **Owner password (``--set-owner-password``).** Read from
+    ``MSGCTL_OWNER_PASSWORD`` or an interactive ``getpass`` prompt — never
+    argv (leaks via process listings), never echoed — then argon2id-hashed
+    with the settings-pinned parameters before it crosses into the restore
+    core. Bundles carry no password hashes (§9), so every other user gets an
+    unusable sentinel hash and needs an admin reset link.
+
+    SECURITY (same class as ``cmd_export``): an unexpected DB failure is
+    reported by exception *class name* only — SQLAlchemy URL/connect errors
+    embed the full DSN (credentials included), which must never reach stderr /
+    CI logs. ``RestoreError`` messages are the deliberate exception: they are
+    operator-facing and name only paths, streams, sequences, counts, and
+    content digests — never the DSN.
+    """
+    import asyncio
+    import getpass
+    import os
+    from pathlib import Path
+
+    from msgd.auth.passwords import hash_password
+    from msgd.blobs.store import LocalDiskBlobStore
+    from msgd.db.engine import create_engine, create_sessionmaker
+    from msgd.export.restore import ImportResult, RestoreError, import_workspace
+    from msgd.settings import Settings
+
+    database_url = os.environ.get("MSG_DATABASE_URL")
+    if not database_url:
+        raise MsgctlError("MSG_DATABASE_URL is not set")
+    data_dir = os.environ.get("MSG_DATA_DIR")
+    if not data_dir:
+        raise MsgctlError("MSG_DATA_DIR is not set")
+    if args.owner_email is not None and not args.set_owner_password:
+        raise MsgctlError("--owner-email only makes sense together with --set-owner-password")
+
+    # The M4-2 verify gate: refuse to import a bundle that fails verification.
+    if args.skip_verify:
+        print(
+            "msgctl: WARNING: --skip-verify — bundle verification skipped "
+            "(per-event hashes and sequences are still re-checked during import)",
+            file=sys.stderr,
+        )
+    else:
+        report = verify.verify_bundle(args.dir)
+        if not report.ok:
+            raise MsgctlError(
+                f"bundle verification failed ({report.failures} failure(s)); "
+                "refusing to import:\n" + verify.format_human(report)
+            )
+
+    owner_password_hash: str | None = None
+    if args.set_owner_password:
+        password = os.environ.get("MSGCTL_OWNER_PASSWORD") or getpass.getpass(
+            "New owner password: "
+        )
+        if not password:
+            raise MsgctlError("owner password must not be empty")
+        # Only the argon2 cost parameters matter here (they come from the
+        # MSG_ARGON2_* env or the pinned defaults); secret_key is unused by
+        # hashing, so a placeholder keeps this runnable outside the app env.
+        settings = Settings(
+            database_url=database_url,
+            data_dir=Path(data_dir),
+            secret_key=os.environ.get("MSG_SECRET_KEY", "msgctl-import-unused"),
+        )
+        owner_password_hash = hash_password(settings, password)
+
+    async def _run() -> ImportResult:
+        engine = create_engine(database_url)
+        try:
+            maker = create_sessionmaker(engine)
+            async with maker() as session:
+                return await import_workspace(
+                    session,
+                    LocalDiskBlobStore(Path(data_dir) / "blobs"),
+                    Path(args.dir),
+                    owner_password_hash=owner_password_hash,
+                    owner_email=args.owner_email,
+                )
+        finally:
+            await engine.dispose()
+
+    try:
+        result = asyncio.run(_run())
+    except RestoreError as exc:
+        # Operator-facing by design (non-empty instance, hash mismatch, …): the
+        # message carries paths/streams/digests only, never the DSN.
+        raise MsgctlError(f"import failed: {exc}") from None
+    except Exception as exc:
+        # Sanitized: name the error class only — never ``str(exc)``, which can
+        # embed the DSN (and its credentials). No ``from exc`` either, so the
+        # DSN-bearing traceback is not chained onto the MsgctlError.
+        raise MsgctlError(
+            f"import failed: {type(exc).__name__} "
+            "(check MSG_DATABASE_URL / MSG_DATA_DIR and connectivity)"
+        ) from None
+
+    print(
+        json.dumps(
+            {
+                "imported": True,
+                "dir": args.dir,
+                "workspace_id": result.workspace_id,
+                "streams": result.streams,
+                "events": result.events,
+                "users": result.users,
+                "files": result.files,
+                "blobs": result.blobs,
+                "blob_bytes": result.blob_bytes,
+                "head_seqs": result.head_seqs,
+                "projections_applied": result.projections_applied,
+                "projections_skipped": result.projections_skipped,
+                "dump_digests": result.dump_digests,
+            },
+            ensure_ascii=False,
+        )
+    )
+    if args.set_owner_password:
+        print(
+            "msgctl: owner re-credentialed; all OTHER users have unusable password "
+            "hashes — issue admin reset links so they can log in",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "msgctl: no owner password set (--set-owner-password); NO imported user "
+            "can log in until credentials are reset",
+            file=sys.stderr,
+        )
     return 0
 
 
