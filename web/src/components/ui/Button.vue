@@ -30,7 +30,7 @@ const sizeClasses: Record<Size, string> = {
 
 const variantClasses: Record<Variant, string> = {
   primary: 'bg-accent text-accent-fg hover:bg-accent/90',
-  ghost: 'bg-transparent text-secondary hover:bg-surface hover:text-primary',
+  ghost: 'bg-transparent text-secondary hover:bg-surface-hover hover:text-primary',
   danger: 'border border-danger bg-transparent text-danger hover:bg-danger/10',
 }
 

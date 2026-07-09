@@ -68,7 +68,7 @@ async function start(userId: string): Promise<void> {
         <li v-for="user in candidates" :key="user.user_id">
           <button
             type="button"
-            class="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+            class="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
             data-testid="new-dm-user"
             :data-user-id="user.user_id"
             :disabled="busy"

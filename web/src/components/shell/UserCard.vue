@@ -28,7 +28,7 @@ const dotStatus = computed<PresenceStatus>(() => props.status ?? 'online')
 <template>
   <button
     type="button"
-    class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+    class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
     data-testid="user-card"
   >
     <span class="relative shrink-0">

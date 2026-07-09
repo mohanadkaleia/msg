@@ -137,7 +137,7 @@ function onLogout(): void {
         <button
           type="button"
           role="menuitem"
-          class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] text-secondary transition-colors hover:bg-surface hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] text-secondary transition-colors hover:bg-surface-hover hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           data-testid="logout"
           @click="onLogout"
         >

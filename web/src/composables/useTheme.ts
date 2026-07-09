@@ -1,8 +1,9 @@
-// composables/useTheme.ts — ENG-136 "Ranin" theme state (PR-A).
+// composables/useTheme.ts — ENG-136 "Ranin" theme state.
 //
-// INERT IN PR-A: this composable is built + unit-tested now, but nothing mounts
-// it yet and index.html PINS data-theme="light", so it does not flip the app.
-// PR-D mounts ThemeToggle, unpins the index.html script, and this becomes live.
+// LIVE: ThemeToggle (mounted in SpaceRail) drives this composable, and the
+// inline bootstrap script in index.html mirrors the same resolution pre-paint
+// (same storage key, same 'system' fallback) so the first frame renders in the
+// right theme with no FOUC.
 //
 // Model: a persisted preference of 'light' | 'dark' | 'system' (localStorage key
 // `msg:theme`, default 'system'). The RESOLVED theme ('light' | 'dark') applies

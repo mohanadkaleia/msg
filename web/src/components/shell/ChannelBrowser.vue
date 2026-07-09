@@ -37,13 +37,15 @@ function join(stream: SidebarStream): void {
 
       <ul class="max-h-72 overflow-y-auto">
         <li v-for="stream in browsableChannels" :key="stream.stream_id">
-          <div class="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-surface">
+          <div
+            class="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-surface-hover"
+          >
             <span class="truncate text-sm text-primary"
               ># {{ stream.name ?? stream.stream_id }}</span
             >
             <button
               type="button"
-              class="rounded-md border border-strong px-2 py-0.5 text-xs font-medium text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              class="rounded-md border border-strong px-2 py-0.5 text-xs font-medium text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               data-testid="join-channel"
               :data-stream-id="stream.stream_id"
               @click="join(stream)"

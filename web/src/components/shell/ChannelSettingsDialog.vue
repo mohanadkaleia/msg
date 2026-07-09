@@ -97,7 +97,7 @@ function removeMember(userId: string): void {
           <li
             v-for="user in members"
             :key="user.user_id"
-            class="flex items-center justify-between rounded-md px-2 py-1 hover:bg-surface"
+            class="flex items-center justify-between rounded-md px-2 py-1 hover:bg-surface-hover"
           >
             <span class="flex min-w-0 items-center gap-2">
               <PresenceDot :status="presence.statusOf(user.user_id)" size="sm" class="shrink-0" />
@@ -106,7 +106,7 @@ function removeMember(userId: string): void {
             <span class="flex gap-1">
               <button
                 type="button"
-                class="rounded border border-strong px-1.5 py-0.5 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                class="rounded border border-strong px-1.5 py-0.5 text-xs text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 data-testid="channel-add-member"
                 :data-user-id="user.user_id"
                 :disabled="busy"
@@ -116,7 +116,7 @@ function removeMember(userId: string): void {
               </button>
               <button
                 type="button"
-                class="rounded border border-strong px-1.5 py-0.5 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+                class="rounded border border-strong px-1.5 py-0.5 text-xs text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 data-testid="channel-remove-member"
                 :data-user-id="user.user_id"
                 :disabled="busy"

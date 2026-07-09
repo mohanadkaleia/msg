@@ -1,6 +1,8 @@
 import type { Config } from 'tailwindcss'
 
-// ENG-136 "Ranin" design tokens (PR-A, ADDITIVE — nothing consumes these yet).
+// ENG-136 "Ranin" design tokens — the app-wide color system. Every component
+// styles itself with these semantic utilities (no hardcoded slate/white/indigo
+// palettes remain), and dark mode is live via the `[data-theme]` attribute.
 //
 // TOKEN MECHANISM: every semantic color is defined once in `src/style.css` as a
 // CSS custom property holding SPACE-SEPARATED RGB CHANNELS (e.g. `--c-accent: 91
@@ -15,22 +17,30 @@ import type { Config } from 'tailwindcss'
 //   background          -> bg-background / text-background
 //   surface             -> bg-surface
 //   surface-elevated    -> bg-surface-elevated   (flat key, chosen over nested)
+//   surface-hover       -> hover:bg-surface-hover (interactive hover that lifts
+//                          on any surface — in dark it is LIGHTER than
+//                          surface-elevated, where plain surface would darken)
 //   accent              -> bg-accent / text-accent / border-accent / ring-accent
 //   accent-fg           -> text-accent-fg        (foreground on an accent fill)
 //   accent-subtle       -> bg-accent-subtle      (tinted active/hover surface)
 //   danger/warning/success/sync-pending -> bg-*/text-*/border-*
+//   danger-fg           -> text-danger-fg        (foreground on a danger fill;
+//                          white in both themes, unlike accent-fg which goes
+//                          near-black in dark)
 //   subtle / strong     -> border-subtle / border-strong  (TOP-LEVEL keys, so the
 //                          class is `border-subtle`, avoiding the `border-border`
 //                          doubling you'd get from a nested `border.subtle` key)
 //   primary/secondary/muted -> text-primary / text-secondary / text-muted
 //
-// Everything here is ADDITIVE: the existing slate-*/indigo-*/emerald/amber/red
-// utilities are untouched and keep working; later PRs migrate them.
+// The stock Tailwind palettes (slate-*, indigo-*, …) are still generated but
+// app code should not reach for them — new UI styles itself with the semantic
+// tokens above so it themes correctly.
 export default {
   content: ['./index.html', './src/**/*.{vue,ts}'],
   // Dark mode is driven by an explicit attribute selector, not the media query,
-  // so the theme system (useTheme) controls it. PR-A pins data-theme="light" in
-  // index.html; PR-D unpins it. `selector` strategy name kept for Tailwind 3.4.4+.
+  // so the theme system controls it: useTheme resolves the persisted
+  // 'light'|'dark'|'system' preference and the index.html bootstrap script sets
+  // data-theme pre-paint. `selector` strategy name kept for Tailwind 3.4.4+.
   darkMode: ['selector', '[data-theme="dark"]'],
   theme: {
     extend: {
@@ -38,10 +48,12 @@ export default {
         background: 'rgb(var(--c-background) / <alpha-value>)',
         surface: 'rgb(var(--c-surface) / <alpha-value>)',
         'surface-elevated': 'rgb(var(--c-surface-elevated) / <alpha-value>)',
+        'surface-hover': 'rgb(var(--c-surface-hover) / <alpha-value>)',
         accent: 'rgb(var(--c-accent) / <alpha-value>)',
         'accent-fg': 'rgb(var(--c-accent-fg) / <alpha-value>)',
         'accent-subtle': 'rgb(var(--c-accent-subtle) / <alpha-value>)',
         danger: 'rgb(var(--c-danger) / <alpha-value>)',
+        'danger-fg': 'rgb(var(--c-danger-fg) / <alpha-value>)',
         warning: 'rgb(var(--c-warning) / <alpha-value>)',
         success: 'rgb(var(--c-success) / <alpha-value>)',
         'sync-pending': 'rgb(var(--c-sync-pending) / <alpha-value>)',

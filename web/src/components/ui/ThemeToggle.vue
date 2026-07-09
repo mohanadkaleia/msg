@@ -26,7 +26,7 @@ const label = computed(() => {
     type="button"
     :aria-label="label"
     :title="label"
-    class="inline-flex h-7 w-7 items-center justify-center rounded text-secondary transition-colors hover:bg-surface hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+    class="inline-flex h-7 w-7 items-center justify-center rounded text-secondary transition-colors hover:bg-surface-hover hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
     @click="cycleTheme"
   >
     <!-- light: sun -->

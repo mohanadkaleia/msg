@@ -3,19 +3,25 @@
 @tailwind utilities;
 
 /*
- * ENG-136 "Ranin" design tokens (PR-A, ADDITIVE).
+ * ENG-136 "Ranin" design tokens — the app-wide color system.
  *
  * Each token is SPACE-SEPARATED RGB CHANNELS (not rgb()/hex) so Tailwind can
  * compose opacity modifiers via `rgb(var(--c-NAME) / <alpha-value>)` — see
  * tailwind.config.ts. `:root` holds LIGHT values; `[data-theme="dark"]` holds
- * DARK values. index.html PINS data-theme="light" for PR-A (dark ships in PR-D),
- * so the running app is byte-identical to today: existing components still use
- * hardcoded slate/white/indigo classes and simply sit on the light background.
+ * DARK values. Every component styles itself with these tokens, so flipping
+ * `data-theme` on <html> re-themes the whole app with zero class changes.
+ * The attribute is resolved by useTheme (persisted 'light'|'dark'|'system'
+ * preference, localStorage key `msg:theme`) and set pre-paint by the inline
+ * bootstrap script in index.html so the first frame renders in the right theme.
  */
 :root {
   --c-background: 255 255 255; /* #FFFFFF */
   --c-surface: 247 248 249; /* #F7F8F9 */
   --c-surface-elevated: 255 255 255; /* #FFFFFF */
+  /* Interactive hover fill that reads as a subtle lift on ANY surface: in light
+     it is a hair darker than surface; in dark it is a hair LIGHTER than
+     surface-elevated (plain --c-surface would DARKEN elevated panels there). */
+  --c-surface-hover: 239 240 242; /* #EFF0F2 */
   --c-border-subtle: 236 237 239; /* #ECEDEF */
   --c-border-strong: 216 218 222; /* #D8DADE */
   --c-text-primary: 23 24 26; /* #17181A */
@@ -25,6 +31,10 @@
   --c-accent-fg: 255 255 255; /* #FFFFFF */
   --c-accent-subtle: 238 240 254; /* #EEF0FE */
   --c-danger: 229 72 77; /* #E5484D */
+  /* Foreground on a danger FILL. White in BOTH themes: unlike accent (which
+     lightens enough in dark to want dark text), danger red stays mid-tone in
+     both themes, so white is the legible choice on it everywhere. */
+  --c-danger-fg: 255 255 255; /* #FFFFFF */
   --c-warning: 217 130 43; /* #D9822B */
   --c-success: 47 158 99; /* #2F9E63 */
   --c-sync-pending: 138 143 152; /* #8A8F98 */
@@ -34,6 +44,7 @@
   --c-background: 11 12 14; /* #0B0C0E */
   --c-surface: 20 21 23; /* #141517 */
   --c-surface-elevated: 28 30 34; /* #1C1E22 */
+  --c-surface-hover: 38 40 45; /* #26282D — lighter than surface-elevated: hover lifts */
   --c-border-subtle: 38 40 45; /* #26282D */
   --c-border-strong: 54 57 65; /* #363941 */
   --c-text-primary: 232 234 237; /* #E8EAED */
@@ -43,6 +54,7 @@
   --c-accent-fg: 11 12 14; /* #0B0C0E */
   --c-accent-subtle: 32 35 63; /* #20233F */
   --c-danger: 242 85 90; /* #F2555A */
+  --c-danger-fg: 255 255 255; /* #FFFFFF */
   --c-warning: 232 150 58; /* #E8963A */
   --c-success: 63 184 120; /* #3FB878 */
   --c-sync-pending: 110 116 128; /* #6E7480 */

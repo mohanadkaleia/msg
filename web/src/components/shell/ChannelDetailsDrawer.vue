@@ -267,7 +267,7 @@ const bottomScaffoldRows: DetailRow[] = [
             type="button"
             role="menuitemradio"
             :aria-checked="level === opt.level"
-            class="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm text-primary hover:bg-surface"
+            class="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm text-primary hover:bg-surface-hover"
             :data-testid="`channel-notif-${opt.level}`"
             @click="selectLevel(opt.level)"
           >
@@ -335,7 +335,7 @@ const bottomScaffoldRows: DetailRow[] = [
         <div class="flex items-center gap-2">
           <button
             type="button"
-            class="rounded bg-danger px-2 py-0.5 font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
+            class="rounded bg-danger px-2 py-0.5 font-medium text-danger-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
             data-testid="channel-leave-confirm-yes"
             :disabled="leaving"
             @click="leaveChannel"

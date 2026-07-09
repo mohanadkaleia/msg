@@ -18,7 +18,7 @@ describe('ui/Button', () => {
     const wrapper = mount(Button, { props: { variant: 'ghost' } })
     const cls = wrapper.get('button').attributes('class') ?? ''
     expect(cls).toContain('bg-transparent')
-    expect(cls).toContain('hover:bg-surface')
+    expect(cls).toContain('hover:bg-surface-hover')
     expect(cls).not.toContain('bg-accent ')
   })
 

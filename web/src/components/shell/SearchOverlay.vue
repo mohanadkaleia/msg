@@ -283,7 +283,7 @@ onBeforeUnmount(() => {
             <li v-for="hit in hits" :key="hit.message_id" data-testid="search-result">
               <button
                 type="button"
-                class="w-full px-4 py-2 text-left transition-colors hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+                class="w-full px-4 py-2 text-left transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
                 data-testid="search-jump"
                 @click="jump(hit)"
               >
@@ -312,7 +312,7 @@ onBeforeUnmount(() => {
           <div v-if="nextCursor" class="border-t border-subtle p-2">
             <button
               type="button"
-              class="w-full rounded-md px-3 py-1.5 text-sm text-secondary hover:bg-surface hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+              class="w-full rounded-md px-3 py-1.5 text-sm text-secondary hover:bg-surface-hover hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
               data-testid="search-load-more"
               :disabled="loadingMore"
               @click="loadMore"

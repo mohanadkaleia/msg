@@ -385,7 +385,7 @@ function confirmDelete(): void {
             v-for="emoji in QUICK_REACTIONS"
             :key="emoji"
             type="button"
-            class="rounded px-1 text-sm hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+            class="rounded px-1 text-sm hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
             data-testid="reaction-quick"
             :data-emoji="emoji"
             @click="pickReaction(emoji)"
@@ -395,7 +395,7 @@ function confirmDelete(): void {
           <div class="relative">
             <button
               type="button"
-              class="rounded px-1 text-sm text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              class="rounded px-1 text-sm text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               data-testid="reaction-picker"
               aria-label="Add reaction"
               @click="pickerOpen = !pickerOpen"
@@ -412,7 +412,7 @@ function confirmDelete(): void {
           </div>
           <button
             type="button"
-            class="rounded px-1 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+            class="rounded px-1 text-xs text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
             data-testid="reply-in-thread"
             aria-label="Reply in thread"
             @click="emit('open-thread', threadTarget)"
@@ -422,7 +422,7 @@ function confirmDelete(): void {
           <template v-if="canModify">
             <button
               type="button"
-              class="rounded px-1 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              class="rounded px-1 text-xs text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               data-testid="message-edit"
               aria-label="Edit message"
               @click="startEdit"
@@ -431,7 +431,7 @@ function confirmDelete(): void {
             </button>
             <button
               type="button"
-              class="rounded px-1 text-xs text-secondary hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              class="rounded px-1 text-xs text-secondary hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               data-testid="message-delete"
               aria-label="Delete message"
               @click="confirmingDelete = true"
@@ -451,7 +451,7 @@ function confirmDelete(): void {
           <span class="text-secondary">Delete message? It will be removed for everyone.</span>
           <button
             type="button"
-            class="rounded bg-danger px-2 py-0.5 font-medium text-accent-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+            class="rounded bg-danger px-2 py-0.5 font-medium text-danger-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
             data-testid="message-delete-confirm-yes"
             @click="confirmDelete"
           >

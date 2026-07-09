@@ -112,7 +112,7 @@ function dmInitial(stream: SidebarStream): string {
       <span class="truncate text-sm font-semibold text-primary">{{ BRAND }}</span>
       <button
         type="button"
-        class="grid h-7 w-7 place-items-center rounded text-muted transition-colors hover:bg-surface hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        class="grid h-7 w-7 place-items-center rounded text-muted transition-colors hover:bg-surface-hover hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         aria-label="Collapse sidebar (coming soon)"
         title="Collapse sidebar (coming soon)"
         data-testid="collapse-sidebar"
@@ -183,7 +183,7 @@ function dmInitial(stream: SidebarStream): string {
           {{ labelFor(stream) }}
           <template v-if="stream.mention" #trailing>
             <span
-              class="rounded-full bg-danger px-1.5 text-xs font-semibold text-accent-fg"
+              class="rounded-full bg-danger px-1.5 text-xs font-semibold text-danger-fg"
               data-testid="mention-badge"
               >{{ stream.unread }}</span
             >
@@ -231,7 +231,7 @@ function dmInitial(stream: SidebarStream): string {
             {{ labelFor(stream) }}
             <template v-if="stream.mention" #trailing>
               <span
-                class="rounded-full bg-danger px-1.5 text-xs font-semibold text-accent-fg"
+                class="rounded-full bg-danger px-1.5 text-xs font-semibold text-danger-fg"
                 data-testid="mention-badge"
                 >{{ stream.unread }}</span
               >

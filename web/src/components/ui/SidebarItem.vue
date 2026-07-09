@@ -26,8 +26,8 @@ const base =
 
 const stateClasses = computed(() => {
   if (props.active) return 'bg-accent-subtle text-primary'
-  if (props.unread) return 'text-primary hover:bg-surface'
-  return 'text-secondary hover:bg-surface hover:text-primary'
+  if (props.unread) return 'text-primary hover:bg-surface-hover'
+  return 'text-secondary hover:bg-surface-hover hover:text-primary'
 })
 
 const weightClass = computed(() => (props.unread && !props.active ? 'font-medium' : 'font-normal'))
