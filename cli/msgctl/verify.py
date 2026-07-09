@@ -53,25 +53,38 @@ Discipline this module is built to keep
 Exit codes (CI contract): ``0`` clean or warnings-only, ``1`` any failure, ``2``
 usage/IO (not a workspace, unreadable path).
 
-Blob re-hashing (§9 "re-hashes every blob") is **out of scope until M4** — an M0
-workspace has no ``blobs/`` tree (ENG-57 §9 subset). The ``# M4 SEAM:`` marker in
-:func:`verify_workspace` is the documented slot where M4's ``_verify_blobs`` pass (with
-its own ``blob_missing`` / ``blob_hash_mismatch`` classes) will attach without touching
-the stream walk.
+Bundle mode (M4-2, ENG-156)
+---------------------------
+:func:`verify_path` dispatches on the target's marker file: a ``manifest.json``
+means a §9 **export bundle** (:func:`verify_bundle`); otherwise ``workspace.json``
+means the live-workspace walk above (:func:`verify_workspace`, unchanged). The §9
+bundle deliberately has **no prev-hash chain** — its integrity story is per-event
+``event_hash`` + gapless ``server_sequence`` + the sealed manifest: every month
+file's sha256/bytes/counts and both sidecar digests are embedded in
+``manifest.json``, which ``bundle_digest`` (SHA-256 over the JCS canonicalization
+of the manifest sans that key) transitively commits — so a reorder/renumber that
+keeps every per-event hash valid is still caught by the month-file digest. Bundle
+mode adds the blob pass this module's ``# M4 SEAM`` always reserved
+(``blob_hash_mismatch`` / ``blob_missing`` / ``blob_unreferenced``), the manifest
+cross-checks (``manifest_digest_mismatch`` / ``file_digest_mismatch`` /
+``count_mismatch``), and workspace-global ``event_id`` uniqueness. All the
+disciplines above (read-only, raw-hash authority, collect-everything, TTY-safe
+human output, the exit-code contract) apply unchanged.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from msgd.core.envelope import Envelope
 from msgd.core.hashing import hash_event
-from msgd.core.jcs import JCSError
+from msgd.core.jcs import JCSError, canonicalize
 from msgd.core.payloads import get_payload_model
 from pydantic import ValidationError
 
@@ -79,15 +92,33 @@ from msgctl.errors import CorruptLogError, UsageError, WorkspaceError
 from msgctl.workspace import STREAMS_DIR, Workspace
 
 __all__ = [
+    "BUNDLE_MANIFEST_NAME",
     "MAX_HUMAN_FINDINGS",
     "Severity",
     "Finding",
     "StreamSummary",
     "VerifyReport",
+    "verify_path",
     "verify_workspace",
+    "verify_bundle",
     "format_human",
     "format_json",
 ]
+
+#: The §9 export-bundle manifest — its presence is what makes a directory a bundle
+#: (mode detection in :func:`verify_path`). Distinct from the live ``workspace.json``.
+BUNDLE_MANIFEST_NAME: Final = "manifest.json"
+
+#: The bundle's content-addressed blob tree (``blobs/<ab>/<sha256hex>``), mirroring
+#: the server's BlobStore layout.
+_BLOBS_DIR: Final = "blobs"
+
+#: The two JSON sidecars every bundle carries, each digest-pinned by the manifest.
+_SIDECAR_NAMES: Final = ("users.json", "files.json")
+
+#: A content-addressed blob filename: bare 64-char lowercase hex (the BlobStore key
+#: form — NOT the ``sha256:<hex>`` prefixed form used by ``event_hash``).
+_BLOB_HEX_RE: Final = re.compile(r"[0-9a-f]{64}")
 
 #: Cap on the number of finding detail lines the human report prints (Ruling 8). Summary
 #: counts are always complete; ``--json`` is never capped.
@@ -189,6 +220,22 @@ def _sanitize_for_terminal(text: str) -> str:
     return _CTRL_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
 
 
+@dataclass
+class _BundleStreamHooks:
+    """Bundle-mode (M4-2) extras threaded through the shared stream walk.
+
+    ``global_event_ids`` and ``uploaded_sha256s`` are SHARED across all streams of one
+    bundle (workspace-global ``event_id`` uniqueness; ``file.uploaded`` blob
+    references for the blob pass). ``month_stats`` is per-stream: month filename ->
+    recomputed ``{sha256, bytes, event_count, first_seq, last_seq}``, compared later
+    against ``manifest.streams[id].files`` (the truncation/reorder/append detector).
+    """
+
+    global_event_ids: dict[str, str]
+    uploaded_sha256s: set[str]
+    month_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
 def _walk_stream(
     root: Path,
     stream_dir: Path,
@@ -197,12 +244,17 @@ def _walk_stream(
     manifest_wsid: str | None,
     findings: list[Finding],
     notes: list[str],
+    bundle: _BundleStreamHooks | None = None,
 ) -> StreamSummary:
     """Own read-only walk of one stream (Ruling 1): every month file, every line.
 
     Sequence/id bookkeeping (``expected``/``seen_seqs``/``seen_ids``) is carried ACROSS
     month files — ``*.ndjson`` sorted lexically is chronological, so contiguity spans
     month boundaries (matching ``append``'s scan semantics). Never mutates disk.
+
+    ``bundle`` (M4-2) enables the bundle-only extras: per-month-file digest/count
+    recomputation, month-file naming, ``body.stream_id`` binding, workspace-global
+    ``event_id`` uniqueness, and ``file.uploaded`` blob-reference collection.
     """
     expected = 1
     seen_seqs: set[int] = set()
@@ -215,6 +267,7 @@ def _walk_stream(
     for idx, path in enumerate(month_files):
         rel = str(path.relative_to(root))
         raw_bytes = path.read_bytes()
+        month = path.name.removesuffix(".ndjson")
 
         # Torn trailing line (Ruling 3): non-empty, no final "\n" => the bytes after the
         # last "\n" are an interrupted (never-acked) write. Report as a WARNING and drop
@@ -229,6 +282,19 @@ def _walk_stream(
             findings.append(
                 Finding(Severity.WARNING, "torn_line", stream_id, None, None, rel, detail)
             )
+
+        # Bundle mode: recompute this month file's manifest entry from the bytes on
+        # disk (digest/size over the RAW bytes — a torn tail must show up as a
+        # mismatch, not be silently healed; counts over the terminated lines).
+        stats: dict[str, Any] | None = None
+        if bundle is not None:
+            stats = bundle.month_stats[path.name] = {
+                "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                "bytes": len(raw_bytes),
+                "event_count": sum(1 for chunk in terminated.split(b"\n") if chunk),
+                "first_seq": None,
+                "last_seq": None,
+            }
 
         for line in terminated.split(b"\n"):
             if not line:  # the empty element after the final "\n"
@@ -296,6 +362,10 @@ def _walk_stream(
                 continue
             seq: int = seq_raw
             eid: str = eid_raw
+            if stats is not None:
+                if stats["first_seq"] is None:
+                    stats["first_seq"] = seq
+                stats["last_seq"] = seq
 
             # HASH CHECK — RAW body -> hash_event; verify_hash(envelope) is FORBIDDEN here.
             # verify_hash re-dumps body.model_dump(), and Pydantic lax coercion would
@@ -371,6 +441,51 @@ def _walk_stream(
                         )
                     )
 
+            # ---- Bundle-only per-line checks (M4-2) ----
+            if bundle is not None:
+                # An event's month file is part of the sealed layout: the file name
+                # must equal server_received_at[:7]. A non-string received_at is
+                # already an envelope-shape failure in Pass C, so only check strings.
+                received = (
+                    server_meta.get("server_received_at") if isinstance(server_meta, dict) else None
+                )
+                if isinstance(received, str) and received[:7] != month:
+                    findings.append(
+                        Finding(
+                            Severity.FAILURE,
+                            "month_mismatch",
+                            stream_id,
+                            seq,
+                            eid,
+                            rel,
+                            f"server_received_at {_clip(received)!r} does not belong "
+                            f"in month file {path.name}",
+                        )
+                    )
+                body_obj = obj.get("body")
+                body_sid = body_obj.get("stream_id") if isinstance(body_obj, dict) else None
+                if body_sid != stream_id:
+                    findings.append(
+                        Finding(
+                            Severity.FAILURE,
+                            "stream_id_mismatch",
+                            stream_id,
+                            seq,
+                            eid,
+                            rel,
+                            f"body.stream_id {body_sid!r} != stream dir {stream_id!r}",
+                        )
+                    )
+                # Collect blob references for the blob pass: every file.uploaded
+                # payload sha256 must exist under blobs/ (or be declared missing).
+                if isinstance(body_obj, dict) and body_obj.get("type") == "file.uploaded":
+                    payload_obj = body_obj.get("payload")
+                    payload_sha = (
+                        payload_obj.get("sha256") if isinstance(payload_obj, dict) else None
+                    )
+                    if isinstance(payload_sha, str):
+                        bundle.uploaded_sha256s.add(payload_sha)
+
             # ---- Pass B: sequence + id bookkeeping (Ruling 5B) ----
             events += 1
             if first_seq is None:
@@ -431,6 +546,23 @@ def _walk_stream(
                 )
             else:
                 seen_ids.setdefault(eid, seq)
+            # Workspace-global uniqueness (M4-2): the same event_id in TWO different
+            # streams of one bundle. The per-stream duplicate above already covers
+            # reuse within a stream, so only the cross-stream case fires here.
+            if bundle is not None:
+                prior_stream = bundle.global_event_ids.setdefault(eid, stream_id)
+                if prior_stream != stream_id:
+                    findings.append(
+                        Finding(
+                            Severity.FAILURE,
+                            "duplicate_event_id_global",
+                            stream_id,
+                            seq,
+                            eid,
+                            rel,
+                            f"event_id {eid} also appears in stream {prior_stream}",
+                        )
+                    )
 
             # ---- Pass C: schema validation (Ruling 5C) — independent of A/B, additive ----
             try:
@@ -604,11 +736,23 @@ def verify_workspace(root: Path | str, *, verbose: bool = False) -> VerifyReport
     if ws is not None:
         _cross_check_registry(root, ws, summaries_by_sid, findings)
 
-    # M4 SEAM: _verify_blobs(root, findings) would run here — re-hash blobs/sha256/**
-    # and cross-check message.created file_ids against the blob store (Ruling 9). No
-    # blobs/ tree exists in an M0 workspace, so there is nothing to do yet.
+    # M4 SEAM (filled by ENG-156): the blob pass lives in _verify_blobs and runs from
+    # verify_bundle — a live M0/M1 workspace still has no blobs/ tree, so the
+    # live-workspace walk keeps nothing to do here.
 
-    # Fill in per-stream failure/warning counts now that all findings (incl. cross-checks) exist.
+    _fill_stream_counts(summaries, findings)
+
+    return VerifyReport(
+        root=root,
+        workspace_id=workspace_id,
+        findings=findings,
+        streams=summaries,
+        notes=notes,
+    )
+
+
+def _fill_stream_counts(summaries: list[StreamSummary], findings: list[Finding]) -> None:
+    """Fill per-stream failure/warning counts once ALL findings are collected."""
     for summary in summaries:
         summary.failures = sum(
             1
@@ -621,13 +765,693 @@ def verify_workspace(root: Path | str, *, verbose: bool = False) -> VerifyReport
             if f.stream_id == summary.stream_id and f.severity is Severity.WARNING
         )
 
+
+# --------------------------------------------------------------------------- bundle mode
+
+
+def verify_path(root: Path | str, *, verbose: bool = False) -> VerifyReport:
+    """Mode dispatch (M4-2): ``manifest.json`` => §9 export bundle, else live workspace.
+
+    A directory carrying BOTH marker files is verified as a bundle (the sealed
+    manifest is the stronger contract). A directory with neither raises
+    :class:`UsageError` from :func:`verify_workspace` (exit 2), unchanged.
+    """
+    root = Path(root)
+    if (root / BUNDLE_MANIFEST_NAME).is_file():
+        return verify_bundle(root, verbose=verbose)
+    return verify_workspace(root, verbose=verbose)
+
+
+def verify_bundle(root: Path | str, *, verbose: bool = False) -> VerifyReport:
+    """Walk a §9 export bundle read-only and return a :class:`VerifyReport` (M4-2).
+
+    Three passes, ALL collected (Ruling 8 — never stop at the first finding):
+
+    A. **Event log** — the same per-line raw-hash/sequence/schema walk as a live
+       workspace, plus the bundle-only per-line checks: month-file naming
+       (``server_received_at[:7]`` == file name), ``body.stream_id`` == directory,
+       ``body.workspace_id`` == the manifest workspace, workspace-global
+       ``event_id`` uniqueness, and ``file.uploaded`` blob-reference collection.
+       ``payload_redacted`` remains an unconditional FAILURE (ENG-60 ruling).
+    B. **Blobs** (the ``# M4 SEAM`` pass) — every ``blobs/<ab>/<hex>`` re-hashed
+       against its path digest; every referenced blob (``files.json`` content +
+       thumbnail digests, ``file.uploaded`` payload digests, ``blobs.index``) must
+       exist — absent is a FAILURE unless declared in ``manifest.missing_blobs``
+       (then a WARNING); an unreferenced blob is a WARNING; sizes are cross-checked
+       against ``blobs.index[hex].bytes`` and ``files.json`` ``size_bytes``.
+    C. **Manifest** — ``bundle_digest`` recomputed over the JCS canonicalization of
+       the manifest sans that key (the exact way export sealed it); every month
+       file's sha256/bytes/event_count/first_seq/last_seq recomputed and compared —
+       THE truncation/reorder/append detector, since the §9 bundle deliberately has
+       no prev-hash chain; ``head_seq``/``event_count``/``event_count_total``;
+       sidecar digests; stream dirs <-> manifest entries one-to-one.
+
+    A malformed ``manifest.json`` yields ``manifest_invalid`` finding(s) plus a
+    best-effort walk (per-line checks still run; manifest-dependent cross-checks
+    are suppressed — unknown expectations would be noise). Exit-code contract
+    unchanged: any FAILURE => 1, warnings-only => 0, unreadable path =>
+    :class:`UsageError` (2).
+    """
+    root = Path(root)
+    findings: list[Finding] = []
+    notes: list[str] = []
+
+    manifest_path = root / BUNDLE_MANIFEST_NAME
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError as exc:
+        raise UsageError(f"cannot read {manifest_path}: {exc}") from exc
+
+    manifest: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(manifest_bytes)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        manifest = parsed
+        # A COPY is popped/canonicalized — verify never mutates its own evidence.
+        _check_bundle_digest(dict(parsed), findings)
+    else:
+        findings.append(
+            Finding(
+                Severity.FAILURE,
+                "manifest_invalid",
+                None,
+                None,
+                None,
+                BUNDLE_MANIFEST_NAME,
+                "manifest.json is not a JSON object",
+            )
+        )
+
+    # Defensive extraction: each malformed section is ONE manifest_invalid finding,
+    # and the checks depending on it are skipped (best-effort, mirroring the live
+    # workspace's malformed-manifest behavior).
+    manifest_wsid: str | None = None
+    manifest_streams: dict[str, Any] = {}
+    blob_index: dict[str, Any] = {}
+    sidecar_digests: dict[str, Any] | None = None
+    missing_blobs: set[str] = set()
+    if manifest is not None:
+
+        def _invalid(detail: str) -> None:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "manifest_invalid",
+                    None,
+                    None,
+                    None,
+                    BUNDLE_MANIFEST_NAME,
+                    detail,
+                )
+            )
+
+        ws_raw = manifest.get("workspace")
+        wsid = ws_raw.get("workspace_id") if isinstance(ws_raw, dict) else None
+        if isinstance(wsid, str):
+            manifest_wsid = wsid
+        else:
+            _invalid("workspace.workspace_id missing or not a string")
+        streams_raw = manifest.get("streams")
+        if isinstance(streams_raw, dict):
+            manifest_streams = streams_raw
+        else:
+            _invalid("streams missing or not an object")
+        blobs_raw = manifest.get("blobs")
+        index_raw = blobs_raw.get("index") if isinstance(blobs_raw, dict) else None
+        if isinstance(index_raw, dict):
+            blob_index = index_raw
+        else:
+            _invalid("blobs.index missing or not an object")
+        sidecars_raw = manifest.get("sidecars")
+        if isinstance(sidecars_raw, dict):
+            sidecar_digests = sidecars_raw
+        else:
+            _invalid("sidecars missing or not an object")
+        mb_raw = manifest.get("missing_blobs")
+        if isinstance(mb_raw, list) and all(isinstance(sha, str) for sha in mb_raw):
+            missing_blobs = set(mb_raw)
+        else:
+            _invalid("missing_blobs missing or not an array of strings")
+
+    # ---- Pass A: the shared stream walk, with the bundle hooks attached ---------
+    global_event_ids: dict[str, str] = {}
+    uploaded_sha256s: set[str] = set()
+    month_stats_by_stream: dict[str, dict[str, dict[str, Any]]] = {}
+    streams_dir = root / STREAMS_DIR
+    summaries: list[StreamSummary] = []
+    try:
+        dir_entries = sorted(streams_dir.iterdir()) if streams_dir.is_dir() else []
+    except OSError as exc:
+        raise UsageError(f"cannot read {streams_dir}: {exc}") from exc
+
+    for entry in dir_entries:
+        if not entry.is_dir():
+            if verbose and entry.suffix == ".ndjson":
+                notes.append(f"ignoring {entry.name}: a .ndjson directly under {STREAMS_DIR}/")
+            continue
+        sid = entry.name
+        entry_meta = manifest_streams.get(sid)
+        name_raw = entry_meta.get("name") if isinstance(entry_meta, dict) else None
+        hooks = _BundleStreamHooks(
+            global_event_ids=global_event_ids, uploaded_sha256s=uploaded_sha256s
+        )
+        try:
+            summaries.append(
+                _walk_stream(
+                    root,
+                    entry,
+                    sid,
+                    name_raw if isinstance(name_raw, str) else None,
+                    manifest_wsid,
+                    findings,
+                    notes,
+                    bundle=hooks,
+                )
+            )
+        except OSError as exc:
+            raise UsageError(f"cannot read stream dir {entry}: {exc}") from exc
+        month_stats_by_stream[sid] = hooks.month_stats
+
+    # ---- Pass C: manifest cross-checks (skipped sections already flagged above) --
+    summaries_by_sid = {s.stream_id: s for s in summaries}
+    if manifest is not None:
+        _cross_check_bundle_streams(
+            manifest_streams, summaries_by_sid, month_stats_by_stream, findings
+        )
+        recomputed_total = sum(s.events for s in summaries)
+        total = manifest.get("event_count_total")
+        if total != recomputed_total:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "count_mismatch",
+                    None,
+                    None,
+                    None,
+                    BUNDLE_MANIFEST_NAME,
+                    f"event_count_total: manifest {total!r} != recomputed {recomputed_total}",
+                )
+            )
+    file_entries = _check_sidecars(root, sidecar_digests, findings)
+
+    # ---- Pass B: blobs (the # M4 SEAM pass) --------------------------------------
+    _verify_blobs(root, file_entries, uploaded_sha256s, blob_index, missing_blobs, findings)
+
+    _fill_stream_counts(summaries, findings)
+
     return VerifyReport(
         root=root,
-        workspace_id=workspace_id,
+        workspace_id=manifest_wsid,
         findings=findings,
         streams=summaries,
         notes=notes,
     )
+
+
+def _check_bundle_digest(manifest: dict[str, Any], findings: list[Finding]) -> None:
+    """Recompute ``bundle_digest`` exactly the way export sealed it (M4-1).
+
+    ``sha256:`` over the RFC 8785 (JCS) canonicalization of the manifest dict
+    WITHOUT the ``bundle_digest`` key — the same canonicalization discipline as
+    ``event_hash`` (D1). ``manifest`` is the caller's throwaway copy (popped here).
+    """
+    stored = manifest.pop("bundle_digest", None)
+    if not isinstance(stored, str):
+        findings.append(
+            Finding(
+                Severity.FAILURE,
+                "manifest_digest_mismatch",
+                None,
+                None,
+                None,
+                BUNDLE_MANIFEST_NAME,
+                "bundle_digest missing or not a string",
+            )
+        )
+        return
+    try:
+        recomputed = f"sha256:{hashlib.sha256(canonicalize(manifest)).hexdigest()}"
+    except JCSError as exc:
+        findings.append(
+            Finding(
+                Severity.FAILURE,
+                "manifest_digest_mismatch",
+                None,
+                None,
+                None,
+                BUNDLE_MANIFEST_NAME,
+                f"manifest not canonicalizable: {_clip(str(exc))}",
+            )
+        )
+        return
+    if recomputed != stored:
+        findings.append(
+            Finding(
+                Severity.FAILURE,
+                "manifest_digest_mismatch",
+                None,
+                None,
+                None,
+                BUNDLE_MANIFEST_NAME,
+                f"recomputed {recomputed} != stored {_clip(stored)}",
+            )
+        )
+
+
+def _cross_check_bundle_streams(
+    manifest_streams: dict[str, Any],
+    summaries_by_sid: dict[str, StreamSummary],
+    month_stats_by_stream: dict[str, dict[str, dict[str, Any]]],
+    findings: list[Finding],
+) -> None:
+    """Manifest <-> on-disk stream cross-checks (bundle Pass C).
+
+    Every manifest stream must have a ``streams/<id>/`` dir (export always creates
+    one, even for an empty stream) and every dir a manifest entry — a bundle is a
+    sealed artifact, so BOTH directions are failures (unlike the live workspace's
+    ``empty_registered_stream`` warning). Each month file's recomputed
+    sha256/bytes (``file_digest_mismatch``) and event_count/first_seq/last_seq
+    (``count_mismatch``) must equal the manifest entry: with no prev-hash chain in
+    the §9 format, this is the check that catches truncation, reordering, and
+    appends that keep every per-event hash valid.
+    """
+    for sid, entry in sorted(manifest_streams.items()):
+        if not isinstance(entry, dict):
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "manifest_invalid",
+                    sid,
+                    None,
+                    None,
+                    BUNDLE_MANIFEST_NAME,
+                    f"streams[{sid!r}] is not an object",
+                )
+            )
+            continue
+        summary = summaries_by_sid.get(sid)
+        if summary is None:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "stream_dir_missing",
+                    sid,
+                    None,
+                    None,
+                    f"{STREAMS_DIR}/{sid}",
+                    "manifest stream has no streams/ subdir on disk",
+                )
+            )
+            continue
+        stats_by_month = month_stats_by_stream.get(sid, {})
+        files_map_raw = entry.get("files")
+        files_map: dict[str, Any]
+        if isinstance(files_map_raw, dict):
+            files_map = files_map_raw
+        else:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "manifest_invalid",
+                    sid,
+                    None,
+                    None,
+                    BUNDLE_MANIFEST_NAME,
+                    f"streams[{sid!r}].files missing or not an object",
+                )
+            )
+            files_map = {}
+        for month_name, meta in sorted(files_map.items()):
+            rel = f"{STREAMS_DIR}/{sid}/{month_name}"
+            stats = stats_by_month.get(month_name)
+            if stats is None:
+                findings.append(
+                    Finding(
+                        Severity.FAILURE,
+                        "month_file_missing",
+                        sid,
+                        None,
+                        None,
+                        rel,
+                        "listed in the manifest but absent on disk",
+                    )
+                )
+                continue
+            if not isinstance(meta, dict):
+                findings.append(
+                    Finding(
+                        Severity.FAILURE,
+                        "manifest_invalid",
+                        sid,
+                        None,
+                        None,
+                        BUNDLE_MANIFEST_NAME,
+                        f"streams[{sid!r}].files[{month_name!r}] is not an object",
+                    )
+                )
+                continue
+            if stats["sha256"] != meta.get("sha256"):
+                findings.append(
+                    Finding(
+                        Severity.FAILURE,
+                        "file_digest_mismatch",
+                        sid,
+                        None,
+                        None,
+                        rel,
+                        f"recomputed sha256 {stats['sha256']} != manifest "
+                        f"{_clip(str(meta.get('sha256')))}",
+                    )
+                )
+            if stats["bytes"] != meta.get("bytes"):
+                findings.append(
+                    Finding(
+                        Severity.FAILURE,
+                        "file_digest_mismatch",
+                        sid,
+                        None,
+                        None,
+                        rel,
+                        f"{stats['bytes']} bytes on disk != manifest {meta.get('bytes')!r}",
+                    )
+                )
+            for field_name in ("event_count", "first_seq", "last_seq"):
+                if stats[field_name] != meta.get(field_name):
+                    findings.append(
+                        Finding(
+                            Severity.FAILURE,
+                            "count_mismatch",
+                            sid,
+                            None,
+                            None,
+                            rel,
+                            f"{field_name}: recomputed {stats[field_name]!r} != manifest "
+                            f"{meta.get(field_name)!r}",
+                        )
+                    )
+        for month_name in sorted(stats_by_month):
+            if month_name not in files_map:
+                findings.append(
+                    Finding(
+                        Severity.FAILURE,
+                        "month_file_unlisted",
+                        sid,
+                        None,
+                        None,
+                        f"{STREAMS_DIR}/{sid}/{month_name}",
+                        "month file on disk but not in the manifest",
+                    )
+                )
+        last_on_disk = summary.last_seq if summary.last_seq is not None else 0
+        if entry.get("head_seq") != last_on_disk:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "count_mismatch",
+                    sid,
+                    None,
+                    None,
+                    f"{STREAMS_DIR}/{sid}",
+                    f"head_seq: manifest {entry.get('head_seq')!r} != last on-disk "
+                    f"seq {last_on_disk}",
+                )
+            )
+        if entry.get("event_count") != summary.events:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "count_mismatch",
+                    sid,
+                    None,
+                    None,
+                    f"{STREAMS_DIR}/{sid}",
+                    f"stream event_count: manifest {entry.get('event_count')!r} != "
+                    f"{summary.events} on disk",
+                )
+            )
+    for sid, summary in sorted(summaries_by_sid.items()):
+        if sid not in manifest_streams:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "unregistered_stream_dir",
+                    sid,
+                    None,
+                    None,
+                    f"{STREAMS_DIR}/{sid}",
+                    f"stream dir with {summary.events} event(s) has no manifest entry",
+                )
+            )
+
+
+def _check_sidecars(
+    root: Path, digests: dict[str, Any] | None, findings: list[Finding]
+) -> list[dict[str, Any]]:
+    """Verify both sidecars against their manifest digests; return files.json rows.
+
+    ``digests`` is ``None`` in best-effort mode (malformed manifest): the digest
+    comparison is suppressed, but ``files.json`` is still parsed so the blob pass
+    keeps its reference set.
+    """
+    file_entries: list[dict[str, Any]] = []
+    for name in _SIDECAR_NAMES:
+        path = root / name
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "sidecar_missing",
+                    None,
+                    None,
+                    None,
+                    name,
+                    "required bundle sidecar is absent",
+                )
+            )
+            continue
+        except OSError as exc:
+            raise UsageError(f"cannot read {path}: {exc}") from exc
+        if digests is not None:
+            expected = digests.get(name)
+            if not isinstance(expected, str):
+                findings.append(
+                    Finding(
+                        Severity.FAILURE,
+                        "manifest_invalid",
+                        None,
+                        None,
+                        None,
+                        BUNDLE_MANIFEST_NAME,
+                        f"sidecars[{name!r}] missing or not a string",
+                    )
+                )
+            else:
+                actual = hashlib.sha256(data).hexdigest()
+                if actual != expected:
+                    findings.append(
+                        Finding(
+                            Severity.FAILURE,
+                            "sidecar_digest_mismatch",
+                            None,
+                            None,
+                            None,
+                            name,
+                            f"recomputed sha256 {actual} != manifest {_clip(expected)}",
+                        )
+                    )
+        try:
+            parsed = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if not isinstance(parsed, list) or not all(isinstance(e, dict) for e in parsed):
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "sidecar_invalid",
+                    None,
+                    None,
+                    None,
+                    name,
+                    "not a JSON array of objects",
+                )
+            )
+        elif name == "files.json":
+            file_entries = parsed
+    return file_entries
+
+
+def _stream_sha256(path: Path) -> str:
+    """Bare-hex sha256 of a file, chunk-streamed (blobs can be tens of MB)."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1 << 20):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _verify_blobs(
+    root: Path,
+    file_entries: list[dict[str, Any]],
+    uploaded_sha256s: set[str],
+    blob_index: dict[str, Any],
+    missing_blobs: set[str],
+    findings: list[Finding],
+) -> None:
+    """The M4 blob pass (fills this module's long-reserved ``# M4 SEAM``).
+
+    * every file under ``blobs/**`` re-hashed against its path digest
+      (``blob_hash_mismatch``);
+    * every referenced digest — ``files.json`` ``sha256`` + ``thumbnail_sha256``,
+      every ``file.uploaded`` payload ``sha256``, and ``manifest.blobs.index`` —
+      must exist on disk: ``blob_missing`` FAILURE, downgraded to a WARNING when
+      the digest is declared in ``manifest.missing_blobs``;
+    * a blob referenced by nothing is a ``blob_unreferenced`` WARNING;
+    * sizes cross-checked against ``blobs.index[hex].bytes`` and ``files.json``
+      ``size_bytes`` (``blob_size_mismatch``).
+    """
+    blobs_dir = root / _BLOBS_DIR
+    on_disk: dict[str, Path] = {}
+    try:
+        blob_paths = (
+            sorted(p for p in blobs_dir.rglob("*") if p.is_file()) if blobs_dir.is_dir() else []
+        )
+    except OSError as exc:
+        raise UsageError(f"cannot read {blobs_dir}: {exc}") from exc
+    for path in blob_paths:
+        rel = str(path.relative_to(root))
+        name = path.name
+        if (
+            not _BLOB_HEX_RE.fullmatch(name)
+            or path.parent.name != name[:2]
+            or path.parent.parent != blobs_dir
+        ):
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    "blob_unrecognized",
+                    None,
+                    None,
+                    None,
+                    rel,
+                    "not a blobs/<ab>/<sha256hex> content-addressed path",
+                )
+            )
+            continue
+        on_disk[name] = path
+        actual = _stream_sha256(path)
+        if actual != name:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "blob_hash_mismatch",
+                    None,
+                    None,
+                    None,
+                    rel,
+                    f"content hashes to {actual}, path claims {name}",
+                )
+            )
+
+    # References by CONTENT USE (files.json rows + file.uploaded payloads); the
+    # manifest index additionally REQUIRES presence but is not itself a "use", so
+    # an index-only blob still warns as unreferenced.
+    referenced: dict[str, str] = {}
+    for entry in file_entries:
+        fid = entry.get("file_id")
+        sha = entry.get("sha256")
+        if isinstance(sha, str):
+            referenced.setdefault(sha, f"files.json entry {fid!r}")
+        thumb = entry.get("thumbnail_sha256")
+        if isinstance(thumb, str):
+            referenced.setdefault(thumb, f"files.json thumbnail of {fid!r}")
+    for sha in sorted(uploaded_sha256s):
+        referenced.setdefault(sha, "a file.uploaded event payload")
+    required = dict(referenced)
+    for sha in blob_index:
+        if isinstance(sha, str):
+            required.setdefault(sha, "manifest blobs.index")
+
+    for sha, referrer in sorted(required.items()):
+        if sha in on_disk:
+            continue
+        rel = f"{_BLOBS_DIR}/{sha[:2]}/{sha}"
+        if sha in missing_blobs:
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    "blob_missing",
+                    None,
+                    None,
+                    None,
+                    rel,
+                    f"referenced by {referrer}; declared in manifest.missing_blobs",
+                )
+            )
+        else:
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "blob_missing",
+                    None,
+                    None,
+                    None,
+                    rel,
+                    f"referenced by {referrer} but absent from {_BLOBS_DIR}/",
+                )
+            )
+    for sha in sorted(on_disk):
+        if sha not in referenced:
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    "blob_unreferenced",
+                    None,
+                    None,
+                    None,
+                    str(on_disk[sha].relative_to(root)),
+                    "present but referenced by no files.json row or file.uploaded event",
+                )
+            )
+    for sha, meta in sorted(blob_index.items(), key=lambda kv: str(kv[0])):
+        blob_path = on_disk.get(sha) if isinstance(sha, str) else None
+        if blob_path is None or not isinstance(meta, dict):
+            continue
+        actual_bytes = blob_path.stat().st_size
+        if actual_bytes != meta.get("bytes"):
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "blob_size_mismatch",
+                    None,
+                    None,
+                    None,
+                    str(blob_path.relative_to(root)),
+                    f"{actual_bytes} bytes on disk != manifest blobs.index {meta.get('bytes')!r}",
+                )
+            )
+    for entry in file_entries:
+        sha = entry.get("sha256")
+        blob_path = on_disk.get(sha) if isinstance(sha, str) else None
+        if blob_path is None:
+            continue
+        actual_bytes = blob_path.stat().st_size
+        if actual_bytes != entry.get("size_bytes"):
+            findings.append(
+                Finding(
+                    Severity.FAILURE,
+                    "blob_size_mismatch",
+                    None,
+                    None,
+                    None,
+                    "files.json",
+                    f"file {entry.get('file_id')!r}: size_bytes "
+                    f"{entry.get('size_bytes')!r} != blob {actual_bytes} bytes",
+                )
+            )
 
 
 def _finding_sort_key(f: Finding) -> tuple[int, str, int]:

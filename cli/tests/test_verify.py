@@ -7,7 +7,9 @@ report (fine-grained) and via ``cli.main`` (end-to-end exit codes / stdout).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,14 +18,21 @@ import pytest
 from conftest import run_cli
 from msgctl import verify
 from msgctl.cli import main
+from msgd.core import ids
 from verify_helpers import (
+    BundleInfo,
+    build_clean_bundle,
+    event_line,
     init_ws,
     make_envelope_line,
+    make_stored_event,
     month_file,
     read_raw_lines,
     rehash,
+    reseal_manifest,
     send,
     stream_dirs,
+    write_bundle,
     write_lines,
 )
 
@@ -742,3 +751,597 @@ def _m_id() -> str:
     from msgd.core import ids
 
     return ids.new_message_id()
+
+
+# =============================================================== bundle mode (M4-2)
+#
+# The §9 tamper matrix (ENG-156): a clean fixture bundle per test, ONE precise
+# corruption each, and an assertion on the SPECIFIC finding class — every check is
+# proven non-vacuous (remove the check and its test fails). The §9 bundle has NO
+# prev-hash chain, deliberately; test_bundle_swap_and_renumber_* below is the proof
+# that the sealed manifest closes exactly that gap.
+
+
+def _bundle(tmp_path: Path) -> tuple[Path, BundleInfo]:
+    root = tmp_path / "bundle"
+    return root, build_clean_bundle(root)
+
+
+def _month_path(root: Path, stream_id: str, month: str) -> Path:
+    return root / "streams" / stream_id / f"{month}.ndjson"
+
+
+def _blob_path(root: Path, sha: str) -> Path:
+    return root / "blobs" / sha[:2] / sha
+
+
+def _dump_line(obj: dict[str, Any]) -> str:
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _rewrite_manifest(root: Path, manifest: dict[str, Any]) -> None:
+    """Write an edited manifest verbatim (digest left however the test wants it)."""
+    (root / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+# ------------------------------------------------------------------ green + dispatch
+
+
+def test_bundle_green(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    report = verify.verify_path(root, verbose=True)
+    assert report.findings == []
+    assert report.ok is True
+    assert report.exit_code == 0
+    assert report.workspace_id == info.workspace_id
+    assert report.total_events == 7
+    assert len(report.streams) == 2
+    assert {s.name for s in report.streams} == {"general", "random"}
+    assert main(["verify", str(root)]) == 0
+
+
+def test_bundle_mode_detection_manifest_wins(tmp_path: Path) -> None:
+    """manifest.json => bundle mode even if a (bogus) workspace.json sits alongside."""
+    root, _ = _bundle(tmp_path)
+    (root / "workspace.json").write_text("{ not even json", encoding="utf-8")
+    report = verify.verify_path(root)
+    assert report.findings == []  # bundle mode never opened workspace.json
+    assert report.exit_code == 0
+
+
+def test_bundle_mode_detection_workspace_unchanged(tmp_path: Path) -> None:
+    """No manifest.json => the pre-M4 live-workspace walk, byte-for-byte."""
+    root = tmp_path / "ws"
+    init_ws(root)
+    send(root, "general", "hello")
+    report = verify.verify_path(root)
+    assert report.findings == []
+    assert report.exit_code == 0
+    # And a non-workspace dir still exits 2 through the CLI (usage, not a finding).
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert main(["verify", str(plain)]) == 2
+
+
+def test_bundle_json_shape(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    _blob_path(root, info.content_sha).unlink()
+    proc = run_cli("verify", str(root), "--json")
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["ok"] is False
+    assert payload["workspace_id"] == info.workspace_id
+    assert any(f["class"] == "blob_missing" for f in payload["findings"])
+
+
+# ------------------------------------------------------- tamper matrix: event log (A)
+
+
+def test_bundle_flipped_body_byte(tmp_path: Path) -> None:
+    """Tamper 1: one flipped byte inside a body => hash_mismatch (and the month-file
+    digest diverges too — two independent detectors on the same tamper)."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-06")
+    data = path.read_text(encoding="utf-8")
+    assert '"text":"two"' in data
+    path.write_text(data.replace('"text":"two"', '"text":"twZ"', 1), encoding="utf-8")
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "hash_mismatch" in classes
+    assert "file_digest_mismatch" in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_edited_event_hash(tmp_path: Path) -> None:
+    """Tamper 2: a rewritten stored event_hash => hash_mismatch."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-06")
+    lines = read_raw_lines(path)
+    obj = json.loads(lines[0])
+    obj["event_hash"] = "sha256:" + "0" * 64
+    write_lines(path, [_dump_line(obj), *lines[1:]])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "hash_mismatch" in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_truncated_month_file(tmp_path: Path) -> None:
+    """Tamper 3: a deleted trailing NDJSON line => the manifest counts/digest AND the
+    cross-month sequence gap both fire."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-06")
+    lines = read_raw_lines(path)
+    write_lines(path, lines[:-1])  # drop seq 3; 2026-07 continues at seq 4
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "gap" in classes
+    assert "file_digest_mismatch" in classes
+    assert "count_mismatch" in classes  # event_count/last_seq vs manifest
+    assert report.exit_code == 1
+
+
+def test_bundle_reordered_lines(tmp_path: Path) -> None:
+    """Tamper 4: two lines swapped verbatim => sequence findings + digest mismatch."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-06")
+    lines = read_raw_lines(path)
+    write_lines(path, [lines[1], lines[0], lines[2]])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "file_digest_mismatch" in classes
+    assert "gap" in classes and "out_of_order" in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_swap_and_renumber_caught_by_manifest(tmp_path: Path) -> None:
+    """Tamper 5 — THE no-prev-hash-chain proof. Swap two events AND renumber their
+    server_sequence: every per-event check passes (event_hash covers body only, and
+    the on-disk sequence is gapless 1..n again), so an event-log-only verifier is
+    blind to it. The sealed manifest's month-file digest is what catches it."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-06")
+    lines = read_raw_lines(path)
+    first, second = json.loads(lines[0]), json.loads(lines[1])
+    first["server"]["server_sequence"] = 2
+    second["server"]["server_sequence"] = 1
+    write_lines(path, [_dump_line(second), _dump_line(first), lines[2]])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    # The event-log pass is fully green on this tamper...
+    assert "hash_mismatch" not in classes
+    assert "gap" not in classes
+    assert "out_of_order" not in classes
+    assert "duplicate" not in classes
+    # ...and the manifest digest is the ONLY thing standing. Exactly one finding.
+    assert classes == ["file_digest_mismatch"]
+    assert report.exit_code == 1
+
+
+def test_bundle_appended_event_caught(tmp_path: Path) -> None:
+    """Tamper 10b: a perfectly valid event appended after export (correct hash, next
+    seq) => file digest + counts diverge from the sealed manifest."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-07")
+    forged = make_stored_event(
+        workspace_id=info.workspace_id,
+        stream_id=info.stream_a,
+        server_sequence=6,
+        server_received_at="2026-07-03T09:00:00.000Z",
+        payload={"message_id": _m_id(), "text": "forged", "format": "markdown"},
+    )
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(event_line(forged))
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "hash_mismatch" not in classes
+    assert "gap" not in classes
+    assert "file_digest_mismatch" in classes
+    assert "count_mismatch" in classes  # event_count/last_seq/head_seq/total
+    assert report.exit_code == 1
+
+
+def test_bundle_month_mismatch(tmp_path: Path) -> None:
+    """server_received_at is NOT hashed (server metadata), so moving an event across
+    months needs its own check: the month-file name is part of the sealed layout."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-06")
+    lines = read_raw_lines(path)
+    obj = json.loads(lines[0])
+    obj["server"]["server_received_at"] = "2026-08-01T00:00:00.000Z"
+    write_lines(path, [_dump_line(obj), *lines[1:]])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "hash_mismatch" not in classes  # metadata edit: the body hash stays green
+    assert "month_mismatch" in classes
+    assert "file_digest_mismatch" in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_stream_id_mismatch(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_a, "2026-06")
+    lines = read_raw_lines(path)
+    obj = json.loads(lines[0])
+    obj["body"]["stream_id"] = ids.new_stream_id()
+    obj["event_hash"] = rehash(obj)  # faithful hash: ONLY the binding is wrong
+    write_lines(path, [_dump_line(obj), *lines[1:]])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "hash_mismatch" not in classes
+    assert "stream_id_mismatch" in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_workspace_id_mismatch(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_b, "2026-07")
+    lines = read_raw_lines(path)
+    obj = json.loads(lines[0])
+    obj["body"]["workspace_id"] = ids.new_workspace_id()
+    obj["event_hash"] = rehash(obj)
+    write_lines(path, [_dump_line(obj), *lines[1:]])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "workspace_id_mismatch" in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_redacted_flag_is_failure(tmp_path: Path) -> None:
+    """The ENG-60 ruling carries into bundles: payload_redacted has no authority."""
+    root, info = _bundle(tmp_path)
+    path = _month_path(root, info.stream_b, "2026-07")
+    lines = read_raw_lines(path)
+    obj = json.loads(lines[0])
+    obj["server"]["payload_redacted"] = True  # body untouched: hash stays valid
+    write_lines(path, [_dump_line(obj), *lines[1:]])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "redacted_line" in classes
+    assert "hash_mismatch" not in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_duplicate_event_id_across_streams(tmp_path: Path) -> None:
+    """Tamper 11: the SAME event_id in two different streams — sealed into an
+    otherwise fully consistent bundle, so global uniqueness is the only detector."""
+    workspace_id = ids.new_workspace_id()
+    stream_a, stream_b = sorted([ids.new_stream_id(), ids.new_stream_id()])
+    dup_eid = ids.new_event_id()
+
+    def _msg_event(sid: str, eid: str) -> dict[str, Any]:
+        return make_stored_event(
+            workspace_id=workspace_id,
+            stream_id=sid,
+            server_sequence=1,
+            event_id=eid,
+            payload={"message_id": _m_id(), "text": "hi", "format": "markdown"},
+        )
+
+    root = tmp_path / "bundle"
+    write_bundle(
+        root,
+        workspace_id=workspace_id,
+        streams={
+            stream_a: {"name": "a", "events": [_msg_event(stream_a, dup_eid)]},
+            stream_b: {"name": "b", "events": [_msg_event(stream_b, dup_eid)]},
+        },
+    )
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["duplicate_event_id_global"]
+    finding = report.findings[0]
+    assert finding.stream_id == stream_b  # flagged on the second stream walked
+    assert finding.event_id == dup_eid
+    assert stream_a in finding.detail
+    assert report.exit_code == 1
+
+
+# ----------------------------------------------------------- tamper matrix: blobs (B)
+
+
+def test_bundle_missing_blob(tmp_path: Path) -> None:
+    """Tamper 6: a referenced blob deleted from blobs/ => blob_missing FAILURE."""
+    root, info = _bundle(tmp_path)
+    _blob_path(root, info.content_sha).unlink()
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["blob_missing"]
+    assert report.findings[0].severity is verify.Severity.FAILURE
+    assert info.content_sha in report.findings[0].file
+    assert report.exit_code == 1
+
+
+def test_bundle_corrupted_blob(tmp_path: Path) -> None:
+    """Tamper 7: flipped blob byte (size preserved) => blob_hash_mismatch only."""
+    root, info = _bundle(tmp_path)
+    path = _blob_path(root, info.thumb_sha)
+    data = bytearray(path.read_bytes())
+    data[0] ^= 0xFF
+    path.write_bytes(bytes(data))
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["blob_hash_mismatch"]
+    assert report.exit_code == 1
+
+
+def test_bundle_truncated_blob_size_checks(tmp_path: Path) -> None:
+    """A shortened blob trips the content hash AND both size cross-checks
+    (manifest blobs.index bytes + files.json size_bytes)."""
+    root, info = _bundle(tmp_path)
+    _blob_path(root, info.content_sha).write_bytes(info.content[:-4])
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "blob_hash_mismatch" in classes
+    assert classes.count("blob_size_mismatch") == 2
+    assert report.exit_code == 1
+
+
+def test_bundle_declared_missing_blob_is_warning(tmp_path: Path) -> None:
+    """Tamper 12: an absence DECLARED in manifest.missing_blobs (the
+    --allow-missing-blobs export path) is a WARNING, not a FAILURE — exit 0."""
+    workspace_id = ids.new_workspace_id()
+    stream_id = ids.new_stream_id()
+    absent_sha = hashlib.sha256(b"never made it into the export").hexdigest()
+    file_id = ids.new_file_id()
+    root = tmp_path / "bundle"
+    write_bundle(
+        root,
+        workspace_id=workspace_id,
+        streams={
+            stream_id: {
+                "name": "general",
+                "events": [
+                    make_stored_event(
+                        workspace_id=workspace_id,
+                        stream_id=stream_id,
+                        server_sequence=1,
+                        payload={"message_id": _m_id(), "text": "hi", "format": "markdown"},
+                    )
+                ],
+            }
+        },
+        files=[
+            {
+                "file_id": file_id,
+                "sha256": absent_sha,
+                "name": "gone.bin",
+                "mime_type": "application/octet-stream",
+                "size_bytes": 30,
+                "uploaded_by": ids.new_user_id(),
+                "stream_id": stream_id,
+                "created_at": "2026-07-01T00:00:00.000Z",
+                "thumbnail_sha256": None,
+            }
+        ],
+        missing_blobs=[absent_sha],
+    )
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["blob_missing"]
+    assert report.findings[0].severity is verify.Severity.WARNING
+    assert "missing_blobs" in report.findings[0].detail
+    assert report.ok is True
+    assert report.exit_code == 0
+    assert main(["verify", str(root)]) == 0
+
+
+def test_bundle_unreferenced_blob_is_warning(tmp_path: Path) -> None:
+    root, _ = _bundle(tmp_path)
+    stray = b"who left this here"
+    sha = hashlib.sha256(stray).hexdigest()
+    path = _blob_path(root, sha)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(stray)
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["blob_unreferenced"]
+    assert report.findings[0].severity is verify.Severity.WARNING
+    assert report.exit_code == 0
+
+
+def test_bundle_uploaded_event_blob_reference_enforced(tmp_path: Path) -> None:
+    """A file.uploaded payload sha256 is a first-class blob reference: with the
+    files.json row gone, the EVENT alone must still make the deleted blob a failure."""
+    root, info = _bundle(tmp_path)
+    # Rewrite files.json to an empty list; reseal its digest so ONLY the event refs remain.
+    (root / "files.json").write_text("[]\n", encoding="utf-8")
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["sidecars"]["files.json"] = hashlib.sha256(b"[]\n").hexdigest()
+    _rewrite_manifest(root, manifest)
+    reseal_manifest(root)
+    _blob_path(root, info.content_sha).unlink()
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    blob_missing = [f for f in report.findings if f.cls == "blob_missing"]
+    assert len(blob_missing) == 1
+    assert "file.uploaded" in blob_missing[0].detail
+    # The thumbnail is now referenced by nothing (files.json emptied) => warning.
+    assert "blob_unreferenced" in classes
+    assert report.exit_code == 1
+
+
+# -------------------------------------------------------- tamper matrix: manifest (C)
+
+
+def test_bundle_manifest_digest_mismatch(tmp_path: Path) -> None:
+    """Tamper 10a: ANY manifest edit without resealing => manifest_digest_mismatch —
+    even on a field no other check re-derives (tool)."""
+    root, _ = _bundle(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["tool"] = "attacker/1.0"
+    _rewrite_manifest(root, manifest)
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["manifest_digest_mismatch"]
+    assert report.exit_code == 1
+
+
+def test_bundle_manifest_count_edit_resealed(tmp_path: Path) -> None:
+    """Tamper 9: month-file counts edited AND the digest resealed — the recomputed
+    per-file counts must catch it on their own (independent of bundle_digest)."""
+    root, info = _bundle(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    entry = manifest["streams"][info.stream_a]["files"]["2026-06.ndjson"]
+    entry["event_count"] = 99
+    entry["first_seq"] = 7
+    _rewrite_manifest(root, manifest)
+    reseal_manifest(root)
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "manifest_digest_mismatch" not in classes  # the reseal held
+    assert classes == ["count_mismatch", "count_mismatch"]
+    assert report.exit_code == 1
+
+
+def test_bundle_manifest_head_seq_edit_resealed(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["streams"][info.stream_b]["head_seq"] = 9
+    _rewrite_manifest(root, manifest)
+    reseal_manifest(root)
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["count_mismatch"]
+    assert "head_seq" in report.findings[0].detail
+    assert report.exit_code == 1
+
+
+def test_bundle_manifest_blob_bytes_edit_resealed(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["blobs"]["index"][info.content_sha]["bytes"] = 1
+    _rewrite_manifest(root, manifest)
+    reseal_manifest(root)
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["blob_size_mismatch"]
+    assert report.exit_code == 1
+
+
+def test_bundle_removed_stream_dir(tmp_path: Path) -> None:
+    """Tamper 8: a whole streams/<id>/ subtree deleted => stream_dir_missing (plus
+    the workspace-wide event_count_total divergence)."""
+    root, info = _bundle(tmp_path)
+    shutil.rmtree(root / "streams" / info.stream_b)
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "stream_dir_missing" in classes
+    assert "count_mismatch" in classes  # event_count_total: 5 on disk != 7 sealed
+    assert report.exit_code == 1
+
+
+def test_bundle_extra_stream_dir(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    sid = ids.new_stream_id()
+    extra = root / "streams" / sid
+    extra.mkdir()
+    forged = make_stored_event(
+        workspace_id=info.workspace_id,
+        stream_id=sid,
+        server_sequence=1,
+        payload={"message_id": _m_id(), "text": "planted", "format": "markdown"},
+    )
+    (extra / "2026-07.ndjson").write_text(event_line(forged), encoding="utf-8")
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "unregistered_stream_dir" in classes
+    assert "count_mismatch" in classes  # event_count_total: 8 on disk != 7 sealed
+    assert report.exit_code == 1
+
+
+def test_bundle_month_file_missing_and_unlisted(tmp_path: Path) -> None:
+    root, info = _bundle(tmp_path)
+    _month_path(root, info.stream_a, "2026-06").unlink()
+    forged = make_stored_event(
+        workspace_id=info.workspace_id,
+        stream_id=info.stream_b,
+        server_sequence=3,
+        server_received_at="2026-08-01T00:00:00.000Z",
+        payload={"message_id": _m_id(), "text": "later", "format": "markdown"},
+    )
+    _month_path(root, info.stream_b, "2026-08").write_text(event_line(forged), encoding="utf-8")
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "month_file_missing" in classes  # 2026-06.ndjson sealed but gone
+    assert "month_file_unlisted" in classes  # 2026-08.ndjson on disk, never sealed
+    assert report.exit_code == 1
+
+
+def test_bundle_sidecar_digest_mismatch(tmp_path: Path) -> None:
+    root, _ = _bundle(tmp_path)
+    with open(root / "users.json", "a", encoding="utf-8") as fh:
+        fh.write(" ")  # still valid JSON, different bytes
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["sidecar_digest_mismatch"]
+    assert report.findings[0].file == "users.json"
+    assert report.exit_code == 1
+
+
+def test_bundle_sidecar_missing(tmp_path: Path) -> None:
+    root, _ = _bundle(tmp_path)
+    (root / "files.json").unlink()
+
+    report = verify.verify_bundle(root)
+    classes = _classes(report)
+    assert "sidecar_missing" in classes
+    # With files.json gone its thumbnail reference vanished too => warning, and the
+    # walk kept going (collect everything, Ruling 8).
+    assert "blob_unreferenced" in classes
+    assert report.exit_code == 1
+
+
+def test_bundle_manifest_invalid_best_effort(tmp_path: Path) -> None:
+    """A syntactically broken manifest.json => one manifest_invalid failure, and the
+    per-line hash/sequence walk still runs (best-effort, mirroring workspace mode)."""
+    root, _ = _bundle(tmp_path)
+    (root / "manifest.json").write_text("{ not json", encoding="utf-8")
+
+    report = verify.verify_bundle(root)
+    assert _classes(report) == ["manifest_invalid"]
+    assert report.total_events == 7  # the stream walk still visited every event
+    assert report.exit_code == 1
+
+    proc = run_cli("verify", str(root), "--json")  # and no traceback via the CLI
+    assert proc.returncode == 1
+    assert "Traceback" not in proc.stderr
+
+
+def test_bundle_collects_all_findings(tmp_path: Path) -> None:
+    """Ruling 8 holds in bundle mode: multiple independent tampers, one report."""
+    root, info = _bundle(tmp_path)
+    # Tamper 1: flip a body byte in stream A.
+    path_a = _month_path(root, info.stream_a, "2026-06")
+    path_a.write_text(
+        path_a.read_text(encoding="utf-8").replace('"text":"one"', '"text":"onZ"', 1),
+        encoding="utf-8",
+    )
+    # Tamper 2: delete the content blob.
+    _blob_path(root, info.content_sha).unlink()
+    # Tamper 3: truncate stream B.
+    path_b = _month_path(root, info.stream_b, "2026-07")
+    write_lines(path_b, read_raw_lines(path_b)[:-1])
+
+    report = verify.verify_bundle(root)
+    classes = set(_classes(report))
+    assert {"hash_mismatch", "blob_missing", "file_digest_mismatch", "count_mismatch"} <= classes
+    assert report.exit_code == 1
