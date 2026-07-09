@@ -9,6 +9,7 @@ import { newEventId, newMessageId, newStreamId } from '../../../src/core'
 import { RpcCodedError, topicKey } from '../../../src/worker/types'
 import type {
   AdminInvite,
+  AdminInviteCreateParams,
   AdminMember,
   AdminMemberUpdateParams,
   BackfillResult,
@@ -101,12 +102,16 @@ export class FakeWorker {
   readonly adminMembersListSpy = vi.fn()
   readonly adminUpdateSpy = vi.fn<(params: AdminMemberUpdateParams) => void>()
   readonly adminInvitesListSpy = vi.fn()
+  readonly adminCreateSpy = vi.fn<(params: AdminInviteCreateParams) => void>()
   readonly adminRevokeSpy = vi.fn<(params: { id: string }) => void>()
   private adminMembers: AdminMember[] = []
   private adminInvites: AdminInvite[] = []
   private adminListError: RpcCodedError | null = null
   private adminUpdateError: RpcCodedError | null = null
+  private adminCreateError: RpcCodedError | null = null
   private adminRevokeError: RpcCodedError | null = null
+  /** The one-time join URL the next `admin.invites.create` resolves with. */
+  createdInviteUrl = 'https://msg.example/join/raw-invite-token-1'
 
   // -- setup helpers -------------------------------------------------------
 
@@ -136,6 +141,12 @@ export class FakeWorker {
   /** Make the NEXT `admin.members.update` reject with the coded error `code`. */
   failNextAdminUpdate(code: string): this {
     this.adminUpdateError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT `admin.invites.create` reject with the coded error `code`. */
+  failNextAdminCreate(code: string): this {
+    this.adminCreateError = new RpcCodedError(code, code)
     return this
   }
 
@@ -767,6 +778,24 @@ export class FakeWorker {
               return Promise.reject(err)
             }
             return Promise.resolve({ invites: this.adminInvites.map((i) => ({ ...i })) })
+          },
+          create: (params: AdminInviteCreateParams) => {
+            this.adminCreateSpy(params)
+            if (this.adminCreateError) {
+              const err = this.adminCreateError
+              this.adminCreateError = null
+              return Promise.reject(err)
+            }
+            const ttl = params.ttl_seconds ?? 7 * 24 * 60 * 60
+            const expires_at = new Date(Date.now() + ttl * 1000).toISOString()
+            // The list gains a PENDING row keyed by a hash — never the raw token.
+            this.adminInvites.push({
+              id: `hash-${this.adminInvites.length + 1}`,
+              role: params.role,
+              created_by: this.myUserId,
+              expires_at,
+            })
+            return Promise.resolve({ url: this.createdInviteUrl, expires_at })
           },
           revoke: (params: { id: string }) => {
             this.adminRevokeSpy(params)

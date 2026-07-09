@@ -85,6 +85,8 @@ export {
   type AdminMemberUpdateParams,
   type AdminInvite,
   type AdminInvitesResult,
+  type AdminInviteCreateParams,
+  type AdminInviteCreateResult,
   type AdminInviteRevokeResult,
 } from './types'
 

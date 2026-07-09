@@ -5,7 +5,13 @@
 // engine (ENG-79) and projections (ENG-80), which register handlers here,
 // unit-testable in vitest against fake-indexeddb or MemoryDb, no browser.
 
-import { listAdminInvites, listAdminMembers, revokeAdminInvite, updateAdminMember } from './admin'
+import {
+  createAdminInvite,
+  listAdminInvites,
+  listAdminMembers,
+  revokeAdminInvite,
+  updateAdminMember,
+} from './admin'
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
 import { FileManager } from './files'
@@ -33,6 +39,7 @@ import {
   MAX_CACHED_EVENTS_PER_STREAM,
   RpcCodedError,
   topicKey,
+  type AdminInviteCreateResult,
   type AdminInviteRevokeResult,
   type AdminInvitesResult,
   type AdminMember,
@@ -95,6 +102,7 @@ export interface RpcResultMap {
   'admin.members.list': AdminMembersResult
   'admin.members.update': AdminMember
   'admin.invites.list': AdminInvitesResult
+  'admin.invites.create': AdminInviteCreateResult
   'admin.invites.revoke': AdminInviteRevokeResult
 }
 
@@ -612,6 +620,7 @@ export class WorkerCore {
     this.register('admin.members.list', () => listAdminMembers(this.http))
     this.register('admin.members.update', (req) => updateAdminMember(this.http, req.params))
     this.register('admin.invites.list', () => listAdminInvites(this.http))
+    this.register('admin.invites.create', (req) => createAdminInvite(this.http, req.params))
     this.register('admin.invites.revoke', (req) => revokeAdminInvite(this.http, req.params))
   }
 }

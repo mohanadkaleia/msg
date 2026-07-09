@@ -11,6 +11,8 @@ import { createLeaderTransport } from './leader'
 import { createRpcCaller } from './rpc'
 import {
   type AcceptInviteCredentials,
+  type AdminInviteCreateParams,
+  type AdminInviteCreateResult,
   type AdminInviteRevokeResult,
   type AdminInvitesResult,
   type AdminMember,
@@ -189,6 +191,11 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
             method: 'admin.invites.list',
             params: {},
           }) as Promise<AdminInvitesResult>,
+        create: (params: AdminInviteCreateParams) =>
+          caller.request({
+            method: 'admin.invites.create',
+            params,
+          }) as Promise<AdminInviteCreateResult>,
         revoke: (params: { id: string }) =>
           caller.request({
             method: 'admin.invites.revoke',

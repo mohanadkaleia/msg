@@ -313,6 +313,10 @@ export class FakeSyncServer {
   adminInvites: AdminInvite[] = []
   /** When set, EVERY admin call fails with this error (403 gate / 422 model). */
   adminError: ApiError | undefined
+  /** The RAW join token the NEXT `POST /v1/admin/invites` embeds in its URL. */
+  nextInviteToken = 'raw-invite-token-1'
+  /** Every create-invite body the fake server accepted (role + optional ttl). */
+  readonly createdInvites: { role: string; ttl_seconds?: number }[] = []
 
   // -- ENG-119 Files API model --------------------------------------------
   /** `file_id` → the reserved file row (models the server `files` table). */
@@ -654,6 +658,33 @@ export class FakeSyncServer {
     return { ok: true, value: { invites: this.adminInvites } }
   }
 
+  /**
+   * `POST /v1/admin/invites` — mint an invite (mirror of `create_invite`):
+   * store only a "hash" row in the pending list (the raw token appears in NO
+   * list read), and return the one-time join URL + an expiry, like the 201.
+   */
+  respondAdminCreateInvite(body: {
+    role: string
+    ttl_seconds?: number
+  }): ApiResult<{ url: string; expires_at: string }> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    this.createdInvites.push(body)
+    const ttl = body.ttl_seconds ?? 7 * 24 * 60 * 60
+    const expires_at = new Date(Date.now() + ttl * 1000).toISOString()
+    this.adminInvites.push({
+      // A stand-in for sha256(raw): the list carries an OPAQUE hash, never the
+      // raw token (so it must NOT be a substring of the raw token).
+      id: `sha-${this.adminInvites.length + 1}`,
+      role: body.role,
+      created_by: 'u_owner',
+      expires_at,
+    })
+    return {
+      ok: true,
+      value: { url: `https://msg.example/join/${this.nextInviteToken}`, expires_at },
+    }
+  }
+
   /** `DELETE /v1/admin/invites/{id}` — hard delete; no row → the uniform 404. */
   respondAdminRevokeInvite(id: string): ApiResult<void> {
     if (this.adminError) return { ok: false, error: this.adminError }
@@ -789,6 +820,11 @@ export class FakeHttpClient implements HttpClient {
       } finally {
         this.inFlight--
       }
+    }
+    if (path.startsWith('/v1/admin/invites')) {
+      return this.server.respondAdminCreateInvite(
+        body as { role: string; ttl_seconds?: number },
+      ) as ApiResult<T>
     }
     if (path.startsWith('/v1/files/initiate')) {
       return this.server.respondInitiate(

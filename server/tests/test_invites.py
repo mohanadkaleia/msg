@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from datetime import timedelta
 
 from authutil import (
@@ -58,6 +60,100 @@ async def test_member_cannot_create_invite(client: AsyncClient) -> None:
     resp = await create_invite(client, member_token, role="member")
     assert resp.status_code == 403
     assert resp.json()["type"] == "/problems/forbidden"
+
+
+async def test_guest_cannot_create_invite(client: AsyncClient) -> None:
+    """A guest hitting the admin invite endpoint is forbidden (403), like a member."""
+    owner_token = (await do_setup(client))["token"]
+    invite = await create_invite(client, owner_token, role="guest")
+    raw = join_token(invite.json()["url"])
+    guest_token = (await accept_invite(client, raw, email="g@example.com")).json()["token"]
+
+    resp = await create_invite(client, guest_token, role="member")
+    assert resp.status_code == 403
+    assert resp.json()["type"] == "/problems/forbidden"
+
+
+async def test_invite_token_high_entropy_and_only_hash_stored(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The raw join token is a fresh 256-bit urlsafe secret; only its sha256 is stored.
+
+    Teeth: ``secrets.token_urlsafe(32)`` yields ≥43 urlsafe chars — every mint is
+    distinct and matches that shape (not a counter, uuid, or hash of inputs); the
+    DB row's PK is exactly ``sha256(raw)`` hex, and the raw token appears in no
+    other stored column. The raw token also round-trips through accept (the hash
+    lookup is the credential check).
+    """
+    owner_token = (await do_setup(client))["token"]
+
+    raws: list[str] = []
+    for _ in range(5):
+        resp = await create_invite(client, owner_token, role="member")
+        assert resp.status_code == 201
+        raws.append(join_token(resp.json()["url"]))
+
+    assert len(set(raws)) == 5  # never repeated
+    for raw in raws:
+        assert len(raw) >= 43  # 32 bytes → 43 base64url chars (256 bits)
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", raw)  # urlsafe alphabet, no padding
+        row = await db_session.get(Invite, hash_token(raw))
+        assert row is not None  # stored under sha256(raw) …
+        assert row.token_hash == hashlib.sha256(raw.encode()).hexdigest()
+        # … and the raw token itself is persisted NOWHERE on the row.
+        assert raw not in (row.token_hash, row.workspace_id, row.created_by, row.role)
+
+    # The minted token is a working credential end-to-end (hash-lookup accept).
+    accepted = await accept_invite(client, raws[0], email="minted@example.com")
+    assert accepted.status_code == 200
+
+
+async def test_invite_ttl_respected_and_clamped(
+    client: AsyncClient, db_session: AsyncSession, settings: Settings
+) -> None:
+    """``ttl_seconds`` drives ``expires_at``; an over-max request clamps to the cap."""
+    owner_token = (await do_setup(client))["token"]
+
+    short = await create_invite(client, owner_token, ttl_seconds=3600)
+    assert short.status_code == 201
+    row = await db_session.get(Invite, hash_token(join_token(short.json()["url"])))
+    assert row is not None
+    delta = (row.expires_at - utcnow()).total_seconds()
+    assert 3500 < delta <= 3600
+
+    huge = await create_invite(client, owner_token, ttl_seconds=10**9)
+    assert huge.status_code == 201
+    row = await db_session.get(Invite, hash_token(join_token(huge.json()["url"])))
+    assert row is not None
+    delta = (row.expires_at - utcnow()).total_seconds()
+    assert delta <= settings.invite_max_ttl_seconds  # clamped, not honored
+    assert delta > settings.invite_max_ttl_seconds - 120
+
+
+async def test_created_invite_listed_by_hash_then_accept_consumes_it(
+    client: AsyncClient,
+) -> None:
+    """Create → list shows it (id = sha256, raw absent) → accept → gone from list."""
+    owner_token = (await do_setup(client))["token"]
+    owner_h = auth_header(owner_token)
+
+    created = await create_invite(client, owner_token, role="admin")
+    assert created.status_code == 201
+    raw = join_token(created.json()["url"])
+
+    listed = await client.get("/v1/admin/invites", headers=owner_h)
+    assert listed.status_code == 200
+    (entry,) = listed.json()["invites"]
+    assert entry["id"] == hash_token(raw)
+    assert entry["role"] == "admin"
+    assert raw not in listed.text  # the raw token existed exactly once, at create
+
+    accepted = await accept_invite(client, raw, email="a@example.com")
+    assert accepted.status_code == 200
+    assert accepted.json()["role"] == "admin"
+
+    after = await client.get("/v1/admin/invites", headers=owner_h)
+    assert after.json()["invites"] == []  # used → no longer pending
 
 
 async def test_single_use_second_accept_410(client: AsyncClient) -> None:

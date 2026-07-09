@@ -18,6 +18,8 @@
 
 import {
   RpcCodedError,
+  type AdminInviteCreateParams,
+  type AdminInviteCreateResult,
   type AdminInviteRevokeResult,
   type AdminInvitesResult,
   type AdminMember,
@@ -63,6 +65,26 @@ export async function updateAdminMember(
 export async function listAdminInvites(http: HttpClient): Promise<AdminInvitesResult> {
   const value = unwrap(await http.get<AdminInvitesResult>('/v1/admin/invites'))
   return { invites: Array.isArray(value.invites) ? value.invites : [] }
+}
+
+/**
+ * `admin.invites.create` → `POST /v1/admin/invites`. The body carries the
+ * assignable `role` (`owner` is structurally excluded by the type, mirroring
+ * the server Literal — a 422 if forged) and, only when given, `ttl_seconds`
+ * (the server defaults + clamps it). The 201 body is the join URL with the
+ * RAW single-use token embedded — the ONE time it ever exists client-side; the
+ * server stores only its sha256, so the facade must show it now or never.
+ * A 403 (member/guest caller) / 422 (bad role or ttl) folds to the coded error.
+ */
+export async function createAdminInvite(
+  http: HttpClient,
+  params: AdminInviteCreateParams,
+): Promise<AdminInviteCreateResult> {
+  const body = {
+    role: params.role,
+    ...(params.ttl_seconds !== undefined ? { ttl_seconds: params.ttl_seconds } : {}),
+  }
+  return unwrap(await http.post<AdminInviteCreateResult>('/v1/admin/invites', body))
 }
 
 /** `admin.invites.revoke` → `DELETE /v1/admin/invites/{id}` (204 → ack; uniform 404). */

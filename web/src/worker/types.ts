@@ -1189,6 +1189,28 @@ export interface AdminInvitesResult {
   invites: AdminInvite[]
 }
 
+/**
+ * `admin.invites.create` params — `POST /v1/admin/invites`. `role` is the
+ * assignable Literal (`owner` structurally excluded, exactly like the server
+ * `CreateInviteRequest`). `ttl_seconds` is optional; the server defaults it
+ * (7 days) and clamps it to its configured maximum (30 days).
+ */
+export interface AdminInviteCreateParams {
+  role: AdminAssignableRole
+  ttl_seconds?: number
+}
+
+/**
+ * `admin.invites.create` result (server `InviteResponse`). `url` is the join
+ * link with the RAW single-use invite token embedded — returned EXACTLY ONCE
+ * at create time, never persisted (only its sha256 hash is stored), and never
+ * available again from any list/read. `expires_at` is RFC 3339.
+ */
+export interface AdminInviteCreateResult {
+  url: string
+  expires_at: string
+}
+
 /** `admin.invites.revoke` result — the server 204 folded to a plain ack. */
 export interface AdminInviteRevokeResult {
   ok: true
@@ -1248,6 +1270,7 @@ export type RpcRequest =
   | { method: 'admin.members.list'; params: Record<string, never> }
   | { method: 'admin.members.update'; params: AdminMemberUpdateParams }
   | { method: 'admin.invites.list'; params: Record<string, never> }
+  | { method: 'admin.invites.create'; params: AdminInviteCreateParams }
   | { method: 'admin.invites.revoke'; params: { id: string } }
   | { method: 'readState.mark'; params: { stream_id: string; last_read_seq: number } }
   | { method: 'prefs.get'; params: Record<string, never> }
@@ -1416,6 +1439,7 @@ export interface WorkerClient {
     }
     invites: {
       list(): Promise<AdminInvitesResult>
+      create(params: AdminInviteCreateParams): Promise<AdminInviteCreateResult>
       revoke(params: { id: string }): Promise<AdminInviteRevokeResult>
     }
   }

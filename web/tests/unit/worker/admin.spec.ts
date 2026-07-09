@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  createAdminInvite,
   listAdminInvites,
   listAdminMembers,
   revokeAdminInvite,
@@ -189,6 +190,61 @@ describe('admin.invites.list (GET /v1/admin/invites)', () => {
   })
 })
 
+describe('admin.invites.create (POST /v1/admin/invites)', () => {
+  it('POSTs role + ttl_seconds and returns the one-time join URL + expiry', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+
+    const res = await createAdminInvite(http, { role: 'guest', ttl_seconds: 86400 })
+
+    expect(http.postCalls).toEqual([
+      { path: '/v1/admin/invites', body: { role: 'guest', ttl_seconds: 86400 } },
+    ])
+    expect(res.url).toBe('https://msg.example/join/raw-invite-token-1')
+    expect(res.expires_at).toBeTruthy()
+  })
+
+  it('omits ttl_seconds from the body when not given (server default applies)', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+
+    await createAdminInvite(http, { role: 'member' })
+
+    expect(http.postCalls[0]?.body).toEqual({ role: 'member' }) // no `ttl_seconds` key
+  })
+
+  it('the raw token appears ONLY in the create response, never in a later list', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+
+    const created = await createAdminInvite(http, { role: 'member' })
+    const listed = await listAdminInvites(http)
+
+    const raw = created.url.split('/join/')[1]!
+    expect(raw).toBe('raw-invite-token-1')
+    expect(listed.invites).toHaveLength(1) // the new invite IS pending…
+    expect(JSON.stringify(listed)).not.toContain(raw) // …but only as a hash
+  })
+
+  it('maps a 403 (member/guest caller) to the coded `forbidden` error', async () => {
+    const server = new FakeSyncServer()
+    server.adminError = forbidden
+    const http = new FakeHttpClient(server)
+
+    expect(await codeOf(createAdminInvite(http, { role: 'member' }))).toBe('forbidden')
+  })
+
+  it('maps a 422 (e.g. a forged owner role / bad ttl) to `validation-error`', async () => {
+    const server = new FakeSyncServer()
+    server.adminError = invalid
+    const http = new FakeHttpClient(server)
+
+    expect(await codeOf(createAdminInvite(http, { role: 'admin', ttl_seconds: 0 }))).toBe(
+      'validation-error',
+    )
+  })
+})
+
 describe('admin.invites.revoke (DELETE /v1/admin/invites/{id})', () => {
   it('DELETEs the right id; the 204 folds to a plain { ok: true }', async () => {
     const server = new FakeSyncServer()
@@ -220,12 +276,16 @@ describe('token boundary (R1)', () => {
     await listAdminMembers(http)
     await updateAdminMember(http, { user_id: 'u_1', role: 'admin' })
     await listAdminInvites(http)
+    await createAdminInvite(http, { role: 'member', ttl_seconds: 3600 })
     await revokeAdminInvite(http, { id: 'a'.repeat(64) })
 
+    // NOTE: the create RESPONSE deliberately carries the one-time join URL —
+    // what must stay clean is everything the TAB sends: params, paths, bodies.
     const surfaces = [
       ...http.getCalls,
       ...http.delCalls,
       ...http.patchCalls.map((c) => c.path + JSON.stringify(c.body)),
+      ...http.postCalls.map((c) => c.path + JSON.stringify(c.body)),
     ]
     for (const s of surfaces) {
       expect(s).not.toMatch(/token|bearer|authorization/i)
@@ -258,6 +318,33 @@ describe('admin RPC (WorkerCore round trip)', () => {
       expect(JSON.stringify(result)).not.toMatch(/token|bearer|authorization/i)
     }
     expect(http.getCalls).toContain('/v1/admin/members')
+  })
+
+  it('answers `admin.invites.create` with the one-time join URL', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+    const { sink, frames } = collectingSink()
+    const core = new WorkerCore(new MemoryDb(), sink, { http, wsFactory: inertWsFactory })
+    await core.init()
+
+    await core.handle('c1', {
+      t: 'req',
+      id: 'a3',
+      clientId: 'c1',
+      req: { method: 'admin.invites.create', params: { role: 'admin', ttl_seconds: 86400 } },
+    })
+
+    const res = lastRes(frames, 'a3')
+    expect(res.t === 'res' && res.ok).toBe(true)
+    if (res.t === 'res' && res.ok) {
+      const result = res.result as { url: string; expires_at: string }
+      expect(result.url).toContain('/join/')
+      expect(result.expires_at).toBeTruthy()
+    }
+    expect(http.postCalls[0]).toEqual({
+      path: '/v1/admin/invites',
+      body: { role: 'admin', ttl_seconds: 86400 },
+    })
   })
 
   it('frames a 403 as a structured coded error, not a bare throw', async () => {
