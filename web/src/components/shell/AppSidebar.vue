@@ -375,7 +375,8 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
         Search
       </SidebarItem>
 
-      <!-- SCAFFOLD Admin — expandable, role-gated, inside the Workspace group. -->
+      <!-- REAL Admin (ENG-151 PR-3) — expandable, role-gated, inside the
+           Workspace group; opens the members + pending-invites surface. -->
       <NavSection v-if="canAdmin" title="Admin" :default-open="false">
         <template #icon><Icon name="shield" :size="16" /></template>
         <SidebarItem
@@ -383,7 +384,7 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
           data-testid="nav-admin"
           @click="emit('selectView', 'admin')"
         >
-          Coming soon
+          Members &amp; invites
         </SidebarItem>
       </NavSection>
     </div>

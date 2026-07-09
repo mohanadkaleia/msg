@@ -78,6 +78,14 @@ export {
   type PrefsRow,
   type PrefsListResult,
   type PrefsPush,
+  // ENG-151 admin roster/invites (the PR-3 Admin UI reads these; worker-authed).
+  type AdminMember,
+  type AdminMembersResult,
+  type AdminAssignableRole,
+  type AdminMemberUpdateParams,
+  type AdminInvite,
+  type AdminInvitesResult,
+  type AdminInviteRevokeResult,
 } from './types'
 
 // ENG-80 projection functions — the ENG-79 apply seam + the ENG-83 dump surface.

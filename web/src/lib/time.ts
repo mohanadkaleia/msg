@@ -85,3 +85,18 @@ export function formatActivityTime(ms: number, now: number = Date.now()): string
   if (key === dayKey(now - 24 * 60 * 60 * 1000)) return 'Yesterday'
   return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
+
+/**
+ * Relative FUTURE stamp for a pending invite's `expires_at` (ENG-151 Admin):
+ * "in 45m" / "in 6h" / "in 3d"; a past or unparseable instant reads "expired"
+ * (the server filters expired invites out, so that only shows on a stale list).
+ */
+export function formatExpiresIn(iso: string, now: number = Date.now()): string {
+  const ms = Date.parse(iso)
+  if (Number.isNaN(ms) || ms <= now) return 'expired'
+  const minutes = Math.round((ms - now) / 60_000)
+  if (minutes < 60) return `in ${Math.max(minutes, 1)}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `in ${hours}h`
+  return `in ${Math.round(hours / 24)}d`
+}

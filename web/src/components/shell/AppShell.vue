@@ -32,6 +32,7 @@ import RightDrawer from './RightDrawer.vue'
 import SearchOverlay from './SearchOverlay.vue'
 import SpaceRail from './SpaceRail.vue'
 import ToastContainer from './ToastContainer.vue'
+import AdminView from '../admin/AdminView.vue'
 import TopBar from './TopBar.vue'
 import TypingIndicator from './TypingIndicator.vue'
 import EmptyState from '../ui/EmptyState.vue'
@@ -212,7 +213,11 @@ const gridCols = computed(() => {
           <!-- REAL Inbox triage view (ENG-136): tabs over derived stream activity. -->
           <InboxView v-else-if="activeView === 'inbox'" @open-stream="onOpenStream" />
 
-          <!-- Scaffold placeholder (Apps / Files / Admin). -->
+          <!-- REAL Admin surface (ENG-151 PR-3): members + pending invites over
+               the `client.admin.*` worker RPCs; the view re-checks the role. -->
+          <AdminView v-else-if="activeView === 'admin'" />
+
+          <!-- Scaffold placeholder (Apps / Files). -->
           <div v-else class="flex flex-1 items-center justify-center">
             <EmptyState v-if="scaffold" :title="scaffold.title" :description="scaffold.body" />
           </div>
