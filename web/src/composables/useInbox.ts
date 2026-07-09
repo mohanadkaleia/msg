@@ -61,6 +61,13 @@ function previewText(m: MessageRow): string {
 
 export interface UseInbox {
   activeTab: Ref<InboxTab>
+  /**
+   * The stream selected for the PREVIEW pane (ENG-152 — a single click selects;
+   * "Open"/double-click does the full jump). Null = nothing selected.
+   */
+  selectedStreamId: Ref<string | null>
+  /** The selected entry, or null when nothing is selected / it left the feed. */
+  selectedEntry: ComputedRef<InboxEntry | null>
   /** Every assembled entry (the "All" tab), newest activity first. */
   entries: ComputedRef<InboxEntry[]>
   /** The active tab's subset, newest activity first. */
@@ -81,6 +88,9 @@ export function useInbox(): UseInbox {
   const { channels, dms, directory } = storeToRefs(workspace)
 
   const activeTab = ref<InboxTab>('all')
+  /** The preview selection (ENG-152). Survives tab switches; the preview shows
+   * the selected stream regardless of which tab currently filters the feed. */
+  const selectedStreamId = ref<string | null>(null)
   /** `stream_id → latest projected message` (absent = no local messages). */
   const latest = ref<Map<string, MessageRow>>(new Map())
   const loading = ref(true)
@@ -181,5 +191,21 @@ export function useInbox(): UseInbox {
     }))
   })
 
-  return { activeTab, entries, filtered, groups, counts, loading, refresh }
+  /** The selected entry — null when nothing is selected or the stream left the
+   * feed (e.g. its stream disappeared); the preview then shows its empty state. */
+  const selectedEntry = computed<InboxEntry | null>(
+    () => entries.value.find((e) => e.stream_id === selectedStreamId.value) ?? null,
+  )
+
+  return {
+    activeTab,
+    selectedStreamId,
+    selectedEntry,
+    entries,
+    filtered,
+    groups,
+    counts,
+    loading,
+    refresh,
+  }
 }

@@ -7,15 +7,32 @@
 //
 // SECURITY: title/preview are other users' input (stream names + message text) —
 // rendered via text interpolation only, never a raw-HTML sink.
+//
+// ENG-152 (feed + preview split): a single CLICK now SELECTS the row for the
+// preview pane (`select`; the accent-subtle active state marks it); a
+// DOUBLE-CLICK emits `open` — the full jump to the conversation (the preview
+// header's "Open" button is the primary path for that).
 import { computed } from 'vue'
 
 import Icon from '../ui/Icon.vue'
 import { formatActivityTime } from '../../lib/time'
 import type { InboxEntry } from '../../composables/useInbox'
 
-const props = defineProps<{ entry: InboxEntry }>()
+const props = withDefaults(
+  defineProps<{
+    entry: InboxEntry
+    /** True while this row is the preview selection (accent-subtle highlight). */
+    selected?: boolean
+  }>(),
+  { selected: false },
+)
 
-const emit = defineEmits<{ open: [] }>()
+const emit = defineEmits<{
+  /** Single click: select this row for the preview pane (stays in Inbox). */
+  select: []
+  /** Double click: the full jump to this stream's conversation. */
+  open: []
+}>()
 
 /** Single-letter avatar for a DM row (mirrors the sidebar's `dmInitial`). */
 const initial = computed(() => props.entry.title.trim()[0]?.toUpperCase() ?? '?')
@@ -33,8 +50,12 @@ const chip = computed(() => (props.entry.kind === 'dm' ? 'DM' : props.entry.titl
     data-testid="inbox-item"
     :data-stream-id="entry.stream_id"
     :data-unread="entry.unread"
-    class="flex w-full cursor-pointer items-start gap-3 px-4 py-2.5 text-left transition-colors hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
-    @click="emit('open')"
+    :data-selected="selected"
+    :aria-pressed="selected"
+    class="flex w-full cursor-pointer items-start gap-3 px-4 py-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+    :class="selected ? 'bg-accent-subtle' : 'hover:bg-surface'"
+    @click="emit('select')"
+    @dblclick="emit('open')"
   >
     <!-- Leading 36px avatar: hash glyph for a channel, initial for a DM. -->
     <span

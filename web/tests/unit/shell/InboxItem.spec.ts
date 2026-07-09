@@ -1,7 +1,9 @@
 // tests/unit/shell/InboxItem.spec.ts — ENG-136 Inbox triage row. A dumb view over
 // one InboxEntry: title + preview + meta chip render (text interpolation only),
-// the accent unread dot + "N new" count appear only while unread, the timestamp
-// is relative, and a click emits `open`.
+// the accent unread dot + "N new" count appear only while unread, and the
+// timestamp is relative. ENG-152 (feed + preview split): a CLICK emits `select`
+// (preview), a DOUBLE-CLICK emits `open` (full jump), and the `selected` prop
+// drives the accent-subtle active state.
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
@@ -59,10 +61,25 @@ describe('InboxItem (ENG-136)', () => {
     expect(wrapper.text()).toContain('Yesterday')
   })
 
-  it('emits open on click', async () => {
+  it('emits select on click (preview) and open on double-click (full jump)', async () => {
     const wrapper = mountItem(makeEntry())
     await wrapper.get('[data-testid="inbox-item"]').trigger('click')
+    expect(wrapper.emitted('select')).toHaveLength(1)
+    expect(wrapper.emitted('open')).toBeUndefined()
+
+    await wrapper.get('[data-testid="inbox-item"]').trigger('dblclick')
     expect(wrapper.emitted('open')).toHaveLength(1)
+  })
+
+  it('marks the selected row with the accent-subtle active state', () => {
+    const idle = mountItem(makeEntry())
+    expect(idle.get('[data-testid="inbox-item"]').attributes('data-selected')).toBe('false')
+    expect(idle.get('[data-testid="inbox-item"]').classes()).not.toContain('bg-accent-subtle')
+
+    const selected = mount(InboxItem, { props: { entry: makeEntry(), selected: true } })
+    const row = selected.get('[data-testid="inbox-item"]')
+    expect(row.attributes('data-selected')).toBe('true')
+    expect(row.classes()).toContain('bg-accent-subtle')
   })
 
   it('renders hostile title/preview as inert text (never HTML)', () => {

@@ -1,14 +1,18 @@
-// tests/unit/shell/InboxView.spec.ts — ENG-136 Inbox triage page. Proves the view
-// over REAL derived data (FakeWorker projection, zero network): the header + the
-// five filter tabs render (with counts on All/Unread/Mentions), the active tab
-// gets the accent underline and filters the day-grouped list, a row click emits
-// `open-stream`, refresh re-reads previews, and a fresh workspace shows the
-// EmptyState instead of fabricated rows.
+// tests/unit/shell/InboxView.spec.ts — ENG-136 Inbox triage page; ENG-152 makes it
+// a TWO-PANE surface (feed list + preview). Proves the view over REAL derived data
+// (FakeWorker projection, zero network): the header + the five filter tabs render
+// (with counts on All/Unread/Mentions), the active tab gets the accent underline
+// and filters the day-grouped list, refresh re-reads previews, and a fresh
+// workspace shows the EmptyState instead of fabricated rows. ENG-152: a row CLICK
+// selects it for the PREVIEW pane (recent messages + a quick-reply composer bound
+// to that stream — via a preview-scoped messages.list, not the messages store);
+// the preview's "Open" button (or a row double-click) emits `open-stream`.
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import InboxView from '../../../src/components/shell/InboxView.vue'
+import MessageComposer from '../../../src/components/shell/MessageComposer.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
 import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
@@ -111,12 +115,92 @@ describe('InboxView (ENG-136)', () => {
     expect(eng.find('[data-testid="inbox-unread-dot"]').exists()).toBe(false)
   })
 
-  it('emits open-stream with the clicked row stream id', async () => {
+  it('shows the preview empty state while nothing is selected (ENG-152)', async () => {
+    seedActivity(fake)
+    const wrapper = await mountView(fake)
+
+    const pane = wrapper.get('[data-testid="inbox-preview"]')
+    expect(pane.find('[data-testid="inbox-preview-empty"]').exists()).toBe(true)
+    expect(pane.text()).toContain('Select an item to preview')
+    expect(pane.find('[data-testid="inbox-preview-open"]').exists()).toBe(false)
+  })
+
+  it('clicking a row SELECTS it for preview — no navigation (ENG-152)', async () => {
     seedActivity(fake)
     const wrapper = await mountView(fake)
 
     await wrapper.get('[data-testid="inbox-item"][data-stream-id="s_dm"]').trigger('click')
+    await flushPromises()
+
+    // Selected, highlighted, previewed — but NOT navigated.
+    expect(wrapper.emitted('open-stream')).toBeUndefined()
+    const row = wrapper.get('[data-testid="inbox-item"][data-stream-id="s_dm"]')
+    expect(row.attributes('data-selected')).toBe('true')
+    const pane = wrapper.get('[data-testid="inbox-preview"]')
+    expect(pane.find('[data-testid="inbox-preview-empty"]').exists()).toBe(false)
+    expect(pane.find('[data-testid="inbox-preview-open"]').exists()).toBe(true)
+  })
+
+  it('the preview "Open" button (or a row double-click) emits open-stream', async () => {
+    seedActivity(fake)
+    const wrapper = await mountView(fake)
+
+    await wrapper.get('[data-testid="inbox-item"][data-stream-id="s_dm"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="inbox-preview-open"]').trigger('click')
     expect(wrapper.emitted('open-stream')).toEqual([['s_dm']])
+
+    await wrapper.get('[data-testid="inbox-item"][data-stream-id="s_eng"]').trigger('dblclick')
+    expect(wrapper.emitted('open-stream')).toEqual([['s_dm'], ['s_eng']])
+  })
+
+  it('preview loads the SELECTED stream recent messages via a scoped messages.list', async () => {
+    seedActivity(fake)
+    fake.addMessage('s_eng', { created_seq: 3, author_user_id: 'u_bob', text: 'and tests too' })
+    const wrapper = await mountView(fake)
+    fake.querySpy.mockClear()
+
+    await wrapper.get('[data-testid="inbox-item"][data-stream-id="s_eng"]').trigger('click')
+    await flushPromises()
+
+    // A preview-scoped recent page for the SELECTED stream (limit 30 — not the
+    // feed's limit-1 preview read, not the messages store's window).
+    expect(fake.querySpy).toHaveBeenCalledWith({
+      q: 'messages.list',
+      stream_id: 's_eng',
+      limit: 30,
+    })
+    const pane = wrapper.get('[data-testid="inbox-preview"]')
+    const rows = pane.findAll('[data-testid="inbox-preview-message"]')
+    expect(rows).toHaveLength(2)
+    expect(pane.text()).toContain('ship it')
+    expect(pane.text()).toContain('and tests too')
+    expect(pane.text()).toContain('# engineering')
+
+    // Still a projection surface — never HTTP.
+    expect(fake.fetch).not.toHaveBeenCalled()
+  })
+
+  it('quick-reply sends to the selected stream and stays in Inbox (ENG-152)', async () => {
+    seedActivity(fake)
+    const wrapper = await mountView(fake)
+
+    await wrapper.get('[data-testid="inbox-item"][data-stream-id="s_eng"]').trigger('click')
+    await flushPromises()
+
+    // The ONLY composer mounted is the preview's, bound to the selected stream.
+    const composer = wrapper.findComponent(MessageComposer)
+    expect(composer.props('streamId')).toBe('s_eng')
+    composer.vm.$emit('send', 'on it', [], [])
+    await flushPromises()
+
+    expect(fake.sendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ m: 'outbox.send', stream_id: 's_eng', text: 'on it' }),
+    )
+    // Sending is a quick reply: no navigation, and the (pending) echo lands in
+    // the preview via its stream subscription.
+    expect(wrapper.emitted('open-stream')).toBeUndefined()
+    expect(wrapper.get('[data-testid="inbox-preview"]').text()).toContain('on it')
   })
 
   it('shows a friendly EmptyState for a workspace with no activity', async () => {

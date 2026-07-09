@@ -203,7 +203,7 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# alpha')
   })
 
-  it('renders the REAL InboxView for the Inbox section (not a placeholder)', async () => {
+  it('renders the REAL two-pane InboxView for the Inbox section (not a placeholder)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel', unread: 1 })
     fake.addMessage('s_a', { created_seq: 1, text: 'hello inbox' })
     const wrapper = await mountShell(fake, router)
@@ -217,14 +217,25 @@ describe('AppShell (ENG-136 PR-C)', () => {
     const main = wrapper.get('main[role="main"]')
     expect(main.find('[data-testid="inbox-view"]').exists()).toBe(true)
     expect(main.find('[data-testid="inbox-tab-all"]').exists()).toBe(true)
+    // The two-pane split (ENG-152): the preview pane sits beside the feed list,
+    // empty-state until a row is selected.
+    expect(main.find('[data-testid="inbox-preview"]').exists()).toBe(true)
+    expect(main.find('[data-testid="inbox-preview-empty"]').exists()).toBe(true)
     expect(main.text()).not.toContain('coming soon')
 
     // A real derived activity row is listed for the seeded stream.
     const row = main.get('[data-testid="inbox-item"]')
     expect(row.attributes('data-stream-id')).toBe('s_a')
 
-    // Clicking the row returns to that stream's conversation timeline.
+    // Clicking the row SELECTS it for preview — the shell STAYS on the Inbox.
     await row.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="inbox-view"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="inbox-preview-empty"]').exists()).toBe(false)
+    const open = wrapper.get('[data-testid="inbox-preview-open"]')
+
+    // The preview's "Open" does the full jump to that stream's conversation.
+    await open.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="inbox-view"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="message-list"]').exists()).toBe(true)
