@@ -46,14 +46,26 @@ describe('InboxView (ENG-136)', () => {
     setWorkerClient(undefined)
   })
 
-  it('renders the header, all five tabs (with counts), and the grouped list', async () => {
+  it('renders the header, the primary tabs + [Filter] control, and the grouped list', async () => {
     seedActivity(fake)
     const wrapper = await mountView(fake)
 
     expect(wrapper.get('h1').text()).toBe('Inbox')
-    for (const key of ['all', 'unread', 'mentions', 'dms', 'channels']) {
+    // ENG-152 PR-c: only the PRIMARY filters are tabs; the kind filters fold
+    // behind the [Filter] popover so the row stays clean.
+    for (const key of ['all', 'unread', 'mentions']) {
       expect(wrapper.find(`[data-testid="inbox-tab-${key}"]`).exists()).toBe(true)
     }
+    expect(wrapper.find('[data-testid="inbox-tab-dms"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="inbox-tab-channels"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="inbox-filter"]').text()).toContain('Filter')
+
+    await wrapper.get('[data-testid="inbox-filter"]').trigger('click')
+    const menu = wrapper.get('[data-testid="inbox-filter-menu"]')
+    expect(menu.find('[data-testid="inbox-tab-dms"]').exists()).toBe(true)
+    expect(menu.find('[data-testid="inbox-tab-channels"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="inbox-filter"]').trigger('click') // close again
+
     // Counts where meaningful: All=2 entries, Unread=2, Mentions=1.
     expect(wrapper.get('[data-testid="inbox-tab-all"]').text()).toContain('2')
     expect(wrapper.get('[data-testid="inbox-tab-unread"]').text()).toContain('2')
@@ -77,12 +89,42 @@ describe('InboxView (ENG-136)', () => {
     expect(all.attributes('aria-selected')).toBe('true')
     expect(all.classes()).toContain('border-accent')
 
-    await wrapper.get('[data-testid="inbox-tab-dms"]').trigger('click')
-    expect(wrapper.get('[data-testid="inbox-tab-dms"]').classes()).toContain('border-accent')
+    await wrapper.get('[data-testid="inbox-tab-unread"]').trigger('click')
+    expect(wrapper.get('[data-testid="inbox-tab-unread"]').classes()).toContain('border-accent')
     expect(wrapper.get('[data-testid="inbox-tab-all"]').attributes('aria-selected')).toBe('false')
   })
 
-  it('filters the list by tab (Mentions / DMs / Channels select the right subset)', async () => {
+  it('applies a secondary filter from the [Filter] popover (same activeTab state)', async () => {
+    seedActivity(fake)
+    const wrapper = await mountView(fake)
+
+    const rowIds = () =>
+      wrapper.findAll('[data-testid="inbox-item"]').map((r) => r.attributes('data-stream-id'))
+
+    // Pick "DMs" behind [Filter]: the list filters and the control shows the
+    // active state (accent underline + the picked filter's label).
+    await wrapper.get('[data-testid="inbox-filter"]').trigger('click')
+    await wrapper.get('[data-testid="inbox-tab-dms"]').trigger('click')
+    expect(rowIds()).toEqual(['s_dm'])
+    const filter = wrapper.get('[data-testid="inbox-filter"]')
+    expect(filter.classes()).toContain('border-accent')
+    expect(filter.text()).toContain('DMs')
+    // The menu closed after picking.
+    expect(wrapper.find('[data-testid="inbox-filter-menu"]').exists()).toBe(false)
+
+    // The active pick is checked in the reopened menu.
+    await wrapper.get('[data-testid="inbox-filter"]').trigger('click')
+    expect(wrapper.get('[data-testid="inbox-tab-dms"]').attributes('aria-checked')).toBe('true')
+    await wrapper.get('[data-testid="inbox-tab-channels"]').trigger('click')
+    expect(rowIds()).toEqual(['s_eng'])
+
+    // A primary tab clears the secondary filter.
+    await wrapper.get('[data-testid="inbox-tab-all"]').trigger('click')
+    expect(rowIds()).toHaveLength(2)
+    expect(wrapper.get('[data-testid="inbox-filter"]').classes()).not.toContain('border-accent')
+  })
+
+  it('filters the list by tab (Mentions selects the right subset)', async () => {
     seedActivity(fake)
     const wrapper = await mountView(fake)
 
@@ -90,12 +132,6 @@ describe('InboxView (ENG-136)', () => {
       wrapper.findAll('[data-testid="inbox-item"]').map((r) => r.attributes('data-stream-id'))
 
     await wrapper.get('[data-testid="inbox-tab-mentions"]').trigger('click')
-    expect(rowIds()).toEqual(['s_dm'])
-
-    await wrapper.get('[data-testid="inbox-tab-channels"]').trigger('click')
-    expect(rowIds()).toEqual(['s_eng'])
-
-    await wrapper.get('[data-testid="inbox-tab-dms"]').trigger('click')
     expect(rowIds()).toEqual(['s_dm'])
 
     await wrapper.get('[data-testid="inbox-tab-all"]').trigger('click')
@@ -177,6 +213,14 @@ describe('InboxView (ENG-136)', () => {
     expect(pane.text()).toContain('and tests too')
     expect(pane.text()).toContain('# engineering')
 
+    // ENG-152 PR-c: the preview renders MessageItem READ-ONLY — no dead hover
+    // toolbar (react/thread/edit), no add-reaction pill (their emits are
+    // unwired in this pane). The quick-reply composer below stays functional.
+    expect(pane.find('[data-testid="message-toolbar"]').exists()).toBe(false)
+    expect(pane.find('[data-testid="add-reaction"]').exists()).toBe(false)
+    expect(pane.find('[data-testid="reply-in-thread"]').exists()).toBe(false)
+    expect(pane.find('[data-testid="inbox-preview-composer"]').exists()).toBe(true)
+
     // Still a projection surface — never HTTP.
     expect(fake.fetch).not.toHaveBeenCalled()
   })
@@ -214,6 +258,7 @@ describe('InboxView (ENG-136)', () => {
     fake.addMessage('s_eng', { created_seq: 1, text: 'hello' })
     const wrapper = await mountView(fake)
 
+    await wrapper.get('[data-testid="inbox-filter"]').trigger('click')
     await wrapper.get('[data-testid="inbox-tab-dms"]').trigger('click')
     expect(wrapper.findAll('[data-testid="inbox-item"]')).toHaveLength(0)
     expect(wrapper.text()).toContain('No conversations match this filter')

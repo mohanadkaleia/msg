@@ -98,15 +98,23 @@ function onSend(text: string, mentions: string[], fileIds: string[]): void {
         </Button>
       </header>
 
-      <!-- Recent messages (the conversation's MessageItem rendering, read-only
-           surface here — editing/threads live in the full conversation). -->
+      <!-- Recent messages (the conversation's MessageItem rendering, in its
+           READ-ONLY context — ENG-152 PR-c: the hover toolbar / add-reaction /
+           thread affordances would be dead buttons here (no emits are wired),
+           so `readonly` suppresses them. Editing/threads live in the full
+           conversation; the quick-reply composer below stays fully functional. -->
       <div ref="scroller" class="flex-1 overflow-y-auto py-2">
         <div
           v-for="item in items"
           :key="item.message.message_id"
           data-testid="inbox-preview-message"
         >
-          <MessageItem :message="item.message" :show-header="item.showHeader" :names="names" />
+          <MessageItem
+            :message="item.message"
+            :show-header="item.showHeader"
+            :names="names"
+            readonly
+          />
         </div>
         <p
           v-if="!loading && messages.length === 0"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // ui/NavSection.vue — ENG-136 "Ranin" primitive (PR-A; PR-3 `#icon` slot). A
-// collapsible sidebar section: an 11px uppercase tracking-wide muted header with a
+// collapsible sidebar section: an 11px uppercase tracking-wide header (bumped to
+// text-secondary in ENG-152 PR-c — the muted grey read too flat) with a
 // chevron toggling the body (v-show), an optional leading `#icon` slot (a 16px
 // outline glyph before the title — ADDITIVE), an optional trailing action slot
 // (e.g. a `+` IconButton), and the default slot for the section's items.
@@ -21,7 +22,7 @@ function toggle(): void {
     <div class="flex items-center gap-1 px-2">
       <button
         type="button"
-        class="flex flex-1 items-center gap-1 rounded py-1 text-[11px] font-semibold uppercase tracking-wide text-muted transition-colors hover:text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        class="flex flex-1 items-center gap-1 rounded py-1 text-[11px] font-semibold uppercase tracking-wide text-secondary transition-colors hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         :aria-expanded="open"
         @click="toggle"
       >

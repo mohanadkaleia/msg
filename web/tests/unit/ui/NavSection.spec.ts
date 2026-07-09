@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import NavSection from '../../../src/components/ui/NavSection.vue'
 
 describe('ui/NavSection', () => {
-  it('renders an uppercase muted header and its items', () => {
+  it('renders an uppercase header (text-secondary — ENG-152 contrast bump) and its items', () => {
     const wrapper = mount(NavSection, {
       props: { title: 'Channels' },
       slots: { default: '<div data-testid="item">general</div>' },
@@ -12,7 +12,10 @@ describe('ui/NavSection', () => {
     const header = wrapper.get('button')
     expect(header.text()).toContain('Channels')
     expect(header.classes()).toContain('uppercase')
-    expect(header.classes()).toContain('text-muted')
+    // ENG-152 PR-c: section labels bumped from text-muted toward the token
+    // hierarchy — readable, still clearly secondary to the items.
+    expect(header.classes()).toContain('text-secondary')
+    expect(header.classes()).not.toContain('text-muted')
     expect(wrapper.find('[data-testid="item"]').exists()).toBe(true)
   })
 

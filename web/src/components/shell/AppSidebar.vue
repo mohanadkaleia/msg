@@ -26,6 +26,14 @@
 // under the UserCard — sync-store-derived ("Synced · Local" when live, the store
 // label otherwise), reinforcing the local-first identity without inventing data.
 //
+// ENG-152 PR-c: a "+ New" accent button (the shell's ONE primary create action)
+// sits under the workspace pill, opening the REAL create flows (New message /
+// New channel — the same dialogs the section "+" affordances open). The nav is
+// grouped under two labeled headers — MESSAGES (Inbox, DMs, Channels) and
+// WORKSPACE (Files, Apps, Search, Admin) — for scannability; every item + route
+// is unchanged. Unread rows get an accent-subtle count pill (mention rows keep
+// the danger `mention-badge`).
+//
 // SECURITY: stream names + the user's display name are other users' input —
 // rendered via text interpolation only.
 import { computed, ref } from 'vue'
@@ -43,6 +51,7 @@ import SidebarItem from '../ui/SidebarItem.vue'
 import ChannelBrowser from './ChannelBrowser.vue'
 import ChannelSettingsDialog from './ChannelSettingsDialog.vue'
 import CreateChannelDialog from './CreateChannelDialog.vue'
+import NewButton from './NewButton.vue'
 import NewDmDialog from './NewDmDialog.vue'
 import UserCard from './UserCard.vue'
 import WorkspaceSwitcher from './WorkspaceSwitcher.vue'
@@ -175,10 +184,24 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
       @open-switcher="emit('openSwitcher')"
     />
 
+    <!-- "+ New" — the ONE clearly-accented primary create action (ENG-152 PR-c).
+         The menu opens the SAME dialogs the section "+" affordances open. -->
+    <div class="px-2 pt-2">
+      <NewButton @new-dm="showNewDm = true" @new-channel="showCreateChannel = true" />
+    </div>
+
     <!-- Scroll region for the feed list. The root <aside> is the (labeled)
          navigation landmark, so this stays a plain div to avoid a nested,
          unlabeled second nav landmark. -->
     <div class="mt-2 flex-1 space-y-2 overflow-y-auto px-2 pb-3">
+      <!-- MESSAGES group: Inbox + the real DM/channel lists (ENG-152 PR-c). -->
+      <p
+        class="px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-secondary"
+        data-testid="nav-group-messages"
+      >
+        Messages
+      </p>
+
       <!-- Feed-first: Inbox with a REAL total-unread count. -->
       <SidebarItem
         :active="activeView === 'inbox'"
@@ -244,6 +267,13 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
               >{{ stream.unread }}</span
             >
           </template>
+          <template v-else-if="stream.unread > 0" #trailing>
+            <span
+              class="rounded-full bg-accent-subtle px-1.5 text-xs font-semibold text-accent"
+              data-testid="unread-badge"
+              >{{ stream.unread }}</span
+            >
+          </template>
         </SidebarItem>
       </NavSection>
 
@@ -292,6 +322,13 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
                 >{{ stream.unread }}</span
               >
             </template>
+            <template v-else-if="stream.unread > 0" #trailing>
+              <span
+                class="rounded-full bg-accent-subtle px-1.5 text-xs font-semibold text-accent"
+                data-testid="unread-badge"
+                >{{ stream.unread }}</span
+              >
+            </template>
           </SidebarItem>
           <button
             type="button"
@@ -306,16 +343,15 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
         </div>
       </NavSection>
 
-      <!-- SCAFFOLD single-row nav. -->
-      <SidebarItem
-        :active="activeView === 'apps'"
-        data-testid="nav-apps"
-        @click="emit('selectView', 'apps')"
+      <!-- WORKSPACE group: the non-messaging sections (ENG-152 PR-c). -->
+      <p
+        class="border-t border-subtle px-2 pt-3 text-[11px] font-semibold uppercase tracking-wide text-secondary"
+        data-testid="nav-group-workspace"
       >
-        <template #leading><Icon name="grid" :size="16" /></template>
-        Apps
-      </SidebarItem>
+        Workspace
+      </p>
 
+      <!-- SCAFFOLD single-row nav. -->
       <SidebarItem
         :active="activeView === 'files'"
         data-testid="nav-files"
@@ -325,24 +361,31 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
         Files
       </SidebarItem>
 
+      <SidebarItem
+        :active="activeView === 'apps'"
+        data-testid="nav-apps"
+        @click="emit('selectView', 'apps')"
+      >
+        <template #leading><Icon name="grid" :size="16" /></template>
+        Apps
+      </SidebarItem>
+
       <SidebarItem data-testid="nav-search" @click="emit('openSwitcher')">
         <template #leading><Icon name="search" :size="16" /></template>
         Search
       </SidebarItem>
 
-      <!-- SCAFFOLD Admin — expandable, a bit separated, role-gated. -->
-      <div v-if="canAdmin" class="mt-2 border-t border-subtle pt-2">
-        <NavSection title="Admin" :default-open="false">
-          <template #icon><Icon name="shield" :size="16" /></template>
-          <SidebarItem
-            :active="activeView === 'admin'"
-            data-testid="nav-admin"
-            @click="emit('selectView', 'admin')"
-          >
-            Coming soon
-          </SidebarItem>
-        </NavSection>
-      </div>
+      <!-- SCAFFOLD Admin — expandable, role-gated, inside the Workspace group. -->
+      <NavSection v-if="canAdmin" title="Admin" :default-open="false">
+        <template #icon><Icon name="shield" :size="16" /></template>
+        <SidebarItem
+          :active="activeView === 'admin'"
+          data-testid="nav-admin"
+          @click="emit('selectView', 'admin')"
+        >
+          Coming soon
+        </SidebarItem>
+      </NavSection>
     </div>
 
     <!-- Pinned footer: the signed-in user card with a REAL presence dot, plus a

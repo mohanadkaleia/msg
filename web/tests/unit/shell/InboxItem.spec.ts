@@ -61,6 +61,31 @@ describe('InboxItem (ENG-136)', () => {
     expect(wrapper.text()).toContain('Yesterday')
   })
 
+  it('distinguishes unread (semibold primary + accent time) from read (muted) rows', () => {
+    // ENG-152 PR-c feed density: the unread/read contrast must be obvious.
+    const unread = mountItem(makeEntry({ unread: 3 }))
+    expect(unread.get('[data-testid="inbox-item-title"]').classes()).toContain('font-semibold')
+    expect(unread.get('[data-testid="inbox-item-title"]').classes()).toContain('text-primary')
+    expect(unread.get('[data-testid="inbox-item-preview"]').classes()).toContain('text-secondary')
+    expect(unread.get('[data-testid="inbox-item-time"]').classes()).toContain('text-accent')
+
+    const read = mountItem(makeEntry({ unread: 0 }))
+    expect(read.get('[data-testid="inbox-item-title"]').classes()).toContain('text-secondary')
+    expect(read.get('[data-testid="inbox-item-title"]').classes()).not.toContain('font-semibold')
+    expect(read.get('[data-testid="inbox-item-preview"]').classes()).toContain('text-muted')
+    expect(read.get('[data-testid="inbox-item-time"]').classes()).toContain('text-muted')
+  })
+
+  it('shows a "Mentioned you" accent chip only when the REAL mention flag is set', () => {
+    const plain = mountItem(makeEntry({ mention: false }))
+    expect(plain.find('[data-testid="inbox-mention-chip"]').exists()).toBe(false)
+
+    const mentioned = mountItem(makeEntry({ mention: true, unread: 1 }))
+    const chip = mentioned.get('[data-testid="inbox-mention-chip"]')
+    expect(chip.text()).toBe('Mentioned you')
+    expect(chip.classes()).toContain('text-accent')
+  })
+
   it('emits select on click (preview) and open on double-click (full jump)', async () => {
     const wrapper = mountItem(makeEntry())
     await wrapper.get('[data-testid="inbox-item"]').trigger('click')

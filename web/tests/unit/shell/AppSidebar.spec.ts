@@ -209,6 +209,80 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(wrapper.emitted('openSwitcher')).toHaveLength(1)
   })
 
+  it('groups the nav under labeled Messages / Workspace headers (ENG-152 PR-c)', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const wrapper = await mountSidebar()
+
+    const messages = wrapper.get('[data-testid="nav-group-messages"]')
+    const workspaceGroup = wrapper.get('[data-testid="nav-group-workspace"]')
+    expect(messages.text()).toBe('Messages')
+    expect(workspaceGroup.text()).toBe('Workspace')
+
+    // Document order: Messages (Inbox, DMs, Channels) precedes Workspace
+    // (Files, Apps, Search) — same items + routes, just organized.
+    const html = wrapper.html()
+    const at = (needle: string) => html.indexOf(needle)
+    expect(at('nav-group-messages')).toBeLessThan(at('nav-inbox'))
+    expect(at('nav-inbox')).toBeLessThan(at('nav-group-workspace'))
+    expect(at('sidebar-channel')).toBeLessThan(at('nav-group-workspace'))
+    expect(at('nav-group-workspace')).toBeLessThan(at('nav-files'))
+    expect(at('nav-group-workspace')).toBeLessThan(at('nav-apps'))
+    expect(at('nav-group-workspace')).toBeLessThan(at('nav-search'))
+  })
+
+  it('shows the "+ New" button and wires its menu to the REAL create flows', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    fake.setDirectory([{ user_id: 'u_dana', display_name: 'Dana' }], [])
+    setWorkerClient(fake.client)
+    const wrapper = await mountSidebar()
+
+    // "New channel" → the EXISTING CreateChannelDialog.
+    await wrapper.get('[data-testid="new-button"]').trigger('click')
+    await wrapper.get('[data-testid="new-menu-channel"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('[data-testid="create-channel"]')).toBeTruthy()
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="create-channel"] [aria-label="Close"]')
+      ?.click()
+
+    // "New message" → the EXISTING NewDmDialog.
+    await wrapper.get('[data-testid="new-button"]').trigger('click')
+    await wrapper.get('[data-testid="new-menu-dm"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('[data-testid="new-dm"]')).toBeTruthy()
+  })
+
+  it('shows an accent unread pill on unread rows and keeps the danger mention badge', async () => {
+    fake.addStream({ stream_id: 's_quiet', name: 'quiet', kind: 'channel', unread: 0 })
+    fake.addStream({ stream_id: 's_busy', name: 'busy', kind: 'channel', unread: 4 })
+    fake.addStream({
+      stream_id: 's_ping',
+      name: 'ping',
+      kind: 'channel',
+      unread: 2,
+      mention: true,
+    })
+    setWorkerClient(fake.client)
+    const wrapper = await mountSidebar()
+
+    const row = (id: string) =>
+      wrapper
+        .findAll('[data-testid="sidebar-channel"]')
+        .find((r) => r.attributes('data-stream-id') === id)!
+
+    // Read: no pill at all.
+    expect(row('s_quiet').find('[data-testid="unread-badge"]').exists()).toBe(false)
+    // Unread (no mention): the accent-subtle count pill.
+    const pill = row('s_busy').get('[data-testid="unread-badge"]')
+    expect(pill.text()).toBe('4')
+    expect(pill.classes()).toContain('bg-accent-subtle')
+    expect(pill.classes()).toContain('text-accent')
+    // Mention: the danger badge wins (no double-badging).
+    expect(row('s_ping').find('[data-testid="mention-badge"]').exists()).toBe(true)
+    expect(row('s_ping').find('[data-testid="unread-badge"]').exists()).toBe(false)
+  })
+
   it('renders the nav rows with their preserved test-ids (and NO Feeds section)', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)

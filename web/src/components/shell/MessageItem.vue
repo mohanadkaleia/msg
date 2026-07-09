@@ -55,8 +55,23 @@ const props = withDefaults(
      * background the parent clears after a moment. Purely visual.
      */
     flash?: boolean
+    /**
+     * Read-only rendering context (ENG-152 PR-c — the Inbox preview pane): the
+     * hover action toolbar, the add-reaction pill, the thread affordance, and
+     * retry/discard are NOT rendered, and reaction chips are non-interactive —
+     * the preview wires none of their emits, so showing them would present dead
+     * buttons. Message content (text, attachments, chips, markers) still renders.
+     */
+    readonly?: boolean
   }>(),
-  { editing: false, showHeader: true, names: undefined, presence: undefined, flash: false },
+  {
+    editing: false,
+    showHeader: true,
+    names: undefined,
+    presence: undefined,
+    flash: false,
+    readonly: false,
+  },
 )
 
 const emit = defineEmits<{
@@ -91,10 +106,12 @@ const isSettled = computed(() => props.message.state === undefined)
 const isEdited = computed(() => props.message.edited_seq !== undefined)
 /** Author-or-admin is enforced server-side; in-UI we gate on ownership + a live row. */
 const canModify = computed(() => props.message.mine && isSettled.value && !isDeleted.value)
-/** Reactions are only meaningful on a live (non-deleted) row. */
-const canReact = computed(() => isSettled.value && !isDeleted.value)
-/** Retry/Delete of a failed SEND are only actionable while we hold its outbox id. */
-const canAct = computed(() => props.message.eventId !== undefined)
+/** Reactions are only meaningful on a live (non-deleted) row — and never in a
+ * read-only context (the preview pane wires no reaction emits). */
+const canReact = computed(() => isSettled.value && !isDeleted.value && !props.readonly)
+/** Retry/Delete of a failed SEND are only actionable while we hold its outbox id
+ * AND a parent that wires the emits (not the read-only preview). */
+const canAct = computed(() => props.message.eventId !== undefined && !props.readonly)
 const time = computed(() => formatTime(props.message.ts))
 const reactions = computed(() => props.message.reactions ?? [])
 /** Thread affordance (ENG-103): a root shows its reply count + participant avatars. */
@@ -367,9 +384,10 @@ function confirmDelete(): void {
         </div>
 
         <!-- Thread summary (ENG-103): overlapping participant avatars + reply count on
-           a root. Click opens the thread pane. Avatars/names are safe-interpolated. -->
+           a root. Click opens the thread pane — suppressed in the read-only
+           preview where nothing wires `open-thread`. -->
         <ThreadSummary
-          v-if="isThreadRoot"
+          v-if="isThreadRoot && !props.readonly"
           :reply-count="replyCount"
           :participants="participants"
           @open="emit('open-thread', props.message.message_id)"

@@ -362,3 +362,57 @@ describe('MessageItem', () => {
     expect(wrapper.find('[data-testid="presence-dot"]').exists()).toBe(false)
   })
 })
+
+// -- ENG-152 PR-c: read-only rendering (the Inbox preview pane) ---------------
+//
+// In the preview, MessageItem's action emits are UNWIRED — rendering the hover
+// toolbar / add-reaction / thread affordances would present dead buttons. The
+// `readonly` prop suppresses every interactive affordance while the content
+// (text, reaction chips as information) still renders.
+describe('MessageItem — readonly (preview context)', () => {
+  const reacted = () =>
+    makeMessage({
+      reactions: [
+        { emoji: '👍', count: 1, user_ids: ['u_a'], display_names: ['Ann'], mine: false },
+      ],
+      reply_count: 2,
+      threadParticipants: [{ user_id: 'u_a', display_name: 'Ann' }],
+    })
+
+  it('renders NO hover toolbar, add-reaction pill, or thread affordance', () => {
+    const wrapper = mount(MessageItem, { props: { message: reacted(), readonly: true } })
+
+    expect(wrapper.find('[data-testid="message-toolbar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-reaction"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="reply-in-thread"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="thread-affordance"]').exists()).toBe(false)
+    // Content still renders: the text and the informational reaction chip.
+    expect(wrapper.get('[data-testid="message-text"]').text()).toBe('hello')
+    expect(wrapper.get('[data-testid="reaction-chip"]').text()).toContain('👍')
+  })
+
+  it('disables reaction-chip toggling in the readonly context', () => {
+    const wrapper = mount(MessageItem, { props: { message: reacted(), readonly: true } })
+    expect(wrapper.get('[data-testid="reaction-chip"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('hides retry/discard on a failed row in the readonly context', () => {
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: makeMessage({ state: 'failed', error_code: 'too_long', eventId: 'e1' }),
+        readonly: true,
+      },
+    })
+    // The honest failure label stays; the unwired action buttons do not.
+    expect(wrapper.get('[data-testid="message-failed"]').text()).toContain('too_long')
+    expect(wrapper.find('[data-testid="message-retry"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="message-failed-discard"]').exists()).toBe(false)
+  })
+
+  it('keeps every affordance in the default (wired) context', () => {
+    const wrapper = mount(MessageItem, { props: { message: reacted() } })
+    expect(wrapper.find('[data-testid="message-toolbar"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="add-reaction"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="thread-affordance"]').exists()).toBe(true)
+  })
+})

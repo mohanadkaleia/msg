@@ -12,22 +12,49 @@ describe('ui/SidebarItem', () => {
     expect(root.classes()).toContain('h-7')
   })
 
-  it('shows the active state (accent-subtle bg + left marker)', () => {
+  it('shows the strengthened active state (accent-subtle bg + accent text + left bar)', () => {
     const wrapper = mount(SidebarItem, { props: { active: true }, slots: { default: 'x' } })
     const cls = wrapper.get('button').attributes('class') ?? ''
+    // ENG-152 PR-c: "you are here" is accent-tinted bg + ACCENT text, not just grey.
     expect(cls).toContain('bg-accent-subtle')
-    expect(cls).toContain('text-primary')
-    // The subtle left accent marker only renders when active.
+    expect(cls).toContain('text-accent')
+    expect(cls).toContain('font-medium')
+    // The left accent bar only renders when active.
     expect(wrapper.find('span.bg-accent').exists()).toBe(true)
   })
 
-  it('applies unread styling (primary text + medium weight)', () => {
+  it('colors the leading icon with the accent while active', () => {
+    const active = mount(SidebarItem, {
+      props: { active: true },
+      slots: { default: 'x', leading: '<svg data-testid="lead" />' },
+    })
+    expect(active.get('[data-testid="lead"]').element.parentElement?.className).toContain(
+      'text-accent',
+    )
+
+    const idle = mount(SidebarItem, {
+      slots: { default: 'x', leading: '<svg data-testid="lead" />' },
+    })
+    expect(idle.get('[data-testid="lead"]').element.parentElement?.className).toContain(
+      'text-muted',
+    )
+  })
+
+  it('applies unread styling (primary text + SEMIBOLD weight) vs muted read rows', () => {
     const cls =
       mount(SidebarItem, { props: { unread: true }, slots: { default: 'x' } })
         .get('button')
         .attributes('class') ?? ''
     expect(cls).toContain('text-primary')
-    expect(cls).toContain('font-medium')
+    expect(cls).toContain('font-semibold')
+
+    // A read row stays calm: secondary text, normal weight.
+    const read =
+      mount(SidebarItem, { slots: { default: 'x' } })
+        .get('button')
+        .attributes('class') ?? ''
+    expect(read).toContain('text-secondary')
+    expect(read).toContain('font-normal')
   })
 
   it('renders as an anchor when href is provided', () => {
