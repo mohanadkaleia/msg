@@ -178,6 +178,32 @@ describe('WorkerClient.files namespace wiring (ENG-119)', () => {
   })
 })
 
+describe('WorkerClient.admin namespace wiring (ENG-151)', () => {
+  it('routes each admin.* call to the right RPC frame with plain params only', async () => {
+    const { transport, frames } = echoTransport()
+    const client = makeWorkerClient('c1', transport)
+
+    await client.admin.members.list()
+    await client.admin.members.update({ user_id: 'u_1', role: 'admin', active: true })
+    await client.admin.invites.list()
+    await client.admin.invites.revoke({ id: 'hash_1' })
+
+    const reqs = frames.filter((f): f is Extract<ToWorker, { t: 'req' }> => f.t === 'req')
+    expect(reqs.map((f) => f.req.method)).toEqual([
+      'admin.members.list',
+      'admin.members.update',
+      'admin.invites.list',
+      'admin.invites.revoke',
+    ])
+    expect(reqs[1]?.req.params).toEqual({ user_id: 'u_1', role: 'admin', active: true })
+    expect(reqs[3]?.req.params).toEqual({ id: 'hash_1' })
+    // Token boundary: no frame the facade emits carries a token/URL/`/v1/` path.
+    for (const f of reqs) {
+      expect(JSON.stringify(f)).not.toMatch(/token|bearer|authorization|\/v1\//i)
+    }
+  })
+})
+
 describe('createSoloTransport', () => {
   it('boots an in-page WorkerCore and answers via the client surface', async () => {
     const transport = await createSoloTransport('solo-1', () => Promise.resolve(new MemoryDb()))

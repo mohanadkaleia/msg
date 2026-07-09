@@ -683,6 +683,18 @@ export class FakeWorker {
           return Promise.resolve({ stream_id: streamId, last_read_seq: seq })
         },
       },
+      // ENG-151 admin: inert pass-through stubs — the seam is worker-side HTTP
+      // (covered in tests/unit/worker/admin.spec.ts); shell tests don't drive it.
+      admin: {
+        members: {
+          list: () => Promise.resolve({ members: [] }),
+          update: () => Promise.reject(new Error('admin.members.update not stubbed')),
+        },
+        invites: {
+          list: () => Promise.resolve({ invites: [] }),
+          revoke: () => Promise.reject(new Error('admin.invites.revoke not stubbed')),
+        },
+      },
       // ENG-129: a REAL-shaped prefs surface — `get` returns the seeded snapshot,
       // `set` records the call, LWW-upserts, and fans the `{kind:'prefs'}` push
       // (exactly the PrefsManager's optimistic publish/echo shape).

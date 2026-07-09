@@ -1125,6 +1125,75 @@ export interface PrefsListResult {
   prefs: PrefsRow[]
 }
 
+// ---------------------------------------------------------------------------
+// Admin (ENG-151) — HTTP pass-through RPCs over `/v1/admin/*` (owner/admin
+// only, enforced server-side). Live reads/writes like `search`: the worker
+// attaches the bearer and returns the server response verbatim — NOTHING is
+// persisted to the local DB (no projection, no synced-KV, no event). Shapes
+// mirror `server/msgd/api/schemas/admin.py` field-for-field.
+// ---------------------------------------------------------------------------
+
+/**
+ * One workspace member in the admin roster (`GET /v1/admin/members`, server
+ * `MemberInfo`). `deactivated` is the boolean projection of
+ * `deactivated_at IS NOT NULL` — the server does not expose the timestamp.
+ * Emails are admin-visible BY DESIGN on this owner/admin-gated surface; they
+ * never appear in the client-facing `directory.list` projection.
+ */
+export interface AdminMember {
+  user_id: string
+  display_name: string
+  email: string
+  role: string
+  is_bot: boolean
+  deactivated: boolean
+}
+
+/** `admin.members.list` result (server `MemberListResponse`). */
+export interface AdminMembersResult {
+  members: AdminMember[]
+}
+
+/**
+ * Roles assignable via the admin PATCH (server `UpdateMemberRequest.role`
+ * Literal) — `owner` is structurally excluded: it can never be assigned.
+ */
+export type AdminAssignableRole = 'admin' | 'member' | 'guest'
+
+/**
+ * `admin.members.update` params — `PATCH /v1/admin/members/{user_id}`. At
+ * least one of `role`/`active` must be given (an empty PATCH is a server 422).
+ * `active: false` deactivates (and bulk-revokes the target's sessions
+ * server-side); `active: true` reactivates.
+ */
+export interface AdminMemberUpdateParams {
+  user_id: string
+  role?: AdminAssignableRole
+  active?: boolean
+}
+
+/**
+ * One PENDING invite (`GET /v1/admin/invites`, server `InviteInfo`). `id` is
+ * the invite's sha256 `token_hash` — a revoke handle, NOT a credential; the
+ * raw join token appears in no admin response. `expires_at` is RFC 3339.
+ */
+export interface AdminInvite {
+  id: string
+  role: string
+  created_by: string
+  expires_at: string
+}
+
+/** `admin.invites.list` result (server `InviteListResponse`; pending only). */
+export interface AdminInvitesResult {
+  invites: AdminInvite[]
+}
+
+/** `admin.invites.revoke` result — the server 204 folded to a plain ack. */
+export interface AdminInviteRevokeResult {
+  ok: true
+}
+
 /** Live-presence status for a workspace user (ENG-125), ephemeral (memory-only). */
 export type PresenceStatus = 'online' | 'offline'
 
@@ -1174,6 +1243,12 @@ export type RpcRequest =
   // server-authoritative per-user KV (NOT the event log); `typing.send` is a
   // fire-and-forget ephemeral WS signal (client-throttled, dropped when offline).
   | { method: 'search'; params: SearchParams }
+  // ENG-151 admin — HTTP pass-through over `/v1/admin/*` (token worker-side;
+  // owner/admin enforced server-side; a 403/404/422 surfaces as a coded error).
+  | { method: 'admin.members.list'; params: Record<string, never> }
+  | { method: 'admin.members.update'; params: AdminMemberUpdateParams }
+  | { method: 'admin.invites.list'; params: Record<string, never> }
+  | { method: 'admin.invites.revoke'; params: { id: string } }
   | { method: 'readState.mark'; params: { stream_id: string; last_read_seq: number } }
   | { method: 'prefs.get'; params: Record<string, never> }
   | { method: 'prefs.set'; params: { stream_id: string; level: PrefLevel } }
@@ -1326,6 +1401,24 @@ export interface WorkerClient {
    * passes only filters + an opaque `cursor` and reads back hits + `next_cursor`.
    */
   search(params: SearchParams): Promise<SearchResult>
+
+  /**
+   * Admin namespace (ENG-151). HTTP pass-through over the worker's authed
+   * client — owner/admin gating, the policy matrix, and all error semantics
+   * are SERVER truth; the worker forwards + maps a 403/404/422 to a coded
+   * `RpcCallError` (`forbidden` / `not-found` / `validation-error`). Nothing
+   * is projected or persisted locally, and no method exposes a token or URL.
+   */
+  admin: {
+    members: {
+      list(): Promise<AdminMembersResult>
+      update(params: AdminMemberUpdateParams): Promise<AdminMember>
+    }
+    invites: {
+      list(): Promise<AdminInvitesResult>
+      revoke(params: { id: string }): Promise<AdminInviteRevokeResult>
+    }
+  }
 
   /**
    * Read-state (ENG-126). `mark` records the newest read `seq` for a stream —

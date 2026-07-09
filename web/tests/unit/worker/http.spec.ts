@@ -231,6 +231,28 @@ describe('createHttpClient', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ stream_id: 's1', last_read_seq: 9 }))
   })
 
+  it('patch sends a JSON body with the bearer + Content-Type, parses the 200 (ENG-151)', async () => {
+    const { fetchImpl, calls } = fakeFetch(
+      () =>
+        new Response(JSON.stringify({ user_id: 'u_1', role: 'admin' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    )
+    const http = createHttpClient(deps({ fetchImpl }))
+
+    const res = await http.patch<{ user_id: string; role: string }>('/v1/admin/members/u_1', {
+      role: 'admin',
+    })
+
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.value).toEqual({ user_id: 'u_1', role: 'admin' })
+    expect(calls[0]?.init?.method).toBe('PATCH')
+    expect(headerOf(calls[0]?.init, 'Authorization')).toBe('Bearer tok-123')
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBe('application/json')
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ role: 'admin' }))
+  })
+
   it('put fires onUnauthorized on a 401 (expired/revoked session)', async () => {
     const onUnauthorized = vi.fn()
     const { fetchImpl } = fakeFetch(

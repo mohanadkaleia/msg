@@ -5,6 +5,7 @@
 // engine (ENG-79) and projections (ENG-80), which register handlers here,
 // unit-testable in vitest against fake-indexeddb or MemoryDb, no browser.
 
+import { listAdminInvites, listAdminMembers, revokeAdminInvite, updateAdminMember } from './admin'
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
 import { FileManager } from './files'
@@ -32,6 +33,10 @@ import {
   MAX_CACHED_EVENTS_PER_STREAM,
   RpcCodedError,
   topicKey,
+  type AdminInviteRevokeResult,
+  type AdminInvitesResult,
+  type AdminMember,
+  type AdminMembersResult,
   type ApplyEventsToProjection,
   type AuthResult,
   type BackfillResult,
@@ -86,6 +91,11 @@ export interface RpcResultMap {
   'prefs.get': PrefsListResult
   'prefs.set': PrefsRow
   'typing.send': { ok: true }
+  // ENG-151 — admin HTTP pass-through (live server truth, nothing persisted).
+  'admin.members.list': AdminMembersResult
+  'admin.members.update': AdminMember
+  'admin.invites.list': AdminInvitesResult
+  'admin.invites.revoke': AdminInviteRevokeResult
 }
 
 /** A handler typed to exactly one method's request variant and result. */
@@ -251,6 +261,7 @@ export class WorkerCore {
     this.registerSync()
     this.registerFiles()
     this.registerSignals()
+    this.registerAdmin()
   }
 
   /**
@@ -590,6 +601,18 @@ export class WorkerCore {
       this.ephemeral.sendTyping(req.params.stream_id)
       return Promise.resolve({ ok: true as const })
     })
+  }
+
+  // -- ENG-151 admin handlers ----------------------------------------------
+  // HTTP pass-through over the shared authed http client (admin.ts), like
+  // `search`: live server truth, owner/admin-gated server-side, and NOTHING
+  // persisted locally. A 403/404/422 surfaces as a coded RPC error.
+
+  private registerAdmin(): void {
+    this.register('admin.members.list', () => listAdminMembers(this.http))
+    this.register('admin.members.update', (req) => updateAdminMember(this.http, req.params))
+    this.register('admin.invites.list', () => listAdminInvites(this.http))
+    this.register('admin.invites.revoke', (req) => revokeAdminInvite(this.http, req.params))
   }
 }
 

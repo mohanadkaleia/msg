@@ -705,6 +705,9 @@ function makeStreamRewritingHttp(evilStream: string): HttpClient {
     put<T>(): Promise<ApiResult<T>> {
       throw new Error('unused')
     },
+    patch<T>(): Promise<ApiResult<T>> {
+      throw new Error('unused')
+    },
     get<T>(): Promise<ApiResult<T>> {
       throw new Error('unused')
     },

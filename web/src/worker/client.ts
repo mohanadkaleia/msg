@@ -11,6 +11,11 @@ import { createLeaderTransport } from './leader'
 import { createRpcCaller } from './rpc'
 import {
   type AcceptInviteCredentials,
+  type AdminInviteRevokeResult,
+  type AdminInvitesResult,
+  type AdminMember,
+  type AdminMembersResult,
+  type AdminMemberUpdateParams,
   type AuthResult,
   type AuthStatus,
   type BackfillResult,
@@ -164,6 +169,33 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
     // projection. The token stays worker-side; the tab passes only filters + cursor.
     search: (params: SearchParams) =>
       caller.request({ method: 'search', params }) as Promise<SearchResult>,
+    // Admin (ENG-151): HTTP pass-through over the worker's authed client. The
+    // tab sees plain data only — no token, URL, or `/v1/` path crosses here;
+    // owner/admin gating and 403/404/422 semantics are server truth surfaced
+    // as coded RpcCallErrors (`forbidden` / `not-found` / `validation-error`).
+    admin: {
+      members: {
+        list: () =>
+          caller.request({
+            method: 'admin.members.list',
+            params: {},
+          }) as Promise<AdminMembersResult>,
+        update: (params: AdminMemberUpdateParams) =>
+          caller.request({ method: 'admin.members.update', params }) as Promise<AdminMember>,
+      },
+      invites: {
+        list: () =>
+          caller.request({
+            method: 'admin.invites.list',
+            params: {},
+          }) as Promise<AdminInvitesResult>,
+        revoke: (params: { id: string }) =>
+          caller.request({
+            method: 'admin.invites.revoke',
+            params,
+          }) as Promise<AdminInviteRevokeResult>,
+      },
+    },
     // Read-state (ENG-126): `mark` clears the unread/mention badge (optimistic +
     // monotonic worker-side; the `{kind:'stream'}` push re-derives the badge).
     readState: {

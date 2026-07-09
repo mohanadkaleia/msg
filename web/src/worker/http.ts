@@ -62,6 +62,12 @@ export interface HttpClient {
    * {@link putBlob} — that path is `application/octet-stream` and never JSON.
    */
   put<T>(path: string, body: unknown): Promise<ApiResult<T>>
+  /**
+   * Authed PATCH of a JSON body (ENG-151, mirrors {@link put}): same bearer /
+   * problem+json / never-throw discipline. Used by the admin pass-through RPCs
+   * (`PATCH /v1/admin/members/{user_id}`).
+   */
+  patch<T>(path: string, body: unknown): Promise<ApiResult<T>>
   /** Authed GET returning parsed JSON. */
   get<T>(path: string): Promise<ApiResult<T>>
   /** Authed DELETE expecting 204 No Content. */
@@ -136,7 +142,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
    * controller, and `finally` always clears the timer + detaches the listener.
    */
   async function send<T>(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     init: { headers: Record<string, string>; body?: BodyInit; authed: boolean },
     timeout: number | null,
@@ -197,7 +203,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
   }
 
   function request<T>(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body: unknown,
     authed: boolean,
@@ -239,6 +245,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
     post: <T>(path: string, body: unknown, opts?: { authed?: boolean }) =>
       request<T>('POST', path, body, opts?.authed ?? true),
     put: <T>(path: string, body: unknown) => request<T>('PUT', path, body, true),
+    patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body, true),
     get: <T>(path: string) => request<T>('GET', path, undefined, true),
     del: (path: string) => request<void>('DELETE', path, undefined, true),
 

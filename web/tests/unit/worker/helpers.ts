@@ -10,6 +10,8 @@ import { DexieDb, MsgDB } from '../../../src/worker/db'
 import type { ApiError, ApiResult, HttpClient } from '../../../src/worker/http'
 import type { ChannelLike, LockManagerLike } from '../../../src/worker/leader'
 import type {
+  AdminInvite,
+  AdminMember,
   EventBody,
   FromWorker,
   MessageSink,
@@ -303,6 +305,14 @@ export class FakeSyncServer {
   readonly prefs = new Map<string, string>()
   /** The canned `GET /v1/search` response tests configure (default empty). */
   searchResult: SearchResult = { hits: [], next_cursor: null }
+
+  // -- ENG-151 admin model (HTTP pass-through; the worker persists nothing) --
+  /** The workspace roster served by `GET /v1/admin/members` (tests seed it). */
+  adminMembers: AdminMember[] = []
+  /** The pending invites served by `GET /v1/admin/invites` (tests seed it). */
+  adminInvites: AdminInvite[] = []
+  /** When set, EVERY admin call fails with this error (403 gate / 422 model). */
+  adminError: ApiError | undefined
 
   // -- ENG-119 Files API model --------------------------------------------
   /** `file_id` → the reserved file row (models the server `files` table). */
@@ -613,6 +623,48 @@ export class FakeSyncServer {
     return { ok: true, value: { stream_id: body.stream_id, level: body.level } }
   }
 
+  // -- ENG-151 admin responders (mirror routers/admin.py semantics) --------
+
+  /** `GET /v1/admin/members` — the full roster (deactivated + bots included). */
+  respondAdminMembers(): ApiResult<{ members: AdminMember[] }> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    return { ok: true, value: { members: this.adminMembers } }
+  }
+
+  /**
+   * `PATCH /v1/admin/members/{user_id}` — apply `role`/`active` to the seeded
+   * roster row and echo it (the real endpoint's 200 body). Unknown id → the
+   * uniform 404 (`not-found`).
+   */
+  respondAdminPatchMember(
+    userId: string,
+    body: { role?: string; active?: boolean },
+  ): ApiResult<AdminMember> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    const row = this.adminMembers.find((m) => m.user_id === userId)
+    if (!row) return { ok: false, error: { status: 404, code: 'not-found', title: 'Not found' } }
+    if (body.role !== undefined) row.role = body.role
+    if (body.active !== undefined) row.deactivated = !body.active
+    return { ok: true, value: { ...row } }
+  }
+
+  /** `GET /v1/admin/invites` — the pending invites (`id` = sha256 token_hash). */
+  respondAdminInvites(): ApiResult<{ invites: AdminInvite[] }> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    return { ok: true, value: { invites: this.adminInvites } }
+  }
+
+  /** `DELETE /v1/admin/invites/{id}` — hard delete; no row → the uniform 404. */
+  respondAdminRevokeInvite(id: string): ApiResult<void> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    const before = this.adminInvites.length
+    this.adminInvites = this.adminInvites.filter((inv) => inv.id !== id)
+    if (this.adminInvites.length === before) {
+      return { ok: false, error: { status: 404, code: 'not-found', title: 'Not found' } }
+    }
+    return { ok: true, value: undefined }
+  }
+
   /** The stored wire event for an `event_id` (to emit as a WS frame in a test). */
   wireFor(eventId: string): WireEvent | undefined {
     for (const s of this.streams.values()) {
@@ -630,6 +682,8 @@ export class FakeSyncServer {
 
   async respond(path: string): Promise<ApiResult<unknown>> {
     if (path.startsWith('/v1/search')) return this.respondSearch()
+    if (path.startsWith('/v1/admin/members')) return this.respondAdminMembers()
+    if (path.startsWith('/v1/admin/invites')) return this.respondAdminInvites()
     if (path.startsWith('/v1/read-state')) return this.respondGetReadState()
     if (path.startsWith('/v1/prefs')) return this.respondGetPrefs()
     if (path.startsWith('/v1/sync')) {
@@ -676,6 +730,10 @@ export class FakeHttpClient implements HttpClient {
   readonly postCalls: { path: string; body: unknown }[] = []
   /** Every `put` call — the JSON body (synced-KV writes: read-state / prefs). */
   readonly putCalls: { path: string; body: unknown }[] = []
+  /** Every `patch` call — the JSON body (admin member updates, ENG-151). */
+  readonly patchCalls: { path: string; body: unknown }[] = []
+  /** Every `del` call — the path (admin invite revoke, ENG-151). */
+  readonly delCalls: string[] = []
   /** Every `putBlob` call — the raw body + declared content type (never JSON). */
   readonly putBlobCalls: { path: string; body: Blob | ArrayBuffer; contentType?: string }[] = []
   readonly getBlobCalls: string[] = []
@@ -761,7 +819,23 @@ export class FakeHttpClient implements HttpClient {
     return Promise.resolve({ ok: true, value: undefined as T })
   }
 
-  del(): Promise<ApiResult<void>> {
+  patch<T>(path: string, body: unknown): Promise<ApiResult<T>> {
+    this.patchCalls.push({ path, body })
+    if (path.startsWith('/v1/admin/members/')) {
+      const userId = decodeURIComponent(path.slice('/v1/admin/members/'.length))
+      return Promise.resolve(
+        this.server.respondAdminPatchMember(userId, body as { role?: string; active?: boolean }),
+      ) as Promise<ApiResult<T>>
+    }
+    return Promise.resolve({ ok: true, value: undefined as T })
+  }
+
+  del(path = ''): Promise<ApiResult<void>> {
+    this.delCalls.push(path)
+    if (path.startsWith('/v1/admin/invites/')) {
+      const id = decodeURIComponent(path.slice('/v1/admin/invites/'.length))
+      return Promise.resolve(this.server.respondAdminRevokeInvite(id))
+    }
     return Promise.resolve({ ok: true, value: undefined })
   }
 
