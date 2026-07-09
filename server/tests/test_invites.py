@@ -140,6 +140,140 @@ async def test_duplicate_email_409_and_invite_not_burned(client: AsyncClient) ->
     assert retry.json()["role"] == "member"
 
 
+async def test_list_invites_pending_only_and_raw_token_absent(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """GET /v1/admin/invites returns only pending invites; the raw token appears NOWHERE.
+
+    A used invite and an expired invite are both excluded; the id is the sha256
+    ``token_hash`` (the revoke handle), and the raw join token — returned once at
+    create — is not a substring of the serialized list body.
+    """
+    owner_token = (await do_setup(client))["token"]
+
+    pending = await create_invite(client, owner_token, role="member")
+    pending_raw = join_token(pending.json()["url"])
+
+    # A used invite (accepted) — must be excluded.
+    used = await create_invite(client, owner_token, role="member")
+    used_raw = join_token(used.json()["url"])
+    await accept_invite(client, used_raw, email="used@example.com")
+
+    # An expired invite — must be excluded.
+    expired = await create_invite(client, owner_token, role="guest")
+    expired_raw = join_token(expired.json()["url"])
+    row = await db_session.get(Invite, hash_token(expired_raw))
+    assert row is not None
+    row.expires_at = utcnow() - timedelta(seconds=1)
+    await db_session.flush()
+
+    resp = await client.get("/v1/admin/invites", headers=auth_header(owner_token))
+    assert resp.status_code == 200
+    invites = resp.json()["invites"]
+    ids = {i["id"] for i in invites}
+    assert ids == {hash_token(pending_raw)}  # only the pending one
+    assert invites[0]["role"] == "member"
+    # The RAW token is never serialized (create-time only).
+    assert pending_raw not in resp.text
+    assert used_raw not in resp.text
+    assert expired_raw not in resp.text
+
+
+async def test_list_invites_workspace_gated(client: AsyncClient) -> None:
+    """A member cannot list invites (owner/admin only)."""
+    owner_token = (await do_setup(client))["token"]
+    invite = await create_invite(client, owner_token, role="member")
+    raw = join_token(invite.json()["url"])
+    member_token = (await accept_invite(client, raw, email="m@example.com")).json()["token"]
+    resp = await client.get("/v1/admin/invites", headers=auth_header(member_token))
+    assert resp.status_code == 403
+
+
+async def test_revoke_invite_then_accept_404_and_uniform(client: AsyncClient) -> None:
+    """DELETE a pending invite → 204; the raw token then 404s invalid_invite.
+
+    Revoke again, revoke a used invite, and revoke an unknown id all return the
+    IDENTICAL uniform 404 body (no revoked-vs-used-vs-nonexistent oracle).
+    """
+    owner_token = (await do_setup(client))["token"]
+    owner_h = auth_header(owner_token)
+
+    invite = await create_invite(client, owner_token, role="member")
+    raw = join_token(invite.json()["url"])
+    invite_id = hash_token(raw)
+
+    # Revoke it (204), then accepting with the raw token is invalid_invite (404).
+    r = await client.delete(f"/v1/admin/invites/{invite_id}", headers=owner_h)
+    assert r.status_code == 204
+    accepted = await accept_invite(client, raw, email="late@example.com")
+    assert accepted.status_code == 404
+    assert accepted.json()["type"] == "/problems/invalid-invite"
+
+    def sans_instance(body: dict[str, object]) -> dict[str, object]:
+        return {k: v for k, v in body.items() if k != "instance"}
+
+    # Revoke again → 404 (already revoked).
+    again = await client.delete(f"/v1/admin/invites/{invite_id}", headers=owner_h)
+    assert again.status_code == 404
+
+    # Revoke a USED invite → 404.
+    used = await create_invite(client, owner_token, role="member")
+    used_raw = join_token(used.json()["url"])
+    await accept_invite(client, used_raw, email="used@example.com")
+    revoke_used = await client.delete(f"/v1/admin/invites/{hash_token(used_raw)}", headers=owner_h)
+    assert revoke_used.status_code == 404
+
+    # Revoke an UNKNOWN id → 404. All three bodies are identical (sans path).
+    unknown = await client.delete("/v1/admin/invites/deadbeef", headers=owner_h)
+    assert unknown.status_code == 404
+    b_again = sans_instance(again.json())
+    assert b_again == sans_instance(revoke_used.json())
+    assert b_again == sans_instance(unknown.json())
+    assert again.json()["type"] == "/problems/not-found"
+
+
+async def test_revoke_invite_cross_workspace_404(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Revoking another workspace's invite → 404 (workspace-scoped, uniform)."""
+    owner_token = (await do_setup(client))["token"]
+
+    # Seed a second workspace + an invite in it directly on the bound session.
+    from msgd.core import ids as _ids
+    from msgd.db.models import User, Workspace
+
+    other_ws = _ids.new_workspace_id()
+    other_user = _ids.new_user_id()
+    db_session.add(Workspace(workspace_id=other_ws, name="Other"))
+    await db_session.flush()
+    db_session.add(
+        User(
+            user_id=other_user,
+            workspace_id=other_ws,
+            email="o@example.com",
+            password_hash="x",
+            display_name="O",
+            role="owner",
+        )
+    )
+    await db_session.flush()
+    other_hash = hash_token("cross-workspace-raw-token")
+    db_session.add(
+        Invite(
+            token_hash=other_hash,
+            workspace_id=other_ws,
+            created_by=other_user,
+            role="member",
+            expires_at=utcnow() + timedelta(days=1),
+        )
+    )
+    await db_session.flush()
+
+    resp = await client.delete(f"/v1/admin/invites/{other_hash}", headers=auth_header(owner_token))
+    assert resp.status_code == 404
+    assert resp.json()["type"] == "/problems/not-found"
+
+
 async def test_concurrent_same_email_different_invites(
     settings: Settings, migrated_db: str
 ) -> None:
