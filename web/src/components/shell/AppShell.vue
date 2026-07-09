@@ -53,6 +53,7 @@ const {
   hasMore,
   drawerMode,
   mainTitle,
+  headerPresence,
   names,
   memberCount,
   unreadCount,
@@ -160,6 +161,7 @@ const gridCols = computed(() => {
           <ChannelHeader
             v-if="activeView !== 'inbox'"
             :title="mainTitle"
+            :presence="headerPresence"
             :member-count="memberCount"
             @add-member="onHeaderAddMember"
             @toggle-details="toggleDetails"

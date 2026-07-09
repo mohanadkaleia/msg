@@ -11,6 +11,7 @@ import type {
   BackfillResult,
   DirectoryChannel,
   DirectoryUser,
+  DmParticipants,
   FileRow,
   FileUploadParams,
   MessageRow,
@@ -33,7 +34,7 @@ import type {
   WorkerClient,
 } from '../../../src/worker'
 
-type SidebarStream = StreamRow & StreamBadge
+type SidebarStream = StreamRow & StreamBadge & DmParticipants
 
 export class FakeWorker {
   /** The HTTP escape hatch that must stay untouched by projection reads. */
@@ -496,7 +497,14 @@ export class FakeWorker {
     if (params.m === 'dm.create') {
       this.metaSpy(params)
       const streamId = newStreamId()
-      this.addStream({ stream_id: streamId, kind: 'dm', name: 'dm' })
+      // Mirrors the real worker (ENG-149): a DM stream carries its participant
+      // ids (folded from its `dm.created` genesis) on the `streams.list` row.
+      this.addStream({
+        stream_id: streamId,
+        kind: 'dm',
+        name: 'dm',
+        dm_user_ids: [this.myUserId, ...params.user_ids],
+      })
       this.publishStream(streamId)
       return Promise.resolve({ stream_id: streamId } as MutateResult<M>)
     }

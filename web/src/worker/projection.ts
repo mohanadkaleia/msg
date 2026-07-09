@@ -26,6 +26,7 @@ import type {
   AttachmentsResult,
   DirectoryListResult,
   DirectoryUser,
+  DmParticipants,
   EventBody,
   EventRow,
   FileRow,
@@ -881,16 +882,47 @@ export async function listThreadSummaries(
   return { threads }
 }
 
+/**
+ * A DM stream's participant ids from its cached `dm.created` v1 genesis event
+ * (ENG-149). A `dm.created` is SELF-HOMED in the DM's own stream (§2.2), so the
+ * event sits in the local `events` cache like any other stream event — this is a
+ * PURE fold over that cache (zero network, no schema change). D9 discipline: a
+ * missing/malformed genesis (wrong version, non-object payload, non-array or
+ * empty `member_user_ids`) yields `undefined`, never a throw — the UI keeps the
+ * id fallback for that row. Exported for direct unit coverage.
+ */
+export function dmMemberIdsFromEvents(events: readonly EventRow[]): string[] | undefined {
+  for (const event of events) {
+    if (event.type !== 'dm.created') continue
+    const body = event.envelope?.body
+    if (body === undefined || body.type_version !== 1) continue
+    const payload = body.payload
+    if (payload === null || typeof payload !== 'object') continue
+    const raw = (payload as Record<string, unknown>).member_user_ids
+    if (!Array.isArray(raw)) continue
+    const ids = raw.filter((m): m is string => typeof m === 'string' && m.length > 0)
+    if (ids.length > 0) return ids
+  }
+  return undefined
+}
+
 /** The sidebar: every stream merged with its unread/mention badge (`streams.list`). */
 export async function listStreamsForSidebar(
   db: MsgDb,
   myUserId: string,
-): Promise<Array<StreamRow & StreamBadge>> {
+): Promise<Array<StreamRow & StreamBadge & DmParticipants>> {
   const streams = await db.listStreams()
   return Promise.all(
     streams.map(async (stream) => {
       const badge = await computeStreamBadge(db, stream.stream_id, myUserId)
-      return { ...stream, ...badge }
+      if (stream.kind !== 'dm') return { ...stream, ...badge }
+      // ENG-149: attach the DM's participant ids (from its cached genesis event)
+      // so the tab can show the OTHER participant's name + presence. Query-time
+      // only — nothing is stored, so rebuild ≡ incremental is untouched.
+      const dmUserIds = dmMemberIdsFromEvents(await db.getEventsForStream(stream.stream_id))
+      return dmUserIds === undefined
+        ? { ...stream, ...badge }
+        : { ...stream, ...badge, dm_user_ids: dmUserIds }
     }),
   )
 }

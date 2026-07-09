@@ -10,19 +10,25 @@
 // (the icon buttons carry no text; the member/topic subline is a SIBLING `<p>`, not
 // inside the header element).
 //
-// REAL vs SCAFFOLD: `title` is the live selected stream label. Everything else is a
-// LOCAL, honest scaffold with no backend — the star/pin toggles are local ref
-// state, "N members" is a stand-in count (the workspace directory user count), and
+// REAL vs SCAFFOLD: `title` is the live selected stream label (a DM's title is the
+// OTHER participant's display name — ENG-149 — with a REAL presence dot when
+// `presence` is provided; the dot is a text-free sibling of the h1, so the
+// header's `.text()` is still the title alone). Everything else is a LOCAL,
+// honest scaffold with no backend — the star/pin toggles are local ref state,
+// "N members" is a stand-in count (the workspace directory user count), and
 // "Add a topic" is a non-wired affordance. `add-member` / `toggle-details` are
 // emitted for the parent to wire (details drawer lands in a later PR).
 import { ref } from 'vue'
 
 import Icon from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
+import PresenceDot from '../ui/PresenceDot.vue'
+
+import type { PresenceStatus } from '../../worker'
 
 const props = withDefaults(
   defineProps<{
-    /** The conversation title — e.g. "# engineering" or a DM name. */
+    /** The conversation title — e.g. "# engineering" or a DM participant's name. */
     title: string
     /**
      * SCAFFOLD member count (a stand-in — the workspace directory user count). The
@@ -30,8 +36,15 @@ const props = withDefaults(
      * labeled as an approximation until a real roster query lands.
      */
     memberCount?: number
+    /**
+     * The DM counterpart's live presence (ENG-149) — set only for a DM with a
+     * resolvable single counterpart; absent (no dot) for channels and group DMs.
+     * `| undefined` so an exactOptionalPropertyTypes caller can bind a computed
+     * that yields undefined for the no-dot case.
+     */
+    presence?: PresenceStatus | undefined
   }>(),
-  { memberCount: 0 },
+  { memberCount: 0, presence: undefined },
 )
 
 defineEmits<{
@@ -51,6 +64,8 @@ const favorite = ref(false)
     class="flex items-center justify-between gap-3 border-b border-subtle px-4 py-2.5"
   >
     <div class="flex min-w-0 items-center gap-2">
+      <!-- REAL DM presence (ENG-149) — a text-free dot, so header .text() stays the title. -->
+      <PresenceDot v-if="props.presence !== undefined" :status="props.presence" class="shrink-0" />
       <h1 class="truncate text-[15px] font-semibold text-primary">{{ props.title }}</h1>
       <IconButton
         size="sm"

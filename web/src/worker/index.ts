@@ -31,6 +31,8 @@ export {
   type MessageRow,
   type StreamRow,
   type StreamBadge,
+  // ENG-149 DM participant ids (query-time fold of the cached `dm.created`).
+  type DmParticipants,
   type MessagesListResult,
   type StreamsListResult,
   type MessageGetResult,

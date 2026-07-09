@@ -26,11 +26,13 @@
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
+import { dmDisplayName, dmOtherUserId } from '../../lib/dm'
 import { useAuthStore } from '../../stores/auth'
 import { usePresenceStore } from '../../stores/presence'
 import { useWorkspaceStore, type SidebarStream } from '../../stores/workspace'
 import Icon from '../ui/Icon.vue'
 import NavSection from '../ui/NavSection.vue'
+import PresenceDot from '../ui/PresenceDot.vue'
 import SidebarItem from '../ui/SidebarItem.vue'
 import ChannelBrowser from './ChannelBrowser.vue'
 import ChannelSettingsDialog from './ChannelSettingsDialog.vue'
@@ -40,6 +42,7 @@ import UserCard from './UserCard.vue'
 import WorkspaceSwitcher from './WorkspaceSwitcher.vue'
 
 import type { ActiveView } from '../../composables/useShellController'
+import type { PresenceStatus } from '../../worker'
 
 /** The product brand shown in the header (NOT the workspace name — see file note). */
 const BRAND = 'Ranin'
@@ -90,14 +93,40 @@ function isActive(stream: SidebarStream): boolean {
   return props.activeView === 'conversation' && stream.stream_id === selectedStreamId.value
 }
 
-/** Display label: the bare stream name (a leading '#'/avatar comes from the icon). */
+/** Directory-backed `user_id → display_name` map (the DM label source, ENG-149). */
+const names = computed<ReadonlyMap<string, string>>(
+  () => new Map(directory.value.users.map((u) => [u.user_id, u.display_name])),
+)
+
+/**
+ * Display label: a DM shows the OTHER participant's display name (resolved from
+ * `dm_user_ids` — the cached `dm.created` fold, ENG-149); when the participants
+ * are unknown the row keeps its previous name/id fallback. A channel shows its
+ * bare name (the leading '#' comes from the icon).
+ */
 function labelFor(stream: SidebarStream): string {
+  if (stream.kind === 'dm') {
+    return (
+      dmDisplayName(stream.dm_user_ids, auth.myUserId, names.value) ??
+      stream.name ??
+      stream.stream_id
+    )
+  }
   return stream.name ?? stream.stream_id
 }
 
-/** Single-letter avatar for a DM row. */
+/** Single-letter avatar for a DM row (from the resolved label). */
 function dmInitial(stream: SidebarStream): string {
-  return (stream.name ?? stream.stream_id).trim()[0]?.toUpperCase() ?? '?'
+  return labelFor(stream).trim()[0]?.toUpperCase() ?? '?'
+}
+
+/**
+ * The DM counterpart's live presence for the row dot (ENG-149, closing the
+ * ENG-128 gap) — `undefined` (no dot) when the participants are unresolvable.
+ */
+function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
+  const other = dmOtherUserId(stream.dm_user_ids, auth.myUserId)
+  return other === undefined ? undefined : presence.statusOf(other)
 }
 </script>
 
@@ -175,10 +204,19 @@ function dmInitial(stream: SidebarStream): string {
           @click="select(stream)"
         >
           <template #leading>
-            <span
-              class="grid h-4 w-4 place-items-center rounded-full bg-accent-subtle text-[10px] font-semibold text-accent"
-              >{{ dmInitial(stream) }}</span
-            >
+            <span class="relative">
+              <span
+                class="grid h-4 w-4 place-items-center rounded-full bg-accent-subtle text-[10px] font-semibold text-accent"
+                >{{ dmInitial(stream) }}</span
+              >
+              <!-- REAL presence for the DM counterpart (ENG-149/ENG-128). -->
+              <PresenceDot
+                v-if="dmStatus(stream) !== undefined"
+                size="sm"
+                :status="dmStatus(stream)!"
+                class="absolute -bottom-0.5 -right-0.5 border border-surface"
+              />
+            </span>
           </template>
           {{ labelFor(stream) }}
           <template v-if="stream.mention" #trailing>

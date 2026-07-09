@@ -9,8 +9,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import AppSidebar from '../../../src/components/shell/AppSidebar.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
+import { useAuthStore } from '../../../src/stores/auth'
+import { usePresenceStore } from '../../../src/stores/presence'
 import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
+import type { PresenceStatus } from '../../../src/worker'
 
 async function mountSidebar(): Promise<ReturnType<typeof mount>> {
   const store = useWorkspaceStore()
@@ -240,6 +243,41 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     const wrapper = await mountSidebar()
 
     expect(wrapper.find('[data-testid="user-card"]').exists()).toBe(true)
+  })
+
+  it('labels a DM row with the OTHER participant’s name + a live presence dot (ENG-149)', async () => {
+    fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_dana'] })
+    fake.setDirectory([{ user_id: 'u_dana', display_name: 'Dana' }], [])
+    setWorkerClient(fake.client)
+    useAuthStore().myUserId = 'u_me'
+    usePresenceStore().statuses = new Map<string, PresenceStatus>([['u_dana', 'online']])
+    const wrapper = await mountSidebar()
+
+    // The row (test-id preserved) shows the resolved display name, not the id.
+    const dm = wrapper.get('[data-testid="sidebar-dm"]')
+    expect(dm.text()).toContain('Dana')
+    expect(dm.text()).not.toContain('s_dm')
+    // The avatar initial follows the resolved name…
+    expect(dm.text()).toContain('D')
+    // …and the presence dot reflects the OTHER participant's live status.
+    expect(dm.get('[data-testid="presence-dot"]').attributes('data-status')).toBe('online')
+
+    // Presence flips are honored (offline → muted dot).
+    usePresenceStore().statuses = new Map<string, PresenceStatus>([['u_dana', 'offline']])
+    await flushPromises()
+    expect(dm.get('[data-testid="presence-dot"]').attributes('data-status')).toBe('offline')
+  })
+
+  it('keeps the id label and shows no dot for a DM with unresolvable participants', async () => {
+    // No dm_user_ids (genesis not cached) — the row keeps its previous fallback.
+    fake.addStream({ stream_id: 's_dm_bare', kind: 'dm' })
+    setWorkerClient(fake.client)
+    useAuthStore().myUserId = 'u_me'
+    const wrapper = await mountSidebar()
+
+    const dm = wrapper.get('[data-testid="sidebar-dm"]')
+    expect(dm.text()).toContain('s_dm_bare')
+    expect(dm.find('[data-testid="presence-dot"]').exists()).toBe(false)
   })
 
   it('gates the Admin section on canAdmin', async () => {

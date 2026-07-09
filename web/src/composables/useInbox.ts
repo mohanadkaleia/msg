@@ -19,7 +19,9 @@ import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { resolveWorkerClient } from './useWorkerClient'
+import { dmDisplayName } from '../lib/dm'
 import { messageTimestamp, dayKey } from '../lib/time'
+import { useAuthStore } from '../stores/auth'
 import { useWorkspaceStore, type SidebarStream } from '../stores/workspace'
 import type { MessageRow } from '../worker'
 
@@ -75,6 +77,7 @@ export interface UseInbox {
 
 export function useInbox(): UseInbox {
   const workspace = useWorkspaceStore()
+  const auth = useAuthStore()
   const { channels, dms, directory } = storeToRefs(workspace)
 
   const activeTab = ref<InboxTab>('all')
@@ -121,13 +124,16 @@ export function useInbox(): UseInbox {
         if (m === undefined) return [] // no local messages — omitted, never fabricated
         const kind = s.kind === 'dm' ? ('dm' as const) : ('channel' as const)
         const name = s.name ?? s.stream_id
+        // ENG-149: a DM is titled by the OTHER participant's display name
+        // (resolved from `dm_user_ids`); unresolvable → the name/id fallback.
+        const dmTitle = dmDisplayName(s.dm_user_ids, auth.myUserId, names.value) ?? name
         const author = names.value.get(m.author_user_id) ?? m.author_user_id
         const text = previewText(m)
         return [
           {
             stream_id: s.stream_id,
             kind,
-            title: kind === 'dm' ? name : `# ${name}`,
+            title: kind === 'dm' ? dmTitle : `# ${name}`,
             preview: m.deleted === true ? text : `${author}: ${text}`,
             lastActivityTs: messageTimestamp(m),
             unread: s.unread,

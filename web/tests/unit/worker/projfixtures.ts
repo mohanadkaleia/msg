@@ -102,6 +102,45 @@ export function metaEvent(streamId: string, seq: number): EventRow {
   }
 }
 
+/**
+ * A `dm.created` v1 genesis event, SELF-HOMED in the DM's own stream (§2.2) —
+ * the ENG-149 `dm_user_ids` fold source. `payload` overrides support malformed-
+ * genesis cases (D9 skip → the field stays absent).
+ */
+export function dmCreatedEvent(opts: {
+  streamId: string
+  seq?: number
+  memberUserIds?: string[]
+  typeVersion?: number
+  payload?: unknown
+}): EventRow {
+  const seq = opts.seq ?? 1
+  const eventId = `e_${opts.streamId}_${seq}`
+  return {
+    stream_id: opts.streamId,
+    server_sequence: seq,
+    event_id: eventId,
+    type: 'dm.created',
+    envelope: {
+      body: {
+        event_id: eventId,
+        workspace_id: 'w_test',
+        stream_id: opts.streamId,
+        type: 'dm.created',
+        type_version: opts.typeVersion ?? 1,
+        author_user_id: 'u_author',
+        author_device_id: 'd_test',
+        client_created_at: '2026-01-01T00:00:00.000Z',
+        payload: opts.payload ?? {
+          dm_stream_id: opts.streamId,
+          member_user_ids: opts.memberUserIds ?? [],
+        },
+      },
+      event_hash: `hash_${eventId}`,
+    },
+  }
+}
+
 /** A `workspace-meta` user lifecycle event (ENG-101 directory derivation). */
 export function metaUserEvent(
   streamId: string,

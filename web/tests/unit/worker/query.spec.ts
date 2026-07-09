@@ -6,7 +6,7 @@ import { applyEventsToProjection } from '../../../src/worker/projection'
 import type { FromWorker, MsgDb, QueryParams } from '../../../src/worker/types'
 
 import { collectingSink, fakeIdbOptions } from './helpers'
-import { messageCreatedEvent } from './projfixtures'
+import { dmCreatedEvent, messageCreatedEvent } from './projfixtures'
 
 function resultFor(frames: Array<{ clientId: string; msg: FromWorker }>, id: string): unknown {
   const msg = frames.find((f) => f.msg.t === 'res' && f.msg.id === id)?.msg
@@ -108,6 +108,35 @@ describe.each([
     const byId = Object.fromEntries(res.streams.map((s) => [s.stream_id, s]))
     expect(byId.s1).toMatchObject({ stream_id: 's1', name: 'general', unread: 3, mention: false })
     expect(byId.s2).toMatchObject({ stream_id: 's2', name: 'random', unread: 0, mention: false })
+    await db.close()
+  })
+
+  it('streams.list resolves a DM stream’s dm_user_ids from its cached dm.created (ENG-149)', async () => {
+    const db = await make()
+    const { runQuery } = await bootedCore(db)
+    await db.putStreams([
+      { stream_id: 's_dm', kind: 'dm', head_seq: 1, member: true },
+      { stream_id: 's_dm_bare', kind: 'dm', head_seq: 0, member: true },
+      { stream_id: 's_dm_bad', kind: 'dm', head_seq: 1, member: true },
+      { stream_id: 's_chan', kind: 'channel', name: 'general', head_seq: 0, member: true },
+    ])
+    await db.putEvents([
+      // The genesis is SELF-HOMED in the DM's own stream, so it sits in `events`.
+      dmCreatedEvent({ streamId: 's_dm', memberUserIds: ['u_me', 'u_dana'] }),
+      // Malformed genesis (non-array member_user_ids) → D9 skip → field absent.
+      dmCreatedEvent({ streamId: 's_dm_bad', payload: { member_user_ids: 'nope' } }),
+    ])
+
+    const res = (await runQuery('dm', { q: 'streams.list' })) as {
+      streams: Array<{ stream_id: string; dm_user_ids?: string[] }>
+    }
+    const byId = Object.fromEntries(res.streams.map((s) => [s.stream_id, s]))
+    // Resolved from the cached genesis event — no schema change, no network.
+    expect(byId.s_dm!.dm_user_ids).toEqual(['u_me', 'u_dana'])
+    // No cached genesis / malformed genesis / non-DM → the field is absent.
+    expect(byId.s_dm_bare!.dm_user_ids).toBeUndefined()
+    expect(byId.s_dm_bad!.dm_user_ids).toBeUndefined()
+    expect(byId.s_chan!.dm_user_ids).toBeUndefined()
     await db.close()
   })
 

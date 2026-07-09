@@ -696,15 +696,30 @@ export interface StreamBadge {
   mention: boolean
 }
 
+/**
+ * A DM stream's participant ids (ENG-149), resolved AT QUERY TIME from the DM's
+ * own cached `dm.created` genesis event — which is SELF-HOMED in the DM stream
+ * (§2.2), so every DM member's client receives and caches it like any other
+ * stream event. This is NOT a stored projection column: no Dexie schema change,
+ * no PROJECTION_VERSION bump, and rebuild ≡ incremental is untouched (the
+ * derived tables are byte-identical to before). The tab uses it to label a DM
+ * with the OTHER participant's display name and drive a presence dot. Absent
+ * when the genesis event is not (yet) in the local cache — the UI then keeps
+ * the id fallback (graceful, never a crash).
+ */
+export interface DmParticipants {
+  dm_user_ids?: string[]
+}
+
 /** `messages.list` result — a page of messages + whether older ones remain. */
 export interface MessagesListResult {
   messages: MessageRow[]
   has_more: boolean
 }
 
-/** `streams.list` result — sidebar streams, each merged with its badge. */
+/** `streams.list` result — sidebar streams, each merged with its badge (+ DM participants). */
 export interface StreamsListResult {
-  streams: Array<StreamRow & StreamBadge>
+  streams: Array<StreamRow & StreamBadge & DmParticipants>
 }
 
 /** `message.get` result — the message, or `null` on a miss. */

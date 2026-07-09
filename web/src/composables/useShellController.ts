@@ -18,13 +18,16 @@ import { useRouter } from 'vue-router'
 
 import type { QuickItem } from '../components/shell/CommandPalette.vue'
 import { resolveWorkerClient } from './useWorkerClient'
+import { dmDisplayName, dmOtherUserId } from '../lib/dm'
 import { useAuthStore } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
 import { useNotificationsStore } from '../stores/notifications'
 import { usePresenceStore } from '../stores/presence'
 import { useSyncStore } from '../stores/sync'
 import { useThreadStore } from '../stores/thread'
-import { useWorkspaceStore } from '../stores/workspace'
+import { useWorkspaceStore, type SidebarStream } from '../stores/workspace'
+
+import type { PresenceStatus } from '../worker'
 
 /** Which panel the main column renders: the live timeline, the Inbox, or a scaffold. */
 export type ActiveView = 'conversation' | 'inbox' | 'apps' | 'files' | 'admin'
@@ -102,11 +105,27 @@ export function useShellController() {
   /** Up-to-two-letter glyph for the rail (neutral, derived from the workspace name). */
   const workspaceInitials = computed(() => WORKSPACE_NAME.slice(0, 2).toUpperCase())
 
+  /**
+   * Directory-backed `user_id → display_name` map (ENG-136) — threaded to the
+   * message list for author names + avatar initials, and the DM label source
+   * (ENG-149). Rebuilt when the workspace directory refreshes; the raw id is the
+   * fallback in the view.
+   */
+  const names = computed<ReadonlyMap<string, string>>(() => {
+    const map = new Map<string, string>()
+    for (const u of directory.value.users) map.set(u.user_id, u.display_name)
+    return map
+  })
+
+  /** A DM stream's label: the OTHER participant's name (ENG-149), else name/id. */
+  function dmLabel(s: SidebarStream): string {
+    return dmDisplayName(s.dm_user_ids, myUserId.value, names.value) ?? s.name ?? s.stream_id
+  }
+
   const headerLabel = computed(() => {
     const s = selectedStream.value
     if (!s) return ''
-    const name = s.name ?? s.stream_id
-    return s.kind === 'dm' ? name : `# ${name}`
+    return s.kind === 'dm' ? dmLabel(s) : `# ${s.name ?? s.stream_id}`
   })
 
   /** Title shown in the channel-header for the current view (Inbox brings its own). */
@@ -117,14 +136,17 @@ export function useShellController() {
   })
 
   /**
-   * Directory-backed `user_id → display_name` map (ENG-136) — threaded to the
-   * message list for author names + avatar initials. Rebuilt when the workspace
-   * directory refreshes; the raw id is the fallback in the view.
+   * The selected DM counterpart's live presence for the header dot (ENG-149) —
+   * `undefined` (no dot) for channels, non-conversation views, and a DM whose
+   * participants are unresolvable (no cached genesis / group DM).
    */
-  const names = computed<ReadonlyMap<string, string>>(() => {
-    const map = new Map<string, string>()
-    for (const u of directory.value.users) map.set(u.user_id, u.display_name)
-    return map
+  const headerPresence = computed<PresenceStatus | undefined>(() => {
+    if (activeView.value !== 'conversation') return undefined
+    const s = selectedStream.value
+    if (!s || s.kind !== 'dm') return undefined
+    const other = dmOtherUserId(s.dm_user_ids, myUserId.value)
+    if (other === undefined) return undefined
+    return presenceStatuses.value.get(other) ?? 'offline'
   })
 
   /**
@@ -148,11 +170,11 @@ export function useShellController() {
     selectedStream.value ? `Message ${headerLabel.value}` : 'Select a channel',
   )
 
-  /** Quick-switch targets: channels then DMs, in sidebar order. */
+  /** Quick-switch targets: channels then DMs (DMs labeled by participant, ENG-149). */
   const quickItems = computed<QuickItem[]>(() =>
     [...channels.value, ...dms.value].map((s) => ({
       id: s.stream_id,
-      label: s.name ?? s.stream_id,
+      label: s.kind === 'dm' ? dmLabel(s) : (s.name ?? s.stream_id),
       kind: s.kind,
       unread: s.unread,
     })),
@@ -406,6 +428,7 @@ export function useShellController() {
     drawerMode,
     // computed view state
     headerLabel,
+    headerPresence,
     mainTitle,
     names,
     memberCount,

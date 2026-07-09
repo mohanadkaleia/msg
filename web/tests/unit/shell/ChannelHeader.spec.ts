@@ -45,6 +45,26 @@ describe('ChannelHeader', () => {
     expect(wrapper.find('button[aria-label="Unfavorite"]').exists()).toBe(true)
   })
 
+  it('shows a DM participant name + presence dot; header text stays the title alone (ENG-149)', () => {
+    const wrapper = mount(ChannelHeader, { props: { title: 'Dana', presence: 'online' as const } })
+    const header = wrapper.get('[data-testid="channel-header"]')
+    // The dot is text-free, so the E2E title assertion surface is unchanged.
+    expect(header.text()).toBe('Dana')
+    expect(header.get('[data-testid="presence-dot"]').attributes('data-status')).toBe('online')
+  })
+
+  it('renders an offline DM counterpart with a muted (offline) dot', () => {
+    const wrapper = mount(ChannelHeader, { props: { title: 'Dana', presence: 'offline' as const } })
+    const header = wrapper.get('[data-testid="channel-header"]')
+    expect(header.get('[data-testid="presence-dot"]').attributes('data-status')).toBe('offline')
+  })
+
+  it('shows NO presence dot for a channel (presence absent) and keeps the # title', () => {
+    const wrapper = mount(ChannelHeader, { props: { title: '# engineering' } })
+    expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# engineering')
+    expect(wrapper.find('[data-testid="presence-dot"]').exists()).toBe(false)
+  })
+
   it('renders a title with an XSS payload as inert escaped text', () => {
     const payload = '<img src=x onerror="window.__pwned=1">#eng'
     const wrapper = mount(ChannelHeader, { props: { title: payload } })

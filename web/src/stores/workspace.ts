@@ -11,7 +11,13 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { resolveWorkerClient } from '../composables/useWorkerClient'
-import type { DirectoryListResult, StreamBadge, StreamRow, Unsubscribe } from '../worker'
+import type {
+  DirectoryListResult,
+  DmParticipants,
+  StreamBadge,
+  StreamRow,
+  Unsubscribe,
+} from '../worker'
 
 /** One @mention / #channel autocomplete candidate for the composer (ENG-101). */
 export interface MentionItem {
@@ -20,8 +26,8 @@ export interface MentionItem {
   kind: 'user' | 'channel'
 }
 
-/** A sidebar row: a projected stream merged with its live badge. */
-export type SidebarStream = StreamRow & StreamBadge
+/** A sidebar row: a projected stream merged with its live badge (+ DM participants). */
+export type SidebarStream = StreamRow & StreamBadge & DmParticipants
 
 /** Kinds that are surfaced in the sidebar (workspace-meta is infrastructure). */
 const HIDDEN_KINDS = new Set(['workspace-meta'])

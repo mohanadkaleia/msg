@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { useInbox, type UseInbox } from '../../../src/composables/useInbox'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
+import { useAuthStore } from '../../../src/stores/auth'
 import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
 
@@ -92,6 +93,21 @@ describe('useInbox (ENG-136 Inbox triage)', () => {
     })
 
     // The whole assembly is projection reads — never HTTP.
+    expect(fake.fetch).not.toHaveBeenCalled()
+  })
+
+  it('titles a DM entry with the OTHER participant’s display name (ENG-149)', async () => {
+    fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_dana'] })
+    fake.setDirectory([{ user_id: 'u_dana', display_name: 'Dana' }], [])
+    fake.addMessage('s_dm', { created_seq: 1, author_user_id: 'u_dana', text: 'hey' })
+    useAuthStore().myUserId = 'u_me'
+
+    const inbox = await mountInbox(fake)
+    expect(inbox.entries.value[0]).toMatchObject({
+      kind: 'dm',
+      title: 'Dana',
+      preview: 'Dana: hey',
+    })
     expect(fake.fetch).not.toHaveBeenCalled()
   })
 
