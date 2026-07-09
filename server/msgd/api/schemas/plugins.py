@@ -31,6 +31,10 @@ __all__ = [
     "BotTokenInfo",
     "BotInfo",
     "BotListResponse",
+    "CreateHookRequest",
+    "HookCreateResponse",
+    "HookInfo",
+    "HookListResponse",
 ]
 
 #: The closed §10 verb-scope vocabulary — mirrors ``msgd.auth.bot_tokens.KNOWN_SCOPES``.
@@ -109,3 +113,51 @@ class BotInfo(BaseModel):
 
 class BotListResponse(BaseModel):
     bots: list[BotInfo]
+
+
+class CreateHookRequest(BaseModel):
+    """POST /v1/plugins/hooks — register an incoming webhook (ENG-161, §10).
+
+    ``stream_id`` names the ONE channel every delivery will post into and
+    ``bot_user_id`` the ONE bot that will author it — both are pinned in the
+    ``incoming_webhooks`` row at create time; the external payload can never
+    move either. ``bot_user_id`` omitted → a dedicated bot named for the hook
+    is auto-provisioned (the M5-1 creation path, install scope
+    ``events:write``).
+    """
+
+    stream_id: str
+    name: BotName
+    bot_user_id: str | None = None
+
+
+class HookCreateResponse(BaseModel):
+    """The create response — the ONLY place the capability URL ever appears.
+
+    ``url`` embeds the raw path token exactly once (the ``create_invite``
+    discipline); only its sha256 — echoed here as ``id``, the revoke handle —
+    is stored. ``GET /v1/plugins/hooks`` never returns it again.
+    """
+
+    url: str
+    id: str
+    stream_id: str
+    bot_user_id: str
+    name: str
+    created_at: datetime
+
+
+class HookInfo(BaseModel):
+    """One hook in GET /v1/plugins/hooks. ``id`` is the sha256 hash handle."""
+
+    id: str
+    stream_id: str
+    bot_user_id: str
+    name: str
+    created_by: str
+    created_at: datetime
+    disabled: bool
+
+
+class HookListResponse(BaseModel):
+    hooks: list[HookInfo]

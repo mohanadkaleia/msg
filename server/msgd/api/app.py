@@ -40,6 +40,7 @@ from msgd.auth.ratelimit import RateLimiter
 from msgd.blobs.store import LocalDiskBlobStore
 from msgd.db.engine import create_engine, create_sessionmaker, set_sessionmaker
 from msgd.logging import configure_logging
+from msgd.plugins import hooks as plugin_hooks
 from msgd.settings import Settings, get_settings
 
 logger = logging.getLogger("msgd.api")
@@ -90,6 +91,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Prefs limiter (D3, ENG-124): per-user budget for PUT /v1/prefs, keyed
     # ``user:{user_id}`` exactly like the read-state/search limiters.
     app.state.prefs_limiter_minute = RateLimiter(settings.prefs_rate_limit_per_minute, 60)
+    # Incoming-webhook limiters (ENG-161): the PUBLIC unauthenticated receiver is
+    # budgeted per hook (keyed by the sha256 of the path token) AND per client IP;
+    # both are checked in a dependency BEFORE any DB work, so an unknown-token
+    # flood from one host is 429'd without a single query.
+    app.state.hook_limiter_minute = RateLimiter(settings.hook_rate_limit_per_minute, 60)
+    app.state.hook_ip_limiter_minute = RateLimiter(settings.hook_rate_limit_per_ip_per_minute, 60)
     # Content-addressed blob store for file attachments (ENG-116, D8). One shared
     # instance rooted under the configured data dir; ``get_blob_store`` reads it.
     app.state.blob_store = LocalDiskBlobStore(root=settings.data_dir / "blobs")
@@ -115,7 +122,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(admin.router)
-    app.include_router(plugins.router)  # ENG-159: /v1/plugins (bots + bot tokens, owner/admin)
+    app.include_router(plugins.router)  # ENG-159/161: /v1/plugins (bots + tokens + hooks mgmt)
+    # ENG-161: the PUBLIC incoming-webhook receiver (capability URL, NO auth
+    # dependency — the path token is the credential; see msgd.plugins.hooks).
+    app.include_router(plugin_hooks.router)
     app.include_router(me.router)  # self-profile: GET/PATCH /v1/me (structurally self-only)
     app.include_router(events_upload.router)
     app.include_router(events_read.router)

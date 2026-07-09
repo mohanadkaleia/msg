@@ -81,6 +81,21 @@ class Settings(BaseSettings):
     # so it is budgeted like every other per-user write surface rather than left open.
     prefs_rate_limit_per_minute: int = 60
 
+    # --- Incoming webhooks (ENG-161, §10) -------------------------------------
+    # The public, UNAUTHENTICATED ``POST /v1/hooks/<token>`` receiver is budgeted
+    # per HOOK (keyed by the sha256 of the path token, so a hot integration is
+    # throttled individually) AND per client IP (so a flood of guesses at unknown
+    # tokens from one host is cut off before any DB lookup runs). Both buckets are
+    # checked BEFORE any DB work — an unknown-token flood costs no queries.
+    hook_rate_limit_per_minute: int = 60
+    hook_rate_limit_per_ip_per_minute: int = 120
+    # Request-body byte cap for the hook receiver, enforced with a streaming
+    # cap-and-abort read BEFORE JSON parsing. Deliberately well under the 64 KB
+    # single-event wire cap: the server-built ``message.created`` envelope adds
+    # its own bytes around the payload text, so a body that passes this cap can
+    # never be rejected later for event size.
+    hook_max_body_bytes: int = 16384  # 16 KB
+
     # --- Invites (D7) --------------------------------------------------------
     invite_default_ttl_seconds: int = 604800  # 7 days
     invite_max_ttl_seconds: int = 2592000  # 30 days

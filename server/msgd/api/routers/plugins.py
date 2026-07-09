@@ -34,8 +34,8 @@ from __future__ import annotations
 
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import func, select, update
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from msgd.api import problems
@@ -46,12 +46,17 @@ from msgd.api.schemas.plugins import (
     BotTokenInfo,
     BotTokenMintResponse,
     CreateBotRequest,
+    CreateHookRequest,
+    HookCreateResponse,
+    HookInfo,
+    HookListResponse,
     MintBotTokenRequest,
     Scope,
 )
 from msgd.auth.bot_tokens import KNOWN_SCOPES, create_bot_token
 from msgd.auth.context import AuthContext
-from msgd.auth.sessions import mint_or_reuse_device
+from msgd.auth.sessions import mint_or_reuse_device, utcnow
+from msgd.auth.tokens import mint_token
 from msgd.core.ids import new_user_id
 from msgd.core.payloads import (
     build_bot_installed_body,
@@ -61,7 +66,7 @@ from msgd.core.payloads import (
 )
 from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
-from msgd.db.models import BotToken, Device, Event, Stream, StreamMember, User
+from msgd.db.models import BotToken, Device, Event, IncomingWebhook, Stream, StreamMember, User
 from msgd.events.emit import emit_event
 from msgd.export.restore import UNUSABLE_PASSWORD_HASH
 
@@ -75,6 +80,7 @@ PluginsAuth = Annotated[AuthContext, Depends(require_role("owner", "admin"))]
 _NO_SUCH_BOT = "no such bot"
 _NO_SUCH_STREAM = "no such stream"
 _NO_SUCH_TOKEN = "no such token"
+_NO_SUCH_HOOK = "no such hook"
 
 
 async def _load_bot(db: AsyncSession, *, ctx: AuthContext, bot_user_id: str) -> User:
@@ -255,6 +261,38 @@ async def create_bot(req: CreateBotRequest, ctx: PluginsAuth, db: DbSession) -> 
     channels = [await _resolve_channel(db, ctx=ctx, stream_id=sid) for sid in requested]
     meta_stream_id = await _meta_stream_id(db, ctx.workspace_id)
 
+    # Steps 2–4 — the shared M5 provisioning path (also used by create_hook).
+    bot, _device = await _provision_bot_identity(
+        db,
+        ctx=ctx,
+        name=req.name,
+        scopes=sorted(set(req.scopes)),
+        channels=channels,
+        meta_stream_id=meta_stream_id,
+    )
+
+    await db.commit()
+    return await _bot_info(db, bot)
+
+
+async def _provision_bot_identity(
+    db: AsyncSession,
+    *,
+    ctx: AuthContext,
+    name: str,
+    scopes: list[Scope],
+    channels: list[Stream],
+    meta_stream_id: str,
+) -> tuple[User, Device]:
+    """Steps 2–4 of bot provisioning (identity + meta events + grants), no commit.
+
+    The ONE bot-creation path (ENG-159, reused verbatim by the ENG-161 hook
+    auto-provision): the ``users`` row + single device, then ``user.joined`` +
+    ``bot.installed`` into workspace-meta, then one ``channel.member_added``
+    per grant (§2.2-homed; the reducer materializes ``stream_members`` in this
+    same transaction). The caller resolves ``channels`` FIRST (uniform 404
+    before any write) and owns the commit.
+    """
     # Step 2 — the bot identity. Email is synthetic but workspace-unique by
     # construction (it embeds the fresh user id) and can never log in anyway
     # (the sentinel hash verifies nothing).
@@ -264,7 +302,7 @@ async def create_bot(req: CreateBotRequest, ctx: PluginsAuth, db: DbSession) -> 
         workspace_id=ctx.workspace_id,
         email=f"{bot_user_id}@bot.invalid",
         password_hash=UNUSABLE_PASSWORD_HASH,
-        display_name=req.name,
+        display_name=name,
         role="guest",
         is_bot=True,
     )
@@ -286,7 +324,7 @@ async def create_bot(req: CreateBotRequest, ctx: PluginsAuth, db: DbSession) -> 
             author_device_id=device.device_id,
             client_created_at=authored_at,
             user_id=bot_user_id,
-            display_name=req.name,
+            display_name=name,
         ),
     )
     await emit_event(
@@ -299,8 +337,8 @@ async def create_bot(req: CreateBotRequest, ctx: PluginsAuth, db: DbSession) -> 
             author_device_id=ctx.device_id,
             client_created_at=authored_at,
             bot_user_id=bot_user_id,
-            name=req.name,
-            scopes=sorted(set(req.scopes)),
+            name=name,
+            scopes=list(scopes),
         ),
     )
 
@@ -320,8 +358,7 @@ async def create_bot(req: CreateBotRequest, ctx: PluginsAuth, db: DbSession) -> 
             ),
         )
 
-    await db.commit()
-    return await _bot_info(db, bot)
+    return bot, device
 
 
 @router.get("/bots", response_model=BotListResponse)
@@ -475,4 +512,148 @@ async def revoke_bot_stream(
             user_id=bot.user_id,
         ),
     )
+    await db.commit()
+
+
+# --- incoming webhooks (ENG-161, M5-2) -----------------------------------------
+
+
+@router.post("/hooks", response_model=HookCreateResponse, status_code=201)
+async def create_hook(
+    req: CreateHookRequest, request: Request, ctx: PluginsAuth, db: DbSession
+) -> HookCreateResponse:
+    """Register an incoming webhook; return the capability URL exactly once.
+
+    One transaction, in order:
+
+    1. Resolve the target as a grantable CHANNEL in the caller's workspace
+       (uniform 404 for unknown/cross-workspace/DM/meta ids — the
+       ``_resolve_channel`` kind gate, before any write).
+    2. Pin the author bot. ``bot_user_id`` given → resolve it (uniform 404;
+       403 if deactivated — no new capability for a disabled principal, the
+       mint-token rule) and ensure a ``stream_members`` grant for the target
+       channel exists, emitting the event-sourced ``channel.member_added`` if
+       not. Omitted → auto-provision a bot named for the hook through the
+       SAME M5-1 creation path (``user.joined`` + ``bot.installed`` with
+       install scope ``events:write`` + the channel grant).
+    3. Mint the raw capability token (D2): store ONLY ``hash_token(raw)``;
+       embed the raw in the returned URL — the one and only time it exists
+       outside the caller's hands. The URL base is derived from the request
+       exactly as ``create_invite`` builds the join URL (the ENG-154
+       Host-header caveat applies identically and is solved by the same
+       deployment guidance).
+    """
+    channel = await _resolve_channel(db, ctx=ctx, stream_id=req.stream_id)
+    meta_stream_id = await _meta_stream_id(db, ctx.workspace_id)
+
+    if req.bot_user_id is not None:
+        bot = await _load_bot(db, ctx=ctx, bot_user_id=req.bot_user_id)
+        if bot.deactivated_at is not None:
+            raise problems.forbidden("bot is deactivated")
+        member = await db.get(StreamMember, (channel.stream_id, bot.user_id))
+        if member is None:
+            home = _membership_home(channel, meta_stream_id)
+            await emit_event(
+                db,
+                home_stream_id=home,
+                body=build_channel_member_added_body(
+                    workspace_id=ctx.workspace_id,
+                    stream_id=home,
+                    author_user_id=ctx.user_id,
+                    author_device_id=ctx.device_id,
+                    client_created_at=now_rfc3339(),
+                    channel_stream_id=channel.stream_id,
+                    user_id=bot.user_id,
+                ),
+            )
+    else:
+        # Auto-provision: a dedicated bot named for the hook, whose only verb
+        # is writing events (a hook never reads anything).
+        bot, _device = await _provision_bot_identity(
+            db,
+            ctx=ctx,
+            name=req.name,
+            scopes=["events:write"],
+            channels=[channel],
+            meta_stream_id=meta_stream_id,
+        )
+
+    raw, token_hash = mint_token()
+    hook = IncomingWebhook(
+        token_hash=token_hash,
+        workspace_id=ctx.workspace_id,
+        stream_id=channel.stream_id,
+        bot_user_id=bot.user_id,
+        name=req.name,
+        created_by=ctx.user_id,
+        created_at=utcnow(),
+    )
+    db.add(hook)
+    await db.commit()
+
+    # Base-URL derivation mirrors create_invite (incl. the ENG-154 caveat).
+    host = request.headers.get("host") or (
+        request.url.netloc if request.url.netloc else "localhost"
+    )
+    url = f"{request.url.scheme}://{host}/v1/hooks/{raw}"
+    return HookCreateResponse(
+        url=url,
+        id=token_hash,
+        stream_id=channel.stream_id,
+        bot_user_id=bot.user_id,
+        name=req.name,
+        created_at=hook.created_at,
+    )
+
+
+@router.get("/hooks", response_model=HookListResponse)
+async def list_hooks(ctx: PluginsAuth, db: DbSession) -> HookListResponse:
+    """List the workspace's hooks by hash HANDLE — the capability URL never again.
+
+    ``id`` is the sha256 ``token_hash`` (the revoke handle, the invites-list
+    precedent) — the raw token was embedded in the create-time URL exactly once
+    and never persisted, so there is nothing here to leak. Workspace-scoped.
+    """
+    rows = await db.execute(
+        select(IncomingWebhook)
+        .where(IncomingWebhook.workspace_id == ctx.workspace_id)
+        .order_by(IncomingWebhook.created_at, IncomingWebhook.token_hash)
+    )
+    return HookListResponse(
+        hooks=[
+            HookInfo(
+                id=hook.token_hash,
+                stream_id=hook.stream_id,
+                bot_user_id=hook.bot_user_id,
+                name=hook.name,
+                created_by=hook.created_by,
+                created_at=hook.created_at,
+                disabled=hook.disabled_at is not None,
+            )
+            for hook in rows.scalars()
+        ]
+    )
+
+
+@router.delete("/hooks/{hook_id}", status_code=204)
+async def revoke_hook(hook_id: str, ctx: PluginsAuth, db: DbSession) -> None:
+    """Revoke a hook by its hash handle — HARD delete, uniform 404 (D13).
+
+    ``DELETE ... WHERE token_hash = :id AND workspace_id = :ws RETURNING``. No
+    row → the uniform ``not_found``: an unknown handle, a cross-workspace hook,
+    and an already-revoked one all return the IDENTICAL body. The delete is
+    HARD (the invites discipline) — a subsequent ``POST /v1/hooks/<raw>`` then
+    misses the lookup and returns the same uniform 404 as a never-existed
+    token, so revocation is indistinguishable from "never existed".
+    """
+    deleted = await db.execute(
+        delete(IncomingWebhook)
+        .where(
+            IncomingWebhook.token_hash == hook_id,
+            IncomingWebhook.workspace_id == ctx.workspace_id,
+        )
+        .returning(IncomingWebhook.token_hash)
+    )
+    if deleted.first() is None:
+        raise problems.not_found(_NO_SUCH_HOOK)
     await db.commit()

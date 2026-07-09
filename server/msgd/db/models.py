@@ -411,3 +411,43 @@ class BotToken(Base):
     )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class IncomingWebhook(Base):
+    """An incoming-webhook registration (M5, ENG-161 — TDD §10).
+
+    A hook is a CAPABILITY URL: ``POST /v1/hooks/<raw_token>`` needs no other
+    credential, so the token discipline is the strictest we have (D2, the
+    ``sessions``/``invites``/``bot_tokens`` pattern): the PK is the sha256 hex
+    of the raw ``secrets.token_urlsafe(32)`` path token, which is embedded in
+    the URL returned exactly once at create time and never persisted.
+
+    The row pins the ONLY two authorities the public receiver ever exercises —
+    ``bot_user_id`` (the fixed author; a bot ``users`` row from the M5-1
+    provisioning path) and ``stream_id`` (the fixed target channel). An
+    external payload can choose neither: the receiver builds the
+    ``message.created`` body server-side from these columns and runs it
+    through the same ``validate_event`` pipeline as every client upload.
+
+    ``disabled_at`` is a soft kill-switch: the receiver folds a disabled hook
+    into the SAME uniform 404 as a never-existed token (no oracle). The revoke
+    endpoint hard-deletes the row (the invites discipline) — revoked is
+    indistinguishable from never-existed.
+    """
+
+    __tablename__ = "incoming_webhooks"
+    # Non-PK lookup path: the workspace-scoped management listing.
+    __table_args__ = (Index("ix_incoming_webhooks_workspace_id", "workspace_id"),)
+
+    token_hash: Mapped[str] = mapped_column(  # sha256 of the raw path token
+        Text, primary_key=True
+    )
+    workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
+    stream_id: Mapped[str] = mapped_column(Text, ForeignKey("streams.stream_id"), nullable=False)
+    bot_user_id: Mapped[str] = mapped_column(Text, ForeignKey("users.user_id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

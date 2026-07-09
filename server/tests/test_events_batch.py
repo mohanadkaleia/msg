@@ -201,14 +201,17 @@ async def test_ws_seam_invoked_once_per_new_accept(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """publish_event fires once per NEWLY accepted event, never on re-accepts."""
-    import msgd.api.routers.events_upload as upload_module
+    # ENG-161: the post-commit publish call site lives in the shared write
+    # helper (msgd.events.write.store_event), which both the batch router and
+    # the hook receiver run — patch it there.
+    import msgd.events.write as write_module
 
     published: list[Envelope] = []
 
     async def spy(envelope: Envelope) -> None:
         published.append(envelope)
 
-    monkeypatch.setattr(upload_module, "publish_event", spy)
+    monkeypatch.setattr(write_module, "publish_event", spy)
 
     owner = await do_setup(client)
     channel = await bootstrap_channel(client, db_session, owner)

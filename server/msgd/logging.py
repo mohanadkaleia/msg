@@ -44,6 +44,16 @@ _QS_TOKEN_RE = re.compile(r"(?i)(token=)[^\s\"'&]+")
 # so require >=16 tchars after `bearer,` to avoid nuking a literal "bearer, foo".
 _WS_BEARER_RE = re.compile(r"(?i)(bearer\s*,\s*)[A-Za-z0-9\-_]{16,}")
 
+# ENG-161: the incoming-webhook capability token necessarily rides in the URL
+# PATH (`POST /v1/hooks/<raw_token>`), so uvicorn's access log — which prints
+# the request line — would otherwise persist the bearer-equivalent credential.
+# This scrub is the compensating control: redact the path segment after
+# `/v1/hooks/`. Same url-safe-base64 alphabet + >=16-char floor as the WS scrub
+# so prose mentioning the literal route (`/v1/hooks/{hook_token}`) is untouched
+# (`{` is not in the token alphabet). The management surface lives under
+# `/v1/plugins/hooks` and carries no raw token, so it never matches meaningfully.
+_HOOK_PATH_RE = re.compile(r"(?i)(/v1/hooks/)[A-Za-z0-9\-_]{16,}")
+
 
 class RedactSecretsFilter(logging.Filter):
     """Redact sensitive ``extra=`` keys AND any ``token=…`` in the rendered message.
@@ -59,11 +69,13 @@ class RedactSecretsFilter(logging.Filter):
                 record.__dict__[key] = "[REDACTED]"
         # Scrub the fully-rendered message (``getMessage`` applies ``%``-args), then
         # pin it as ``msg`` with empty ``args`` so the redaction survives formatting.
-        # Chain both scrubs: the query-string ``token=…`` shape and the WS
-        # ``Sec-WebSocket-Protocol: bearer, <token>`` subprotocol-header shape.
+        # Chain the scrubs: the query-string ``token=…`` shape, the WS
+        # ``Sec-WebSocket-Protocol: bearer, <token>`` subprotocol-header shape,
+        # and the incoming-webhook ``/v1/hooks/<token>`` request-path shape.
         message = record.getMessage()
         scrubbed = _QS_TOKEN_RE.sub(r"\1[REDACTED]", message)
         scrubbed = _WS_BEARER_RE.sub(r"\1[REDACTED]", scrubbed)
+        scrubbed = _HOOK_PATH_RE.sub(r"\1[REDACTED]", scrubbed)
         if scrubbed != message:
             record.msg = scrubbed
             record.args = ()
