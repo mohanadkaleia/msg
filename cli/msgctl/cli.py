@@ -97,9 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
     # ENG-60: `verify` — append-only block (ENG-58 adds `project` in parallel; keep both
     # additions surgical so the two tickets conflict on at most this one file, trivially).
     verify_parser = subparsers.add_parser(
-        "verify", help="re-hash every event and check per-stream sequence contiguity"
+        "verify",
+        help=(
+            "re-hash every event and check per-stream sequence contiguity "
+            "(live workspace or §9 export bundle)"
+        ),
     )
-    verify_parser.add_argument("dir", help="workspace directory")
+    verify_parser.add_argument("dir", help="workspace or export-bundle directory")
     verify_parser.add_argument(
         "--json", action="store_true", help="emit one machine-readable JSON object"
     )
@@ -293,11 +297,13 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    # Thin adapter (Ruling 10): verify_workspace does the whole read-only walk and returns
-    # a report. A workspace with findings is a *successful run that found problems*, so the
-    # findings-based exit code (0/1) is returned directly — only usage/IO raises (UsageError
-    # -> exit 2 via main's `except MsgctlError`).
-    report = verify.verify_workspace(args.dir, verbose=args.verbose)
+    # Thin adapter (Ruling 10): verify_path dispatches on the target's marker file
+    # (manifest.json => §9 export bundle [ENG-156, M4-2], workspace.json => live
+    # workspace) and does the whole read-only walk. A target with findings is a
+    # *successful run that found problems*, so the findings-based exit code (0/1) is
+    # returned directly — only usage/IO raises (UsageError -> exit 2 via main's
+    # `except MsgctlError`).
+    report = verify.verify_path(args.dir, verbose=args.verbose)
     if args.json:
         print(verify.format_json(report))
     else:
