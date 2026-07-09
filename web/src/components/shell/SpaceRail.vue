@@ -1,9 +1,11 @@
 <script setup lang="ts">
-// SpaceRail — ENG-136 "Ranin" left rail (PR-3). A slim (~56px) vertical rail that
-// anchors the shell: a rounded-square "R" brand logo at the top, then the workspace
-// stack — the ONE real workspace as an active square (initial, `bg-strong` fill + an
-// accent indicator dot on its right edge) plus SCAFFOLD placeholder squares and a
-// disabled "+" add button (multi-workspace is not built yet). At the bottom sit the
+// SpaceRail — ENG-136 "Ranin" left rail (PR-3; ENG-152 PR-b cleanup). A slim
+// (~56px) vertical rail that anchors the shell: a rounded-square "R" brand logo at
+// the top, then the ONE real workspace as an active square (initial, `bg-strong`
+// fill + an accent indicator dot on its right edge). The former SCAFFOLD
+// placeholder squares ("A"/"B") and the disabled "+" add button were REMOVED
+// (ENG-152 user feedback: they read as broken; multi-workspace has no real seam
+// yet — reintroduce a functional "+" when one exists). At the bottom sit the
 // GLOBAL sync indicator (relocated here so it lives once, workspace-wide), the theme
 // toggle, and a settings gear whose popover holds the sign-out affordance.
 //
@@ -32,9 +34,6 @@ const badgeTone = computed<'online' | 'syncing' | 'offline'>(() => {
   if (tone.value === 'offline') return 'offline'
   return 'syncing'
 })
-
-/** SCAFFOLD: two muted placeholder workspace squares (multi-workspace stub). */
-const PLACEHOLDERS = ['A', 'B'] as const
 
 /** The settings gear popover (holds sign-out). */
 const menuOpen = ref(false)
@@ -79,27 +78,6 @@ function onLogout(): void {
           class="absolute -right-1.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-accent"
         />
       </div>
-
-      <!-- SCAFFOLD: disabled placeholder workspaces (non-clickable). -->
-      <div
-        v-for="p in PLACEHOLDERS"
-        :key="p"
-        aria-hidden="true"
-        class="grid h-9 w-9 cursor-not-allowed select-none place-items-center rounded-md bg-surface text-[13px] font-medium text-muted opacity-50 ring-1 ring-inset ring-subtle"
-      >
-        {{ p }}
-      </div>
-
-      <!-- SCAFFOLD: add a workspace (disabled). -->
-      <button
-        type="button"
-        disabled
-        class="grid h-9 w-9 cursor-not-allowed place-items-center rounded-md text-muted ring-1 ring-inset ring-subtle disabled:opacity-50"
-        aria-label="Add a workspace (coming soon)"
-        title="Add a workspace (coming soon)"
-      >
-        <Icon name="plus" :size="18" />
-      </button>
     </div>
 
     <div class="flex-1" />

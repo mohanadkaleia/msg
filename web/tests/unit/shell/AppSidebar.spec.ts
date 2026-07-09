@@ -11,6 +11,7 @@ import AppSidebar from '../../../src/components/shell/AppSidebar.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
 import { useAuthStore } from '../../../src/stores/auth'
 import { usePresenceStore } from '../../../src/stores/presence'
+import { useSyncStore } from '../../../src/stores/sync'
 import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
 import type { PresenceStatus } from '../../../src/worker'
@@ -195,10 +196,15 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
 
-    // Header wordmark is the BRAND, not the workspace name.
+    // Header wordmark is the BRAND, not the workspace name — demoted to a small
+    // muted mark (ENG-152) so the workspace pill is the primary identity.
     expect(wrapper.text()).toContain('Ranin')
-    // The workspace selector pill preserves the open-switcher affordance.
+    expect(wrapper.find('span.text-muted.uppercase').text()).toBe('Ranin')
+    // The workspace selector pill preserves the open-switcher affordance and
+    // carries the "Local workspace" sub-label (ENG-152 hierarchy).
     const pill = wrapper.get('[data-testid="open-switcher"]')
+    expect(pill.text()).toContain('msg')
+    expect(pill.text()).toContain('Local workspace')
     await pill.trigger('click')
     expect(wrapper.emitted('openSwitcher')).toHaveLength(1)
   })
@@ -243,6 +249,25 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     const wrapper = await mountSidebar()
 
     expect(wrapper.find('[data-testid="user-card"]').exists()).toBe(true)
+  })
+
+  it('shows a sync-derived local-first note in the footer (ENG-152)', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const wrapper = await mountSidebar()
+    const sync = useSyncStore()
+
+    sync.status = { state: 'live', online: true }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="local-first-note"]').text()).toBe('Synced · Local')
+
+    sync.status = { state: 'syncing', online: true }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="local-first-note"]').text()).toBe('Syncing… · Local')
+
+    sync.status = { state: 'degraded', online: false }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="local-first-note"]').text()).toBe('Offline · Local')
   })
 
   it('labels a DM row with the OTHER participant’s name + a live presence dot (ENG-149)', async () => {

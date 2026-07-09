@@ -8,10 +8,30 @@
 // REAL: `compose` maps to "new direct message" upstream (AppShell opens the New DM
 // dialog). SCAFFOLD: the bell (notifications) and `more` menu are placeholders — the
 // bell shows a static accent unread dot; both no-op on click for now.
+//
+// ENG-152 PR-b: an EXPLICIT sync-state pill sits on the right (`topbar-sync`) —
+// the local-first identity signal. It is a pure read of the ENG-82 sync store
+// (`tone` + `label`); the worker stays the single source of truth. The store's
+// `SyncStatus` exposes no pending-outbox count, so the pill renders exactly
+// Synced / Syncing… / Offline — no invented data.
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
+
+import { useSyncStore } from '../../stores/sync'
 import Icon from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
 
 const emit = defineEmits<{ search: []; compose: [] }>()
+
+const sync = useSyncStore()
+const { tone, label } = storeToRefs(sync)
+
+/** Pill copy: local-first framing — "Synced" when live, the store label otherwise. */
+const syncText = computed(() => {
+  if (tone.value === 'live') return 'Synced'
+  if (tone.value === 'offline') return 'Offline'
+  return label.value // 'Syncing…' / 'Connecting…' / 'Idle'
+})
 </script>
 
 <template>
@@ -31,6 +51,29 @@ const emit = defineEmits<{ search: []; compose: [] }>()
           >⌘K</kbd
         >
       </button>
+    </div>
+
+    <!-- Explicit sync-state pill (ENG-152) — the local-first signal in the bar. -->
+    <div
+      class="flex shrink-0 items-center gap-1.5 rounded-full border border-subtle px-2.5 py-1 text-[11px] text-secondary"
+      data-testid="topbar-sync"
+      :data-tone="tone"
+      :title="label"
+    >
+      <Icon
+        v-if="tone === 'syncing'"
+        name="refresh"
+        :size="12"
+        class="shrink-0 animate-spin text-accent"
+        aria-hidden="true"
+      />
+      <span
+        v-else
+        aria-hidden="true"
+        class="h-1.5 w-1.5 shrink-0 rounded-full"
+        :class="tone === 'live' ? 'bg-success' : 'bg-danger'"
+      />
+      <span>{{ syncText }}</span>
     </div>
 
     <!-- Right-aligned actions. -->

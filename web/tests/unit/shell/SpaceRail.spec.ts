@@ -1,7 +1,9 @@
-// tests/unit/shell/SpaceRail.spec.ts — ENG-136 "Ranin" left rail (PR-B). Asserts
-// the rail landmark, the neutral workspace glyph, the relocated GLOBAL sync
-// indicator (single `sync-indicator` testid, tone-driven from the sync store), and
-// the account sign-out affordance.
+// tests/unit/shell/SpaceRail.spec.ts — ENG-136 "Ranin" left rail (PR-B; ENG-152
+// PR-b cleanup). Asserts the rail landmark, the neutral workspace glyph, the
+// relocated GLOBAL sync indicator (single `sync-indicator` testid, tone-driven
+// from the sync store, ALWAYS titled so the dot is never mysterious), the account
+// sign-out affordance, and — ENG-152 — that NO placeholder/disabled workspace
+// squares render (only the one real workspace square).
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -62,6 +64,34 @@ describe('SpaceRail (ENG-136 PR-B)', () => {
     sync.status = { state: 'degraded', online: false }
     await wrapper.vm.$nextTick()
     expect(wrapper.get('[data-testid="sync-indicator"]').attributes('data-tone')).toBe('offline')
+  })
+
+  it('titles the sync dot with the store label — never an unexplained dot (ENG-152)', async () => {
+    const wrapper = mountRail()
+    const sync = useSyncStore()
+
+    sync.status = { state: 'live', online: true }
+    await wrapper.vm.$nextTick()
+    const dot = wrapper.get('[data-testid="sync-indicator"]')
+    expect(dot.attributes('title')).toBe('Connected')
+    expect(dot.attributes('aria-label')).toBe('Connection: Connected')
+
+    sync.status = { state: 'degraded', online: false }
+    await wrapper.vm.$nextTick()
+    expect(dot.attributes('title')).toBe('Offline')
+  })
+
+  it('renders NO placeholder/disabled workspace squares — only the real one (ENG-152)', () => {
+    const wrapper = mountRail()
+    // Exactly one workspace square: the real, active one.
+    expect(wrapper.findAll('button[aria-current="true"]')).toHaveLength(1)
+    // The scaffold "A"/"B" squares and the disabled add-"+" are gone.
+    expect(wrapper.text()).not.toContain('A')
+    expect(wrapper.text()).not.toContain('B')
+    expect(wrapper.find('button[disabled]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="Add a workspace (coming soon)"]').exists()).toBe(false)
+    expect(wrapper.find('.cursor-not-allowed').exists()).toBe(false)
+    expect(wrapper.find('svg.lucide-plus').exists()).toBe(false)
   })
 
   it('emits logout from the settings gear popover', async () => {

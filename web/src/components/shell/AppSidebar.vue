@@ -17,9 +17,14 @@
 // SpaceRail (once, workspace-wide), NOT here — keeping `sync-indicator` unique.
 //
 // NAMING (flag): the header wordmark is the product BRAND "Ranin" (a `BRAND`
-// constant, one-line to reverse), NOT the workspace name. The user asked for a
-// working-name header earlier, then "follow the pic" which shows "Ranin" — so we
-// show "Ranin"; reversing to the workspace name is a single edit here.
+// constant, one-line to reverse), NOT the workspace name. ENG-152 PR-b demotes it
+// to a small, muted, uppercase app-brand mark so the WORKSPACE pill below (name +
+// "Local workspace" sub-label) is the clear primary identity — "Ranin" must not
+// read as a second workspace.
+//
+// ENG-152 PR-b: the footer carries a one-line local-first note (`local-first-note`)
+// under the UserCard — sync-store-derived ("Synced · Local" when live, the store
+// label otherwise), reinforcing the local-first identity without inventing data.
 //
 // SECURITY: stream names + the user's display name are other users' input —
 // rendered via text interpolation only.
@@ -29,6 +34,7 @@ import { storeToRefs } from 'pinia'
 import { dmDisplayName, dmOtherUserId } from '../../lib/dm'
 import { useAuthStore } from '../../stores/auth'
 import { usePresenceStore } from '../../stores/presence'
+import { useSyncStore } from '../../stores/sync'
 import { useWorkspaceStore, type SidebarStream } from '../../stores/workspace'
 import Icon from '../ui/Icon.vue'
 import NavSection from '../ui/NavSection.vue'
@@ -59,7 +65,15 @@ const emit = defineEmits<{ openSwitcher: []; selectView: [view: ActiveView] }>()
 const workspace = useWorkspaceStore()
 const auth = useAuthStore()
 const presence = usePresenceStore()
+const sync = useSyncStore()
 const { channels, dms, directory, selectedStreamId } = storeToRefs(workspace)
+
+/** Footer local-first note — sync-store-derived, never invented (ENG-152). */
+const localFirstNote = computed(() => {
+  if (sync.tone === 'live') return 'Synced · Local'
+  if (sync.tone === 'offline') return 'Offline · Local'
+  return `${sync.label} · Local` // 'Syncing… · Local' / 'Connecting… · Local'
+})
 
 /** Which modal is open (ENG-104). `settings` also carries the target channel. */
 const showCreateChannel = ref(false)
@@ -136,9 +150,13 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
     aria-label="Channels and direct messages"
     class="flex h-full w-64 flex-col border-r border-subtle bg-surface"
   >
-    <!-- Header: "Ranin" wordmark + a collapse affordance (SCAFFOLD, no-op). -->
+    <!-- Header: the app-brand mark (small, muted, clearly secondary — the
+         workspace pill below is the primary identity) + a collapse affordance
+         (SCAFFOLD, no-op). -->
     <div class="flex items-center justify-between px-3 py-3">
-      <span class="truncate text-sm font-semibold text-primary">{{ BRAND }}</span>
+      <span class="truncate text-[11px] font-semibold uppercase tracking-wider text-muted">{{
+        BRAND
+      }}</span>
       <button
         type="button"
         class="grid h-7 w-7 place-items-center rounded text-muted transition-colors hover:bg-surface-hover hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -327,9 +345,13 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
       </div>
     </div>
 
-    <!-- Pinned footer: the signed-in user card with a REAL presence dot. -->
+    <!-- Pinned footer: the signed-in user card with a REAL presence dot, plus a
+         one-line local-first note (sync-store-derived, ENG-152). -->
     <div class="border-t border-subtle p-2">
       <UserCard :name="myName" :status="myStatus" />
+      <p class="px-2 pt-1 text-[11px] text-muted" data-testid="local-first-note">
+        {{ localFirstNote }}
+      </p>
     </div>
   </aside>
 
