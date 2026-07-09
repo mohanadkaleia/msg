@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from msgd.core.envelope import Body, Envelope, ServerMetadata
 from msgd.core.hashing import hash_event
-from msgd.core.time import now_rfc3339
+from msgd.core.time import to_rfc3339
 from msgd.db.models import Event, Stream
 from msgd.projections.apply import apply_projection
 
@@ -131,14 +131,7 @@ async def insert_event(db: AsyncSession, *, stream_id: str, body: dict[str, Any]
         signature=None,
         server=ServerMetadata(
             server_sequence=server_sequence,
-            server_received_at=_format_rfc3339(received_at),
+            server_received_at=to_rfc3339(received_at),
             payload_redacted=False,
         ),
     )
-
-
-def _format_rfc3339(moment: datetime) -> str:
-    """Render a server timestamp as RFC 3339 (millisecond ``Z``), matching D1."""
-    if moment.tzinfo is None:
-        return now_rfc3339()
-    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
