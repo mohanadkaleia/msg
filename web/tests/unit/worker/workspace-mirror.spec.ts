@@ -3,8 +3,8 @@
 // fakes (no fs). The disciplines under test are msgctl's, precisely:
 // registration-before-write, the `server_received_at[:7]` month split,
 // log-derived resume (never a double-append), and gapless-append fail-closed.
-// The fs-backed end-to-end proof (`msgctl verify` exit 0) lives in
-// tests/integration/m6-workspace-mirror.spec.ts.
+// The fs-backed end-to-end proof (`msgctl verify` exit 0) lives in the M6
+// exit gate, tests/integration/m6-exit-gate.spec.ts (test_m6_exit_gate).
 
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 

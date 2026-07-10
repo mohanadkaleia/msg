@@ -163,12 +163,12 @@ jobs:
         working-directory: web
         run: pnpm install --frozen-lockfile
 
-      # ENG-167 (M6-3): the headless workspace-mirror gate
-      # (tests/integration/m6-workspace-mirror.spec.ts, part of `pnpm test`)
+      # ENG-169 (M6-6): the M6 exit gate
+      # (tests/integration/m6-exit-gate.spec.ts, part of `pnpm test`)
       # spawns the REAL `msgctl verify` via `uv run --project <repo>`, so this
       # Node job also needs uv. The spec HARD-FAILS under CI when uv is absent
       # (it must never silently skip), so removing this step turns the job red.
-      - name: Set up uv (for msgctl verify in the M6 mirror gate)
+      - name: Set up uv (for msgctl verify in the M6 exit gate)
         uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           python-version: "3.12"
@@ -203,16 +203,19 @@ jobs:
         working-directory: web
         run: pnpm test tests/unit/worker/invariant5-pending-settling.property.spec.ts tests/unit/worker/invariant6-client-rebuild.property.spec.ts
 
-      # ENG-167 (M6-3): the headless workspace-mirror gate, re-run as its own
-      # named signal (same pattern as the invariant suite above — the file also
-      # runs inside `pnpm test`). Drives the REAL SyncEngine+WorkerCore in
-      # full-mirror mode (SqliteDb + Node-fs seams) into a temp dir, then spawns
-      # the REAL `msgctl verify --json` (via the uv step above) and asserts
-      # exit 0 — plus rebuild-from-disk ≡ incremental and crash-resume
-      # convergence. §12 invariant 6 EXTENDED to the on-disk NDJSON log.
-      - name: M6 workspace-mirror gate (msgctl verify exit 0)
+      # ENG-169 (M6-6): test_m6_exit_gate — the single permanent M6 milestone
+      # check (§12 invariant-9, §13), re-run as its own named signal (same
+      # pattern as the invariant suite above — the file also runs inside
+      # `pnpm test`). Consolidates the M6-3 workspace-mirror gate + the M6-4
+      # offline gate: drives the REAL SyncEngine+WorkerCore in full-mirror mode
+      # (SqliteDb + Node-fs seams + SecretStore) into a temp dir and asserts
+      # `msgctl verify --json` exit 0 (via the uv step above), true-offline
+      # reads/FTS5-search/queued send, reconnect drain → still verify-green,
+      # rebuild-from-disk ≡ incremental, crash-resume + torn-tail repair, and
+      # the token-absence byte-scan.
+      - name: M6 exit gate (test_m6_exit_gate — msgctl verify exit 0)
         working-directory: web
-        run: pnpm test tests/integration/m6-workspace-mirror.spec.ts
+        run: pnpm test tests/integration/m6-exit-gate.spec.ts
 
       - name: Build
         working-directory: web

@@ -31,11 +31,11 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    // tests/integration holds the M6-3 headless workspace-mirror gate (ENG-167):
-    // Node-environment specs that drive the real SyncEngine/WorkerCore against a
-    // temp dir and spawn `msgctl verify` (needs `uv`; the spec self-skips where
+    // tests/integration holds the M6 exit gate (test_m6_exit_gate, ENG-169): a
+    // Node-environment spec that drives the real SyncEngine/WorkerCore against a
+    // temp dir and spawns `msgctl verify` (needs `uv`; the spec self-skips where
     // uv is absent and HARD-FAILS under CI so the gate cannot silently vanish —
-    // see tests/integration/m6-workspace-mirror.spec.ts).
+    // see tests/integration/m6-exit-gate.spec.ts).
     include: ['tests/unit/**/*.spec.ts', 'tests/integration/**/*.spec.ts'],
   },
 })
