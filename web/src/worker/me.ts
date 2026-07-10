@@ -32,10 +32,18 @@ export async function getMe(http: HttpClient): Promise<MeProfile> {
 }
 
 /**
- * `me.update` → `PATCH /v1/me`. Structurally self-only: the body carries ONLY
- * `display_name` (no user_id exists on this surface); the response is the
- * updated profile. A 422 (empty/oversized name) surfaces as `validation-error`.
+ * `me.update` → `PATCH /v1/me`. Structurally self-only (no user_id exists on
+ * this surface); the response is the updated profile. SUBSET semantics
+ * (ENG-164): the body carries ONLY the params the caller actually set —
+ * `undefined` fields are omitted (untouched server-side) while an explicit
+ * `null` is sent (it CLEARS title/description/status). A 422 (out-of-bounds
+ * field) surfaces as `validation-error`.
  */
 export async function updateMe(http: HttpClient, params: MeUpdateParams): Promise<MeProfile> {
-  return unwrap(await http.patch<MeProfile>('/v1/me', { display_name: params.display_name }))
+  const body: Record<string, unknown> = {}
+  if (params.display_name !== undefined) body['display_name'] = params.display_name
+  if (params.title !== undefined) body['title'] = params.title
+  if (params.description !== undefined) body['description'] = params.description
+  if (params.status !== undefined) body['status'] = params.status
+  return unwrap(await http.patch<MeProfile>('/v1/me', body))
 }

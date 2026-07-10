@@ -513,6 +513,17 @@ async def import_workspace(
                     deactivated_at=_opt_ts(
                         u.get("deactivated_at"), field="users.json deactivated_at"
                     ),
+                    # ENG-164 richer-profile columns (nullable) — restored
+                    # verbatim so the users row matches the imported meta log's
+                    # last ``user.profile_updated``. ``.get`` keeps pre-ENG-164
+                    # bundles importable (absent → None).
+                    title=u.get("title"),
+                    description=u.get("description"),
+                    status_emoji=u.get("status_emoji"),
+                    status_text=u.get("status_text"),
+                    status_expires_at=_opt_ts(
+                        u.get("status_expires_at"), field="users.json status_expires_at"
+                    ),
                 )
             )
         except KeyError as exc:

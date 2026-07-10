@@ -15,9 +15,11 @@ from msgd.core.payloads import (
     ChannelCreatedV1,
     DmCreatedV1,
     UserJoinedV1,
+    UserProfileUpdatedV1,
     WorkspaceCreatedV1,
     build_dm_created_body,
     build_user_joined_body,
+    build_user_profile_updated_body,
     build_workspace_created_body,
     get_payload_model,
 )
@@ -97,6 +99,51 @@ def test_build_workspace_created_body_hash_discipline() -> None:
     event_hash = hash_event(body)
     # Deterministic over the verbatim stored dict (raw-hash discipline).
     assert hash_event(body) == event_hash
+    env = Envelope(body=Body(**body), event_hash=event_hash)
+    assert verify_hash(env)
+
+
+def test_user_profile_updated_back_compat_and_resulting_state() -> None:
+    """ENG-164: the extended model still accepts the old display_name-only shape,
+    and the builder emits the RESULTING state (explicit nulls = cleared) with the
+    raw-hash discipline intact."""
+    # Back-compat: a pre-ENG-164 event (user_id + display_name only) validates,
+    # and the new typed fields default to None.
+    old = UserProfileUpdatedV1.model_validate(
+        {"user_id": ids.new_user_id(), "display_name": "Old Shape"}
+    )
+    assert old.display_name == "Old Shape"
+    assert old.title is None and old.status_emoji is None
+
+    ws = ids.new_workspace_id()
+    stream = ids.new_stream_id()
+    user = ids.new_user_id()
+    body = build_user_profile_updated_body(
+        workspace_id=ws,
+        stream_id=stream,
+        author_user_id=user,  # self-authored, like user.joined
+        author_device_id=ids.new_device_id(),
+        client_created_at=now_rfc3339(),
+        user_id=user,
+        display_name="Dana",
+        title="Agent",
+        status_emoji="👽",
+        status_text="Investigating",
+        status_expires_at="2026-07-09T12:00:00.000Z",
+    )
+    assert body["type"] == "user.profile_updated"
+    assert body["author_user_id"] == user
+    # Resulting state: set fields carry values, unset fields are EXPLICIT nulls.
+    assert body["payload"] == {
+        "user_id": user,
+        "display_name": "Dana",
+        "title": "Agent",
+        "description": None,
+        "status_emoji": "👽",
+        "status_text": "Investigating",
+        "status_expires_at": "2026-07-09T12:00:00.000Z",
+    }
+    event_hash = hash_event(body)
     env = Envelope(body=Body(**body), event_hash=event_hash)
     assert verify_hash(env)
 

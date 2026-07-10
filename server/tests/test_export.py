@@ -136,6 +136,12 @@ async def _seed(db: AsyncSession, tmp_path: Path) -> Seeded:
             display_name="Alice",
             role="owner",
             is_bot=False,
+            # ENG-164 richer-profile columns must round-trip through the bundle.
+            title="Founder",
+            description="Runs Acme.",
+            status_emoji="🚀",
+            status_text="shipping",
+            status_expires_at=_JULY,
         )
     )
     db.add(
@@ -369,8 +375,18 @@ async def test_bundle_layout_manifest_and_canonical_lines(
         "role": "owner",
         "is_bot": False,
         "deactivated_at": None,
+        # ENG-164 richer profile — snapshotted verbatim (timestamp via _opt_rfc3339).
+        "title": "Founder",
+        "description": "Runs Acme.",
+        "status_emoji": "🚀",
+        "status_text": "shipping",
+        "status_expires_at": "2026-07-01T09:30:00.000Z",
     }
+    # Bob has no profile set → the new columns snapshot as null.
     assert users[1]["deactivated_at"] == "2026-07-01T09:30:00.000Z"
+    assert users[1]["title"] is None
+    assert users[1]["status_emoji"] is None
+    assert users[1]["status_expires_at"] is None
 
     # No secret material anywhere in the bundle (password hashes, key names).
     for path in dest.rglob("*"):

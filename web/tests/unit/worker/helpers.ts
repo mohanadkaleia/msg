@@ -673,8 +673,18 @@ export class FakeSyncServer {
     return { ok: true, value: { ...this.meProfile } }
   }
 
-  /** `PATCH /v1/me` — apply `display_name` to the seeded profile and echo it. */
-  respondPatchMe(body: { display_name?: string }): ApiResult<MeProfile> {
+  /**
+   * `PATCH /v1/me` — apply the SUBSET body to the seeded profile and echo it
+   * (mirrors routers/me.py ENG-164 semantics: absent = untouched, explicit
+   * `null` clears, `status` replaces the trio as a unit; `clear_after` becomes
+   * a future absolute expiry).
+   */
+  respondPatchMe(body: {
+    display_name?: string
+    title?: string | null
+    description?: string | null
+    status?: { emoji?: string | null; text?: string | null; clear_after?: string } | null
+  }): ApiResult<MeProfile> {
     if (this.meError) return { ok: false, error: this.meError }
     if (!this.meProfile) {
       return {
@@ -682,13 +692,39 @@ export class FakeSyncServer {
         error: { status: 401, code: 'unauthenticated', title: 'Unauthenticated' },
       }
     }
-    if (typeof body.display_name !== 'string' || body.display_name.length === 0) {
+    if (Object.keys(body).length === 0) {
       return {
         ok: false,
         error: { status: 422, code: 'validation-error', title: 'Request validation failed' },
       }
     }
-    this.meProfile = { ...this.meProfile, display_name: body.display_name }
+    if (
+      'display_name' in body &&
+      (typeof body.display_name !== 'string' || body.display_name.length === 0)
+    ) {
+      return {
+        ok: false,
+        error: { status: 422, code: 'validation-error', title: 'Request validation failed' },
+      }
+    }
+    const next = { ...this.meProfile }
+    if (body.display_name !== undefined) next.display_name = body.display_name
+    if ('title' in body) next.title = body.title ?? null
+    if ('description' in body) next.description = body.description ?? null
+    if ('status' in body) {
+      const status = body.status
+      if (status == null || (status.emoji == null && status.text == null)) {
+        next.status_emoji = null
+        next.status_text = null
+        next.status_expires_at = null
+      } else {
+        next.status_emoji = status.emoji ?? null
+        next.status_text = status.text ?? null
+        next.status_expires_at =
+          status.clear_after !== undefined ? new Date(Date.now() + 30 * 60_000).toISOString() : null
+      }
+    }
+    this.meProfile = next
     return { ok: true, value: { ...this.meProfile } }
   }
 

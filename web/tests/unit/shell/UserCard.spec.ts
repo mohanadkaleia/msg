@@ -36,4 +36,30 @@ describe('UserCard (ENG-136 PR-3)', () => {
     await wrapper.get('[data-testid="user-card"]').trigger('click')
     expect(wrapper.emitted('openProfile')).toHaveLength(1)
   })
+
+  // ENG-164: the sub-line shows the ACTIVE custom status (emoji + text) when one
+  // is passed; expiry is applied UPSTREAM (lib/status.ts activeStatus), so an
+  // expired status simply never reaches these props → the presence label shows.
+  it('renders the custom status (emoji + text) instead of the presence label', () => {
+    const wrapper = mount(UserCard, {
+      props: { name: 'Sam', statusEmoji: '🌴', statusText: 'On vacation' },
+    })
+    const status = wrapper.get('[data-testid="user-card-status"]')
+    expect(status.text()).toContain('🌴')
+    expect(status.text()).toContain('On vacation')
+    expect(wrapper.text()).not.toContain('Online')
+  })
+
+  it('renders an emoji-only or text-only status', () => {
+    const emojiOnly = mount(UserCard, { props: { name: 'Sam', statusEmoji: '🎧' } })
+    expect(emojiOnly.get('[data-testid="user-card-status"]').text()).toBe('🎧')
+    const textOnly = mount(UserCard, { props: { name: 'Sam', statusText: 'Focusing' } })
+    expect(textOnly.get('[data-testid="user-card-status"]').text()).toBe('Focusing')
+  })
+
+  it('falls back to the presence label when no status is set (expired upstream)', () => {
+    const wrapper = mount(UserCard, { props: { name: 'Sam' } })
+    expect(wrapper.find('[data-testid="user-card-status"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Online')
+  })
 })

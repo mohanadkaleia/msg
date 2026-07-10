@@ -753,26 +753,58 @@ export async function listDirectory(db: MsgDb): Promise<DirectoryListResult> {
 
   const byId = await buildUserDirectory(db, streams)
 
-  const users: DirectoryUser[] = [...byId.entries()]
-    .map(([user_id, display_name]) => ({ user_id, display_name }))
-    .sort((a, b) => a.display_name.localeCompare(b.display_name))
+  const users: DirectoryUser[] = [...byId.values()].sort((a, b) =>
+    a.display_name.localeCompare(b.display_name),
+  )
 
   return { users, channels }
 }
 
 /**
- * Fold the cached `workspace-meta` events into a `user_id → display_name` map
- * (`user.joined` adds, `user.left` removes, `user.profile_updated` renames) — the
- * shared source both the @mention directory (ENG-101) and the reaction who-reacted
- * tooltip (ENG-102) resolve names from. A pure LOCAL projection read. `streams` is
- * passed in when the caller already has it (one fewer read).
+ * Resolve a user's display name from the folded directory (`user_id` fallback)
+ * — the ONE-LINER every name consumer goes through (ENG-164 made the directory
+ * value a record, so `.get(id) ?? id` alone would leak `[object Object]`).
+ * Exported for direct unit coverage.
+ */
+export function displayNameOf(
+  directory: ReadonlyMap<string, DirectoryUser>,
+  userId: string,
+): string {
+  return directory.get(userId)?.display_name ?? userId
+}
+
+/** The ENG-164 profile fields a `user.profile_updated` payload may carry. */
+const PROFILE_FIELDS = [
+  'title',
+  'description',
+  'status_emoji',
+  'status_text',
+  'status_expires_at',
+] as const
+
+/**
+ * Fold the cached `workspace-meta` events into a `user_id → DirectoryUser`
+ * record map (`user.joined` adds, `user.left` removes, `user.profile_updated`
+ * updates — LWW in ascending `server_sequence`) — the shared source both the
+ * @mention directory (ENG-101) and the reaction who-reacted tooltip (ENG-102)
+ * resolve names from, extended by ENG-164 with title/description/status.
+ *
+ * A `user.profile_updated` payload carries the RESULTING profile values: a
+ * key holding a string sets the field, an explicit `null` CLEARS it, and an
+ * ABSENT key leaves it untouched (pre-ENG-164 rename events carry only
+ * `display_name`). `status_expires_at` is kept RAW — the fold NEVER consults
+ * the wall clock (rebuild ≡ incremental stays deterministic); expired-status
+ * suppression happens at render time (`lib/status.ts`).
+ *
+ * A pure LOCAL projection read. `streams` is passed in when the caller
+ * already has it (one fewer read).
  */
 async function buildUserDirectory(
   db: MsgDb,
   streams?: readonly StreamRow[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, DirectoryUser>> {
   const all = streams ?? (await db.listStreams())
-  const byId = new Map<string, string>() // user_id → display_name
+  const byId = new Map<string, DirectoryUser>() // user_id → folded profile record
   const metaStreams = all.filter((s) => s.kind === 'workspace-meta')
   for (const meta of metaStreams) {
     const events = await db.getEventsForStream(meta.stream_id) // ascending server_sequence
@@ -789,22 +821,32 @@ async function buildUserDirectory(
           : undefined
       switch (event.type) {
         case 'user.joined':
-          byId.set(userId, displayName ?? userId)
+          byId.set(userId, { user_id: userId, display_name: displayName ?? userId })
           break
         case 'user.left':
           byId.delete(userId)
           break
-        case 'user.profile_updated':
+        case 'user.profile_updated': {
           // SECURITY (PR #91 review) — defense-in-depth behind the server upload-path
-          // reject: a user may only rename THEMSELVES, so apply a profile_updated
-          // rename ONLY when the author IS the subject. Any event whose
-          // author_user_id !== payload.user_id (a forged cross-user rename, whether
-          // already stored or future) is ignored. A rename also only applies to a
+          // reject: a user may only update THEIR OWN profile, so apply a
+          // profile_updated ONLY when the author IS the subject. Any event whose
+          // author_user_id !== payload.user_id (a forged cross-user update, whether
+          // already stored or future) is ignored. An update also only applies to a
           // still-present member; ignore if they left. This is a pure filter on
           // author==subject, so the fold stays deterministic + rebuild ≡ incremental.
-          if (authorUserId === userId && byId.has(userId) && displayName !== undefined)
-            byId.set(userId, displayName)
+          const record = byId.get(userId)
+          if (authorUserId !== userId || record === undefined) break
+          if (displayName !== undefined) record.display_name = displayName
+          for (const field of PROFILE_FIELDS) {
+            if (!(field in p)) continue // absent → untouched (old events)
+            const value = p[field]
+            if (value === null)
+              delete record[field] // explicit null → cleared
+            else if (typeof value === 'string') record[field] = value
+            // any other type: malformed — ignored (D9 tolerance, never a throw)
+          }
           break
+        }
       }
     }
   }
@@ -844,7 +886,7 @@ export async function listReactions(
           emoji,
           count: user_ids.length,
           user_ids,
-          display_names: user_ids.map((id) => directory.get(id) ?? id),
+          display_names: user_ids.map((id) => displayNameOf(directory, id)),
           mine: myUserId !== '' && user_ids.includes(myUserId),
         }
       })
@@ -865,13 +907,13 @@ export async function listReactions(
 async function resolveParticipants(
   db: MsgDb,
   rootMessageId: string,
-  directory: Map<string, string>,
+  directory: Map<string, DirectoryUser>,
 ): Promise<ThreadParticipant[]> {
   const rows = await db.listThreadParticipantsByRoot(rootMessageId)
   return rows
     .map((r): ThreadParticipant => ({
       user_id: r.user_id,
-      display_name: directory.get(r.user_id) ?? r.user_id,
+      display_name: displayNameOf(directory, r.user_id),
     }))
     .sort((a, b) => a.display_name.localeCompare(b.display_name))
 }

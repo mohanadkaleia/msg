@@ -106,6 +106,87 @@ describe('ProfileDialog — self-profile view + edit', () => {
     expect(wrapper.find('[data-testid="profile-saved"]').exists()).toBe(false)
   })
 
+  // --- ENG-164: title / description / custom status --------------------------
+
+  it('seeds the new fields from me.get and exposes their test-ids', async () => {
+    fake.setMeProfile({
+      display_name: 'Dana',
+      title: 'Agent',
+      description: 'The truth is out there.',
+      status_emoji: '👽',
+      status_text: 'Investigating',
+    })
+    const wrapper = await mountDialog(fake)
+
+    expect((wrapper.get('[data-testid="profile-title"]').element as HTMLInputElement).value).toBe(
+      'Agent',
+    )
+    expect(
+      (wrapper.get('[data-testid="profile-description"]').element as HTMLTextAreaElement).value,
+    ).toBe('The truth is out there.')
+    expect(
+      (wrapper.get('[data-testid="profile-status-emoji"]').element as HTMLInputElement).value,
+    ).toBe('👽')
+    expect(
+      (wrapper.get('[data-testid="profile-status-text"]').element as HTMLInputElement).value,
+    ).toBe('Investigating')
+    expect(wrapper.find('[data-testid="profile-status-clear-after"]').exists()).toBe(true)
+  })
+
+  it('saves a changed title/description as a SUBSET patch (name untouched → absent)', async () => {
+    fake.setMeProfile({ display_name: 'Keep Name' })
+    const wrapper = await mountDialog(fake)
+
+    await wrapper.get('[data-testid="profile-title"]').setValue('Staff Engineer')
+    await wrapper.get('[data-testid="profile-description"]').setValue('I build things.')
+    await wrapper.get('[data-testid="profile-save"]').trigger('click')
+    await flushPromises()
+
+    expect(fake.meUpdateSpy).toHaveBeenCalledWith({
+      title: 'Staff Engineer',
+      description: 'I build things.',
+    })
+    expect(wrapper.find('[data-testid="profile-saved"]').exists()).toBe(true)
+  })
+
+  it('saves a status (emoji + text + clear_after) via me.update', async () => {
+    const wrapper = await mountDialog(fake)
+
+    await wrapper.get('[data-testid="profile-status-emoji"]').setValue('🌴')
+    await wrapper.get('[data-testid="profile-status-text"]').setValue('On vacation')
+    await wrapper.get('[data-testid="profile-status-clear-after"]').setValue('1h')
+    await wrapper.get('[data-testid="profile-save"]').trigger('click')
+    await flushPromises()
+
+    expect(fake.meUpdateSpy).toHaveBeenCalledWith({
+      status: { emoji: '🌴', text: 'On vacation', clear_after: '1h' },
+    })
+  })
+
+  it('clearing a title sends an explicit null; emptying the status sends status: null', async () => {
+    fake.setMeProfile({
+      title: 'Old Title',
+      status_emoji: '🎧',
+      status_text: 'Focusing',
+    })
+    const wrapper = await mountDialog(fake)
+
+    await wrapper.get('[data-testid="profile-title"]').setValue('')
+    await wrapper.get('[data-testid="profile-status-emoji"]').setValue('')
+    await wrapper.get('[data-testid="profile-status-text"]').setValue('')
+    await wrapper.get('[data-testid="profile-save"]').trigger('click')
+    await flushPromises()
+
+    expect(fake.meUpdateSpy).toHaveBeenCalledWith({ title: null, status: null })
+  })
+
+  it('a quick-pick preset fills the emoji field', async () => {
+    const wrapper = await mountDialog(fake)
+    await wrapper.findAll('[data-testid="profile-status-preset"]')[0]!.trigger('click')
+    const emoji = wrapper.get('[data-testid="profile-status-emoji"]')
+    expect((emoji.element as HTMLInputElement).value).not.toBe('')
+  })
+
   it('emits close on the Close button', async () => {
     const wrapper = await mountDialog(fake)
     await wrapper.get('[data-testid="profile-close"]').trigger('click')

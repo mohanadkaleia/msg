@@ -23,6 +23,11 @@ function profile(overrides: Partial<MeProfile> = {}): MeProfile {
     email: 'alice@example.com',
     role: 'member',
     is_bot: false,
+    title: null,
+    description: null,
+    status_emoji: null,
+    status_text: null,
+    status_expires_at: null,
     ...overrides,
   }
 }
@@ -49,13 +54,7 @@ describe('me.get (GET /v1/me)', () => {
     const res = await getMe(http)
 
     expect(http.getCalls).toEqual(['/v1/me'])
-    expect(res).toEqual({
-      user_id: 'u_me',
-      display_name: 'Alice',
-      email: 'alice@example.com',
-      role: 'member',
-      is_bot: false,
-    })
+    expect(res).toEqual(profile())
   })
 
   it('maps a 401 (dead session) to the coded `unauthenticated` error', async () => {
@@ -81,6 +80,39 @@ describe('me.update (PATCH /v1/me)', () => {
     expect(res.user_id).toBe('u_me')
     // The fake server's profile advanced (a subsequent GET sees the rename).
     expect((await getMe(http)).display_name).toBe('Alice Renamed')
+  })
+
+  it('sends ONLY the provided subset (ENG-164) — undefined omitted, null kept', async () => {
+    const server = new FakeSyncServer()
+    server.meProfile = profile()
+    const http = new FakeHttpClient(server)
+
+    // Title + status set; display_name/description untouched → absent from the body.
+    const res = await updateMe(http, {
+      title: 'Staff Engineer',
+      status: { emoji: '🌴', text: 'Vacation', clear_after: '1h' },
+    })
+    expect(http.patchCalls).toEqual([
+      {
+        path: '/v1/me',
+        body: {
+          title: 'Staff Engineer',
+          status: { emoji: '🌴', text: 'Vacation', clear_after: '1h' },
+        },
+      },
+    ])
+    expect(res.title).toBe('Staff Engineer')
+    expect(res.status_emoji).toBe('🌴')
+    expect(res.status_text).toBe('Vacation')
+    expect(res.status_expires_at).not.toBeNull()
+    expect(res.display_name).toBe('Alice') // untouched
+
+    // Explicit nulls CLEAR and are sent (not dropped like undefined).
+    const cleared = await updateMe(http, { title: null, status: null })
+    expect(http.patchCalls[1]).toEqual({ path: '/v1/me', body: { title: null, status: null } })
+    expect(cleared.title).toBeNull()
+    expect(cleared.status_emoji).toBeNull()
+    expect(cleared.status_expires_at).toBeNull()
   })
 
   it('maps a 422 (empty/oversized name) to the coded `validation-error`', async () => {

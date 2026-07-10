@@ -113,7 +113,23 @@ class CapturedState:
     stream_members: set[tuple[str, str]]
     guest_readable: set[str]
     member_readable: set[str]
-    users: list[tuple[str, str, str, str, bool, str | None]]
+    # user_id, email, display_name, role, is_bot, deactivated_at, + ENG-164:
+    # title, description, status_emoji, status_text, status_expires_at.
+    users: list[
+        tuple[
+            str,
+            str,
+            str,
+            str,
+            bool,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+        ]
+    ]
     files: list[tuple[str, str, str, str, int, str, str | None, bool, str | None, str]]
     streams: dict[str, tuple[str, str | None, str | None, str | None]]
 
@@ -173,7 +189,20 @@ async def _capture_state(
         for sid, head in (await db.execute(select(Stream.stream_id, Stream.head_seq))).all()
     }
     users = [
-        (u.user_id, u.email, u.display_name, u.role, u.is_bot, _opt_rfc3339(u.deactivated_at))
+        (
+            u.user_id,
+            u.email,
+            u.display_name,
+            u.role,
+            u.is_bot,
+            _opt_rfc3339(u.deactivated_at),
+            # ENG-164 richer-profile columns — part of the round-trip surface.
+            u.title,
+            u.description,
+            u.status_emoji,
+            u.status_text,
+            _opt_rfc3339(u.status_expires_at),
+        )
         for u in (await db.execute(select(User).order_by(User.user_id))).scalars().all()
     ]
     files = [
@@ -251,6 +280,15 @@ async def _seed_and_export(db: AsyncSession, tmp_path: Path) -> SeededA:
                 display_name=name,
                 role=role,
                 is_bot=False,
+                # ENG-164: give the OWNER a full richer profile so the users-row
+                # round-trip is non-vacuous for the five new columns (title +
+                # description + a custom status with a future expiry). Absence on
+                # the others exercises the null path.
+                title="Founder" if role == "owner" else None,
+                description="Runs Acme." if role == "owner" else None,
+                status_emoji="🚀" if role == "owner" else None,
+                status_text="shipping" if role == "owner" else None,
+                status_expires_at=(datetime(2099, 1, 1, tzinfo=UTC) if role == "owner" else None),
             )
         )
     await db.flush()
@@ -563,11 +601,18 @@ async def test_round_trip_restores_projections_membership_blobs_and_users(
         assert hashlib.sha256(restored).hexdigest() == sha
 
     # --- users: snapshot fields verbatim; credentials re-minted ---------------
+    # ENG-164: the OWNER carries a full richer profile (title/description/status
+    # with a future expiry); the other two carry nulls — all round-trip verbatim.
+    def _profile(role: str) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+        if role == "owner":
+            return ("Founder", "Runs Acme.", "🚀", "shipping", "2099-01-01T00:00:00.000Z")
+        return (None, None, None, None, None)
+
     assert (
         b.users
         == a.users
         == [
-            (uid, email, name, role, False, None)
+            (uid, email, name, role, False, None, *_profile(role))
             for uid, email, name, role in sorted(
                 [
                     (seeded.owner_id, "alice@example.com", "Alice", "owner"),

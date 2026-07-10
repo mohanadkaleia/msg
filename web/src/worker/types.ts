@@ -744,10 +744,26 @@ export interface MessageGetResult {
   message: MessageRow | null
 }
 
-/** One `@mention`-able workspace user (ENG-101). */
+/**
+ * One workspace user in the member directory (ENG-101 mention source, extended
+ * by ENG-164): the per-user RECORD the workspace-meta fold produces —
+ * `user.joined` adds it, `user.profile_updated` (author == subject only)
+ * updates it field-by-field (a carried `null` clears; an absent key is left
+ * untouched, so pre-ENG-164 rename events still fold correctly). The optional
+ * fields mirror the `user.profile_updated` payload / server `users` columns
+ * field-for-field (flat, not nested — ONE shape across row, event, and
+ * directory). `status_expires_at` is carried RAW: the fold never consults the
+ * clock (rebuild ≡ incremental stays deterministic) — expiry is applied at
+ * RENDER time (`lib/status.ts` `activeStatus`, the lazy-expiry contract).
+ */
 export interface DirectoryUser {
   user_id: string
   display_name: string
+  title?: string
+  description?: string
+  status_emoji?: string
+  status_text?: string
+  status_expires_at?: string
 }
 
 /** One `#channel`-able stream (ENG-101). */
@@ -1265,14 +1281,39 @@ export interface MeProfile {
   email: string
   role: string
   is_bot: boolean
+  /** ENG-164 profile fields — `null` when unset. The server applies LAZY status
+   * expiry before responding (an expired status reads as cleared). */
+  title: string | null
+  description: string | null
+  status_emoji: string | null
+  status_text: string | null
+  status_expires_at: string | null
 }
 
 /**
- * `me.update` params — `PATCH /v1/me`. Display name only (the one editable
- * profile field); the server enforces the signup bounds (1..200 chars, 422).
+ * The `status` object of `me.update` — replaces the custom status as a UNIT.
+ * `clear_after` is the closed duration vocabulary the SERVER converts to an
+ * absolute `status_expires_at` (the client never mints the timestamp); omitted
+ * means the status never auto-clears.
+ */
+export interface MeStatusParams {
+  emoji?: string | null
+  text?: string | null
+  clear_after?: '30m' | '1h' | 'today'
+}
+
+/**
+ * `me.update` params — `PATCH /v1/me`, SUBSET semantics (ENG-164): only the
+ * fields the caller sets are sent/applied; an explicit `null` clears `title` /
+ * `description` / `status` (`display_name` is not clearable — server 422).
+ * Bounds are the server's: display_name 1..200, title ≤100, description ≤500,
+ * status text ≤100, emoji a single bounded grapheme.
  */
 export interface MeUpdateParams {
-  display_name: string
+  display_name?: string
+  title?: string | null
+  description?: string | null
+  status?: MeStatusParams | null
 }
 
 /** Live-presence status for a workspace user (ENG-125), ephemeral (memory-only). */

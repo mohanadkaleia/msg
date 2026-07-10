@@ -219,6 +219,17 @@ async def _export_users(session: AsyncSession, path: Path) -> str:
             "role": u.role,
             "is_bot": u.is_bot,
             "deactivated_at": _opt_rfc3339(u.deactivated_at),
+            # ENG-164 richer-profile columns (nullable). MUST round-trip: the
+            # imported meta log's last ``user.profile_updated`` carries these,
+            # so an empty row would diverge from the log — and because PATCH
+            # /v1/me emits the RESULTING row state, the user's next edit would
+            # then emit nulls that every client fold applies as "cleared",
+            # destroying profile data workspace-wide.
+            "title": u.title,
+            "description": u.description,
+            "status_emoji": u.status_emoji,
+            "status_text": u.status_text,
+            "status_expires_at": _opt_rfc3339(u.status_expires_at),
         }
         for u in users
     ]

@@ -13,6 +13,7 @@ import { computed, ref } from 'vue'
 import { resolveWorkerClient } from '../composables/useWorkerClient'
 import type {
   DirectoryListResult,
+  DirectoryUser,
   DmParticipants,
   StreamBadge,
   StreamRow,
@@ -80,6 +81,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const selectedStream = computed(
     () => streams.value.find((s) => s.stream_id === selectedStreamId.value) ?? null,
   )
+
+  /** Directory records keyed by user_id — the shared name/profile lookup (ENG-164). */
+  const usersById = computed<ReadonlyMap<string, DirectoryUser>>(
+    () => new Map(directory.value.users.map((u) => [u.user_id, u])),
+  )
+
+  /** The full directory record for a user (title/status included), if known. */
+  function userOf(userId: string | undefined): DirectoryUser | undefined {
+    return userId === undefined ? undefined : usersById.value.get(userId)
+  }
+
+  /**
+   * Resolve a user's display name (raw-id fallback) — the ONE-LINER every UI
+   * name consumer can use so nothing regresses when the directory record
+   * grows richer (ENG-164).
+   */
+  function displayNameOf(userId: string): string {
+    return usersById.value.get(userId)?.display_name ?? userId
+  }
 
   /** The composer's flat candidate list: users then channels (ENG-101). */
   const mentionItems = computed<MentionItem[]>(() => [
@@ -237,6 +257,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     browsableChannels,
     visibleStreams,
     directory,
+    usersById,
+    userOf,
+    displayNameOf,
     mentionItems,
     load,
     refresh,

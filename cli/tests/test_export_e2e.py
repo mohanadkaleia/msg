@@ -428,7 +428,21 @@ def test_export_bundle_end_to_end(
         ("bob@example.com", "member"),
     }
     assert all(
-        set(u) == {"user_id", "email", "display_name", "role", "is_bot", "deactivated_at"}
+        set(u)
+        == {
+            "user_id",
+            "email",
+            "display_name",
+            "role",
+            "is_bot",
+            "deactivated_at",
+            # ENG-164 richer-profile columns are part of the user snapshot.
+            "title",
+            "description",
+            "status_emoji",
+            "status_text",
+            "status_expires_at",
+        }
         for u in users
     )
 

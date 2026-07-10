@@ -46,6 +46,7 @@ import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { dmDisplayName, dmOtherUserId } from '../../lib/dm'
+import { activeStatus } from '../../lib/status'
 import { useAuthStore } from '../../stores/auth'
 import { usePresenceStore } from '../../stores/presence'
 import { useSyncStore } from '../../stores/sync'
@@ -109,11 +110,18 @@ const totalUnread = computed(() =>
 const myName = computed(() => {
   const id = auth.myUserId
   if (id === undefined) return 'You'
-  return directory.value.users.find((u) => u.user_id === id)?.display_name ?? id
+  return workspace.displayNameOf(id)
 })
 
 /** REAL presence for the footer dot (defaults to online while connected). */
 const myStatus = computed(() => presence.myStatus)
+
+/**
+ * The signed-in user's ACTIVE custom status for the footer card (ENG-164) —
+ * folded from the directory record, with lazy expiry applied at render time
+ * (`activeStatus` returns null for an expired or unset status).
+ */
+const myCustomStatus = computed(() => activeStatus(workspace.userOf(auth.myUserId)))
 
 /** Select a real stream + switch the main panel to the conversation timeline. */
 function select(stream: SidebarStream): void {
@@ -399,7 +407,13 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
     <!-- Pinned footer: the signed-in user card with a REAL presence dot, plus a
          one-line local-first note (sync-store-derived, ENG-152). -->
     <div class="border-t border-subtle p-2">
-      <UserCard :name="myName" :status="myStatus" @open-profile="showProfile = true" />
+      <UserCard
+        :name="myName"
+        :status="myStatus"
+        :status-emoji="myCustomStatus?.emoji"
+        :status-text="myCustomStatus?.text"
+        @open-profile="showProfile = true"
+      />
       <p class="px-2 pt-1 text-[11px] text-muted" data-testid="local-first-note">
         {{ localFirstNote }}
       </p>

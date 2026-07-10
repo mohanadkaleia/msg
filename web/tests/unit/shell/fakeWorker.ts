@@ -130,6 +130,11 @@ export class FakeWorker {
     email: 'me@example.com',
     role: 'member',
     is_bot: false,
+    title: null,
+    description: null,
+    status_emoji: null,
+    status_text: null,
+    status_expires_at: null,
   }
   private meGetError: RpcCodedError | null = null
   private meUpdateError: RpcCodedError | null = null
@@ -907,7 +912,28 @@ export class FakeWorker {
             this.meUpdateError = null
             return Promise.reject(err)
           }
-          this.meProfile = { ...this.meProfile, display_name: params.display_name }
+          // SUBSET semantics like the server (ENG-164): absent = untouched,
+          // null clears, `status` replaces the trio as a unit.
+          const next = { ...this.meProfile }
+          if (params.display_name !== undefined) next.display_name = params.display_name
+          if (params.title !== undefined) next.title = params.title
+          if (params.description !== undefined) next.description = params.description
+          if (params.status !== undefined) {
+            const status = params.status
+            if (status === null || (status.emoji == null && status.text == null)) {
+              next.status_emoji = null
+              next.status_text = null
+              next.status_expires_at = null
+            } else {
+              next.status_emoji = status.emoji ?? null
+              next.status_text = status.text ?? null
+              next.status_expires_at =
+                status.clear_after !== undefined
+                  ? new Date(Date.now() + 30 * 60_000).toISOString()
+                  : null
+            }
+          }
+          this.meProfile = next
           return Promise.resolve({ ...this.meProfile })
         },
       },

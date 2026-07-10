@@ -10,6 +10,7 @@ signup ``DisplayName`` bounds, and there is no cross-user vector (a smuggled
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from authutil import (
@@ -53,6 +54,12 @@ async def test_get_me_returns_the_callers_own_profile(client: AsyncClient) -> No
         "email": "owner@example.com",
         "role": "owner",
         "is_bot": False,
+        # ENG-164 profile fields — null until set.
+        "title": None,
+        "description": None,
+        "status_emoji": None,
+        "status_text": None,
+        "status_expires_at": None,
     }
 
     resp = await client.get("/v1/me", headers=auth_header(member["token"]))
@@ -141,6 +148,217 @@ async def test_patch_me_rejects_empty_and_oversized_names(
 
     row = await db_session.get(User, owner["user_id"])
     assert row is not None and row.display_name == "The Owner"
+
+
+# --- ENG-164: title / description / custom status ------------------------------
+
+
+async def test_patch_me_updates_title_description_individually(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Each new field PATCHes alone; unnamed fields are untouched (subset semantics)."""
+    owner = await do_setup(client)
+    h = auth_header(owner["token"])
+
+    resp = await client.patch("/v1/me", json={"title": "Staff Engineer"}, headers=h)
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Staff Engineer"
+    assert resp.json()["display_name"] == "The Owner"  # untouched
+    assert resp.json()["description"] is None
+
+    resp = await client.patch("/v1/me", json={"description": "I build things."}, headers=h)
+    assert resp.status_code == 200
+    assert resp.json()["description"] == "I build things."
+    assert resp.json()["title"] == "Staff Engineer"  # kept from the prior PATCH
+
+    row = await db_session.get(User, owner["user_id"])
+    assert row is not None
+    assert row.title == "Staff Engineer"
+    assert row.description == "I build things."
+
+    # A fresh GET agrees.
+    body = (await client.get("/v1/me", headers=h)).json()
+    assert body["title"] == "Staff Engineer"
+    assert body["description"] == "I build things."
+
+
+async def test_patch_me_sets_and_clears_status(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The status PATCHes as a unit; ``clear_after`` becomes a future expiry; null clears."""
+    owner = await do_setup(client)
+    h = auth_header(owner["token"])
+
+    before = datetime.now(UTC)
+    resp = await client.patch(
+        "/v1/me",
+        json={"status": {"emoji": "🌴", "text": "On vacation", "clear_after": "1h"}},
+        headers=h,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status_emoji"] == "🌴"
+    assert body["status_text"] == "On vacation"
+    expires = datetime.fromisoformat(body["status_expires_at"])
+    assert before + timedelta(minutes=59) < expires <= before + timedelta(minutes=61)
+
+    # No clear_after → never auto-clears (null expiry).
+    resp = await client.patch("/v1/me", json={"status": {"emoji": "🎧"}}, headers=h)
+    assert resp.status_code == 200
+    assert resp.json()["status_emoji"] == "🎧"
+    assert resp.json()["status_text"] is None
+    assert resp.json()["status_expires_at"] is None
+
+    # Explicit null clears the whole trio.
+    resp = await client.patch("/v1/me", json={"status": None}, headers=h)
+    assert resp.status_code == 200
+    assert resp.json()["status_emoji"] is None
+    assert resp.json()["status_text"] is None
+    assert resp.json()["status_expires_at"] is None
+    row = await db_session.get(User, owner["user_id"])
+    assert row is not None
+    assert row.status_emoji is None and row.status_text is None
+    assert row.status_expires_at is None
+
+
+async def test_patch_me_all_fields_together_emits_one_event_with_resulting_values(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """One PATCH of everything → EXACTLY ONE event carrying the resulting state."""
+    owner = await do_setup(client)
+    meta_stream_id = await fetch_meta_stream_id(db_session, owner["workspace_id"])
+    assert meta_stream_id is not None
+    before = await fetch_stream_events(db_session, meta_stream_id)
+
+    resp = await client.patch(
+        "/v1/me",
+        json={
+            "display_name": "Dana S.",
+            "title": "Agent",
+            "description": "The truth is out there.",
+            "status": {"emoji": "👽", "text": "Investigating", "clear_after": "30m"},
+        },
+        headers=auth_header(owner["token"]),
+    )
+    assert resp.status_code == 200
+
+    after = await fetch_stream_events(db_session, meta_stream_id)
+    assert len(after) == len(before) + 1  # exactly ONE appended event
+    event = after[-1]
+    assert event.type == "user.profile_updated"
+    payload = event.body["payload"]
+    assert payload["user_id"] == owner["user_id"]
+    assert payload["display_name"] == "Dana S."
+    assert payload["title"] == "Agent"
+    assert payload["description"] == "The truth is out there."
+    assert payload["status_emoji"] == "👽"
+    assert payload["status_text"] == "Investigating"
+    assert isinstance(payload["status_expires_at"], str)
+    assert event.body["author_user_id"] == owner["user_id"]
+
+
+async def test_patch_me_display_name_only_event_carries_resulting_nulls(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A name-only PATCH still records the resulting (unset → null) new fields."""
+    owner = await do_setup(client)
+    meta_stream_id = await fetch_meta_stream_id(db_session, owner["workspace_id"])
+    assert meta_stream_id is not None
+
+    resp = await client.patch(
+        "/v1/me", json={"display_name": "Just Renamed"}, headers=auth_header(owner["token"])
+    )
+    assert resp.status_code == 200
+    event = (await fetch_stream_events(db_session, meta_stream_id))[-1]
+    payload = event.body["payload"]
+    assert payload["display_name"] == "Just Renamed"
+    assert payload["title"] is None
+    assert payload["status_emoji"] is None
+    assert payload["status_expires_at"] is None
+
+
+async def test_patch_me_clears_title_with_null(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """An explicit ``null`` (or empty string) clears; an ABSENT field is untouched."""
+    owner = await do_setup(client)
+    h = auth_header(owner["token"])
+    assert (
+        await client.patch("/v1/me", json={"title": "Keep?", "description": "Desc"}, headers=h)
+    ).status_code == 200
+
+    resp = await client.patch("/v1/me", json={"title": None}, headers=h)
+    assert resp.status_code == 200
+    assert resp.json()["title"] is None
+    assert resp.json()["description"] == "Desc"  # absent → untouched
+
+    resp = await client.patch("/v1/me", json={"description": ""}, headers=h)
+    assert resp.status_code == 200
+    assert resp.json()["description"] is None
+
+
+async def test_patch_me_validation_bounds_for_new_fields(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Bounds → 422: title ≤100, description ≤500, status text ≤100, emoji shape,
+    unknown clear_after. The row stays untouched on every rejection."""
+    owner = await do_setup(client)
+    h = auth_header(owner["token"])
+
+    bad_bodies: list[dict[str, Any]] = [
+        {"title": "x" * 101},
+        {"description": "x" * 501},
+        {"status": {"text": "x" * 101}},
+        # Non-single-emoji: whitespace-carrying text in the emoji slot.
+        {"status": {"emoji": "not an emoji"}},
+        # Oversized "emoji" (beyond the reaction-precedent 64-byte cap).
+        {"status": {"emoji": "🌴" * 20}},
+        # clear_after is a CLOSED vocabulary.
+        {"status": {"text": "hi", "clear_after": "next-week"}},
+        # display_name is NOT clearable (NOT NULL column).
+        {"display_name": None},
+    ]
+    for bad in bad_bodies:
+        resp = await client.patch("/v1/me", json=bad, headers=h)
+        assert resp.status_code == 422, bad
+        assert resp.json()["type"] == "/problems/validation-error"
+
+    row = await db_session.get(User, owner["user_id"])
+    assert row is not None
+    assert row.display_name == "The Owner"
+    assert row.title is None and row.description is None
+    assert row.status_emoji is None and row.status_text is None
+
+
+async def test_expired_status_reads_as_cleared(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """LAZY expiry: a past ``status_expires_at`` reads as cleared from GET (no job).
+
+    The expiry is simulated by writing a past timestamp straight to the row —
+    the PATCH surface itself can only mint future expiries (closed durations).
+    """
+    owner = await do_setup(client)
+    h = auth_header(owner["token"])
+    assert (
+        await client.patch(
+            "/v1/me",
+            json={"status": {"emoji": "🍜", "text": "Lunch", "clear_after": "30m"}},
+            headers=h,
+        )
+    ).status_code == 200
+
+    row = await db_session.get(User, owner["user_id"])
+    assert row is not None
+    row.status_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    await db_session.commit()
+
+    body = (await client.get("/v1/me", headers=h)).json()
+    assert body["status_emoji"] is None
+    assert body["status_text"] is None
+    assert body["status_expires_at"] is None
+    # The non-status profile fields are unaffected by expiry.
+    assert body["display_name"] == "The Owner"
 
 
 # --- structurally self-only ---------------------------------------------------
@@ -267,6 +485,43 @@ async def test_forged_profile_updated_upload_by_guest_is_rejected(
     assert resp.json()["rejected"][0]["code"] == "permission_denied"
     owner_row = await db_session.get(User, owner["user_id"])
     assert owner_row is not None and owner_row.display_name == "The Owner"
+
+
+async def test_forged_profile_updated_with_extended_payload_is_rejected(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The guard holds for the ENG-164 payload too: a forged title/status upload
+    is ``permission_denied`` — the type check fires before any payload field."""
+    owner = await do_setup(client)
+    member = await _seed_member(client, owner["token"])
+    meta_stream_id = await fetch_meta_stream_id(db_session, owner["workspace_id"])
+    assert meta_stream_id is not None
+    before = await fetch_stream_events(db_session, meta_stream_id)
+
+    forged = _meta_body(
+        auth=member,
+        home_stream_id=meta_stream_id,
+        type="user.profile_updated",
+        payload={
+            "user_id": owner["user_id"],
+            "display_name": "PWNED",
+            "title": "Fake CEO",
+            "description": "Forged",
+            "status_emoji": "💀",
+            "status_text": "hacked",
+            "status_expires_at": None,
+        },
+    )
+    resp = await post_batch(client, member["token"], [wire_item(forged)])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["accepted"] == []
+    assert body["rejected"][0]["code"] == "permission_denied"
+    after = await fetch_stream_events(db_session, meta_stream_id)
+    assert len(after) == len(before)
+    owner_row = await db_session.get(User, owner["user_id"])
+    assert owner_row is not None
+    assert owner_row.display_name == "The Owner" and owner_row.title is None
 
 
 async def test_forged_user_joined_upload_is_rejected(

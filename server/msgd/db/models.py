@@ -67,6 +67,18 @@ class User(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)
     is_bot: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ENG-164 richer profile — all nullable (absence = unset), written ONLY by the
+    # self-only PATCH /v1/me handler (operational state, like display_name). A
+    # status whose `status_expires_at <= now` is treated as CLEARED lazily at
+    # read/render time (GET /v1/me and the client fold/UI) — there is NO
+    # background expiry job (migration 0010).
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class Device(Base):

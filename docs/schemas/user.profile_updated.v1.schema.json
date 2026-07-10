@@ -2,8 +2,80 @@
   "$id": "https://msg.dev/schemas/user.profile_updated.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
-  "description": "Payload for ``user.profile_updated`` v1 (\u00a72.2).\n\nOnly ``user_id`` is required; the changed profile fields are open-ended\n(carried through ``extra=\"allow\"``) so new profile attributes are additive.",
+  "description": "Payload for ``user.profile_updated`` v1 (\u00a72.2).\n\nOnly ``user_id`` is required. The profile fields are OPTIONAL and additive\n(ENG-164 extends the ENG-91 ``display_name``-only shape with ``title`` /\n``description`` / the custom-status trio): a v1 event that omits them \u2014\nevery pre-ENG-164 event \u2014 is still valid, and unknown future fields keep\nriding ``extra=\"allow\"`` (\u00a72.3.2). Server-emitted events carry the\nRESULTING profile values after the PATCH (an explicit ``null`` means\n\"cleared\"; an ABSENT key means \"not carried by this event\" \u2014 the client\nfold leaves absent fields untouched). ``status_expires_at`` is an RFC 3339\nstring; expiry is LAZY \u2014 readers treat an expired status as cleared at\nrender time. Format-validation only: bounds (title/description/status_text\nlengths, the emoji byte cap) are enforced at the HTTP boundary\n(:mod:`msgd.api.schemas.me`), never here \u2014 an out-of-bounds value in a\nreplayed log must not crash a reader (D9 tolerance).",
   "properties": {
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "display_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Display Name"
+    },
+    "status_emoji": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status Emoji"
+    },
+    "status_expires_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status Expires At"
+    },
+    "status_text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status Text"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    },
     "user_id": {
       "title": "User Id",
       "type": "string"

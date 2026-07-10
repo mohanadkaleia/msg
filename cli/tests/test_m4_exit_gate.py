@@ -278,6 +278,30 @@ def test_m4_portability_round_trip(
         assert resp.status_code == 200, resp.text
         owner: dict[str, Any] = resp.json()
 
+        # ENG-164: give the owner a FULL richer profile (title + description +
+        # a custom status with a FUTURE expiry) BEFORE the export, so the
+        # portability round-trip is non-vacuous for the five new `users`
+        # columns. These live ONLY in the users row + the last
+        # `user.profile_updated` meta event — if the bundle drops them, the
+        # imported row goes NULL while the log still carries them (row/log
+        # divergence), and the user's next PATCH (which emits the RESULTING
+        # row state) would then emit nulls that every client fold applies as
+        # "cleared", silently destroying profile data workspace-wide.
+        prof = client.patch(
+            "/v1/me",
+            json={
+                "title": "Founder",
+                "description": "Runs Acme. Reachable in #general.",
+                "status": {"emoji": "🚀", "text": "shipping", "clear_after": "today"},
+            },
+            headers=_hdr(owner),
+        )
+        assert prof.status_code == 200, prof.text
+        owner_profile: dict[str, Any] = prof.json()
+        assert owner_profile["title"] == "Founder"
+        assert owner_profile["status_emoji"] == "🚀"
+        assert owner_profile["status_expires_at"] is not None  # a future expiry
+
         member = _accept_invite(
             client,
             owner,
@@ -513,6 +537,23 @@ def test_m4_portability_round_trip(
         owner_b: dict[str, Any] = login.json()
         assert owner_b["user_id"] == owner["user_id"]
         assert owner_b["workspace_id"] == owner["workspace_id"]
+
+        # ENG-164: the owner's richer profile survived the round-trip VERBATIM —
+        # the restored `users` row matches the source (and thus the imported
+        # meta log's last `user.profile_updated`), so `GET /v1/me` and the
+        # client directory fold agree (no row/log divergence). status_expires_at
+        # is compared RAW (still future here → not lazily cleared).
+        me_b = client_b.get("/v1/me", headers=_hdr(owner_b))
+        assert me_b.status_code == 200, me_b.text
+        prof_b = me_b.json()
+        assert prof_b["title"] == owner_profile["title"]
+        assert prof_b["description"] == owner_profile["description"]
+        assert prof_b["status_emoji"] == owner_profile["status_emoji"]
+        assert prof_b["status_text"] == owner_profile["status_text"]
+        assert prof_b["status_expires_at"] == owner_profile["status_expires_at"]
+        # NOTE: this read is non-mutating on purpose — a profile PATCH here would
+        # append a meta event and perturb the Phase 6/7 equivalence + Phase 8
+        # head deltas. The rename-doesn't-null sanity runs in Phase 8 instead.
         for email, password in (
             ("owner@example.com", OWNER_PASSWORD),
             ("bob@example.com", MEMBER_PASSWORD),
@@ -583,6 +624,23 @@ def test_m4_portability_round_trip(
         assert {k: v for k, v in heads_after.items() if k != general_id} == {
             k: v for k, v in a_heads.items() if k != general_id
         }
+
+        # ENG-164 sanity (post-equivalence, so this mutation perturbs nothing
+        # asserted above): a rename-ONLY PATCH on the restored profile must NOT
+        # null the round-tripped title/description/status — subset semantics
+        # emit the RESULTING row state, which still carries them intact. This is
+        # the exact data-loss the missing bundle columns would have caused.
+        renamed = client_b.patch(
+            "/v1/me", json={"display_name": "Owner Renamed"}, headers=_hdr(owner_b)
+        )
+        assert renamed.status_code == 200, renamed.text
+        after_rename = renamed.json()
+        assert after_rename["display_name"] == "Owner Renamed"
+        assert after_rename["title"] == owner_profile["title"]
+        assert after_rename["description"] == owner_profile["description"]
+        assert after_rename["status_emoji"] == owner_profile["status_emoji"]
+        assert after_rename["status_text"] == owner_profile["status_text"]
+        assert after_rename["status_expires_at"] == owner_profile["status_expires_at"]
 
     # The dump diverges by EXACTLY the new message's row.
     after = _server_dumps(server_b.database_url)

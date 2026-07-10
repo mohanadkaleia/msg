@@ -146,7 +146,9 @@ export function metaUserEvent(
   streamId: string,
   seq: number,
   type: 'user.joined' | 'user.left' | 'user.profile_updated',
-  payload: { user_id: string; display_name?: string },
+  // ENG-164: profile_updated may carry title/description/status fields (a
+  // null clears; absent leaves untouched) — modeled as an open record here.
+  payload: { user_id: string; display_name?: string } & Record<string, unknown>,
   authorUserId?: string,
 ): EventRow {
   const eventId = `e_${streamId}_${seq}`

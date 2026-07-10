@@ -104,13 +104,30 @@ class UserLeftV1(BaseModel):
 class UserProfileUpdatedV1(BaseModel):
     """Payload for ``user.profile_updated`` v1 (§2.2).
 
-    Only ``user_id`` is required; the changed profile fields are open-ended
-    (carried through ``extra="allow"``) so new profile attributes are additive.
+    Only ``user_id`` is required. The profile fields are OPTIONAL and additive
+    (ENG-164 extends the ENG-91 ``display_name``-only shape with ``title`` /
+    ``description`` / the custom-status trio): a v1 event that omits them —
+    every pre-ENG-164 event — is still valid, and unknown future fields keep
+    riding ``extra="allow"`` (§2.3.2). Server-emitted events carry the
+    RESULTING profile values after the PATCH (an explicit ``null`` means
+    "cleared"; an ABSENT key means "not carried by this event" — the client
+    fold leaves absent fields untouched). ``status_expires_at`` is an RFC 3339
+    string; expiry is LAZY — readers treat an expired status as cleared at
+    render time. Format-validation only: bounds (title/description/status_text
+    lengths, the emoji byte cap) are enforced at the HTTP boundary
+    (:mod:`msgd.api.schemas.me`), never here — an out-of-bounds value in a
+    replayed log must not crash a reader (D9 tolerance).
     """
 
     model_config = ConfigDict(extra="allow")
 
     user_id: str
+    display_name: str | None = None
+    title: str | None = None
+    description: str | None = None
+    status_emoji: str | None = None
+    status_text: str | None = None
+    status_expires_at: str | None = None
 
     @field_validator("user_id")
     @classmethod
@@ -330,22 +347,34 @@ def build_user_profile_updated_body(
     client_created_at: str,
     user_id: str,
     display_name: str,
+    title: str | None = None,
+    description: str | None = None,
+    status_emoji: str | None = None,
+    status_text: str | None = None,
+    status_expires_at: str | None = None,
     event_id: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a server-authored ``user.profile_updated`` v1 body dict (§2.2).
 
     Mirrors :func:`build_user_joined_body`: the acting user authors their own
     profile update (``author_user_id == payload.user_id`` — ``PATCH /v1/me`` is
-    structurally self-only). ``display_name`` rides the payload's
-    ``extra="allow"`` surface (the model requires only ``user_id``; changed
-    profile fields are additive by design) — the web directory fold reads it to
-    rename the member. The model is the source of truth, so
+    structurally self-only). The payload carries the RESULTING profile state
+    after the PATCH (ENG-164): ``display_name`` is always present (the column
+    is NOT NULL); ``title`` / ``description`` / the status trio are the
+    resulting values, dumped as explicit ``null`` when unset/cleared — the web
+    directory fold applies every carried key (null clears) and the client
+    treats an expired ``status_expires_at`` as cleared at render time (lazy
+    expiry, no job). The model is the source of truth, so
     ``hash_event(returned dict) == event_hash`` holds by construction (D2).
     """
-    # `display_name` rides the model's `extra="allow"` surface (changed profile
-    # fields are additive), so construct via model_validate rather than kwargs.
-    payload = UserProfileUpdatedV1.model_validate(
-        {"user_id": user_id, "display_name": display_name}
+    payload = UserProfileUpdatedV1(
+        user_id=user_id,
+        display_name=display_name,
+        title=title,
+        description=description,
+        status_emoji=status_emoji,
+        status_text=status_text,
+        status_expires_at=status_expires_at,
     )
     body = Body(
         event_id=event_id if event_id is not None else ids.new_event_id(),

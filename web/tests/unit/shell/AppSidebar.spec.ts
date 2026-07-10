@@ -414,6 +414,47 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(wrapper.find('[data-testid="user-card"]').exists()).toBe(true)
   })
 
+  it('shows the ACTIVE custom status on the footer card; hides an expired one (ENG-164)', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    // The signed-in user's directory record carries an unexpired status.
+    fake.setMyUserId('u_me').setDirectory(
+      [
+        {
+          user_id: 'u_me',
+          display_name: 'Dana',
+          status_emoji: '🌴',
+          status_text: 'On vacation',
+          status_expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+        },
+      ],
+      [],
+    )
+    setWorkerClient(fake.client)
+    useAuthStore().myUserId = 'u_me'
+    const wrapper = await mountSidebar()
+
+    const status = wrapper.get('[data-testid="user-card-status"]')
+    expect(status.text()).toContain('🌴')
+    expect(status.text()).toContain('On vacation')
+
+    // An EXPIRED status is treated as absent at render time (lazy expiry).
+    fake.setDirectory(
+      [
+        {
+          user_id: 'u_me',
+          display_name: 'Dana',
+          status_emoji: '🍜',
+          status_text: 'Lunch',
+          status_expires_at: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ],
+      [],
+    )
+    await useWorkspaceStore().refresh()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="user-card-status"]').exists()).toBe(false)
+  })
+
   it('shows a sync-derived local-first note in the footer (ENG-152)', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
