@@ -30,6 +30,7 @@ from msgd.core.envelope import Body
 
 __all__ = [
     "WorkspaceCreatedV1",
+    "WorkspaceUpdatedV1",
     "UserJoinedV1",
     "UserLeftV1",
     "UserProfileUpdatedV1",
@@ -42,6 +43,7 @@ __all__ = [
     "BotInstalledV1",
     "BotRemovedV1",
     "build_workspace_created_body",
+    "build_workspace_updated_body",
     "build_user_joined_body",
     "build_user_profile_updated_body",
     "build_channel_created_body",
@@ -71,6 +73,25 @@ class WorkspaceCreatedV1(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str
+
+
+class WorkspaceUpdatedV1(BaseModel):
+    """Payload for ``workspace.updated`` v1 (ENG-152) — workspace settings change.
+
+    Every field is optional and PRESENCE-SIGNIFICANT: the payload carries
+    exactly the fields the admin changed (``name`` and/or ``description``), and
+    a client fold applies only the fields present (LWW by ascending sequence
+    over ``workspace.created`` → ``workspace.updated``\\*). An absent field
+    means "unchanged", so ``description: ""`` (cleared) and "description not
+    touched" stay distinguishable. Server-authored only — the type is in
+    ``SERVER_AUTHORED_EVENT_TYPES``, so a client upload is rejected
+    ``permission_denied`` (the ``user.profile_updated`` discipline).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str | None = None
+    description: str | None = None
 
 
 class UserJoinedV1(BaseModel):
@@ -301,6 +322,49 @@ def build_workspace_created_body(
         author_device_id=author_device_id,
         client_created_at=client_created_at,
         payload=payload.model_dump(mode="json"),
+    )
+    dumped: dict[str, Any] = body.model_dump(mode="json")
+    return dumped
+
+
+def build_workspace_updated_body(
+    *,
+    workspace_id: str,
+    stream_id: str,
+    author_user_id: str,
+    author_device_id: str,
+    client_created_at: str,
+    name: str | None = None,
+    description: str | None = None,
+    event_id: str | None = None,
+) -> dict[str, Any]:
+    """Assemble a server-authored ``workspace.updated`` v1 body dict (ENG-152).
+
+    Mirrors :func:`build_user_profile_updated_body`: the ACTING owner/admin
+    authors the event (``PATCH /v1/admin/workspace`` is ``require_role``-gated;
+    the type itself is in ``SERVER_AUTHORED_EVENT_TYPES`` so no client can
+    forge one). The payload carries ONLY the fields the caller passed —
+    presence is significant (absent = unchanged; ``description=""`` = cleared)
+    — so the changed dict is validated through the model and dumped with
+    ``exclude_unset``. The model is the source of truth, so
+    ``hash_event(returned dict) == event_hash`` holds by construction (D2).
+    """
+    changed: dict[str, Any] = {}
+    if name is not None:
+        changed["name"] = name
+    if description is not None:
+        changed["description"] = description
+    payload = WorkspaceUpdatedV1.model_validate(changed)
+    body = Body(
+        event_id=event_id if event_id is not None else ids.new_event_id(),
+        workspace_id=workspace_id,
+        stream_id=stream_id,
+        type="workspace.updated",
+        type_version=1,
+        author_user_id=author_user_id,
+        author_device_id=author_device_id,
+        client_created_at=client_created_at,
+        payload=payload.model_dump(mode="json", exclude_unset=True),
     )
     dumped: dict[str, Any] = body.model_dump(mode="json")
     return dumped

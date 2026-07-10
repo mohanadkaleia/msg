@@ -9,10 +9,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createAdminInvite,
+  getAdminWorkspace,
   listAdminInvites,
   listAdminMembers,
   revokeAdminInvite,
   updateAdminMember,
+  updateAdminWorkspace,
 } from '../../../src/worker/admin'
 import { WorkerCore } from '../../../src/worker/core'
 import { MemoryDb } from '../../../src/worker/db'
@@ -293,6 +295,60 @@ describe('token boundary (R1)', () => {
   })
 })
 
+describe('admin.workspace.get (GET /v1/admin/workspace)', () => {
+  it('GETs the settings row and returns the server fields verbatim', async () => {
+    const server = new FakeSyncServer()
+    server.adminWorkspace = { workspace_id: 'w_1', name: 'Acme', description: 'About us' }
+    const http = new FakeHttpClient(server)
+
+    const res = await getAdminWorkspace(http)
+
+    expect(http.getCalls).toEqual(['/v1/admin/workspace'])
+    expect(res).toEqual({ workspace_id: 'w_1', name: 'Acme', description: 'About us' })
+  })
+
+  it('folds a 403 (member/guest caller) into the coded `forbidden`', async () => {
+    const server = new FakeSyncServer()
+    server.adminError = forbidden
+    const http = new FakeHttpClient(server)
+
+    expect(await codeOf(getAdminWorkspace(http))).toBe('forbidden')
+  })
+})
+
+describe('admin.workspace.update (PATCH /v1/admin/workspace)', () => {
+  it('PATCHes only the defined fields and returns the updated row', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+
+    const res = await updateAdminWorkspace(http, { name: 'Acme Corp' })
+
+    // Presence-significant body: an untouched description is ABSENT, not null.
+    expect(http.patchCalls).toEqual([{ path: '/v1/admin/workspace', body: { name: 'Acme Corp' } }])
+    expect(res.name).toBe('Acme Corp')
+    expect(res.description).toBeNull()
+  })
+
+  it("sends `description: ''` verbatim — the explicit clear is never dropped", async () => {
+    const server = new FakeSyncServer()
+    server.adminWorkspace = { workspace_id: 'w_1', name: 'Acme', description: 'Old' }
+    const http = new FakeHttpClient(server)
+
+    const res = await updateAdminWorkspace(http, { description: '' })
+
+    expect(http.patchCalls).toEqual([{ path: '/v1/admin/workspace', body: { description: '' } }])
+    expect(res).toEqual({ workspace_id: 'w_1', name: 'Acme', description: '' })
+  })
+
+  it('folds a 422 (bad name / empty PATCH) into the coded `validation-error`', async () => {
+    const server = new FakeSyncServer()
+    server.adminError = invalid
+    const http = new FakeHttpClient(server)
+
+    expect(await codeOf(updateAdminWorkspace(http, { name: '' }))).toBe('validation-error')
+  })
+})
+
 describe('admin RPC (WorkerCore round trip)', () => {
   it('answers `admin.members.list` with the roster (plain data only)', async () => {
     const server = new FakeSyncServer()
@@ -345,6 +401,37 @@ describe('admin RPC (WorkerCore round trip)', () => {
       path: '/v1/admin/invites',
       body: { role: 'admin', ttl_seconds: 86400 },
     })
+  })
+
+  it('answers `admin.workspace.update` with the updated row (plain data only)', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+    const { sink, frames } = collectingSink()
+    const core = new WorkerCore(new MemoryDb(), sink, { http, wsFactory: inertWsFactory })
+    await core.init()
+
+    await core.handle('c1', {
+      t: 'req',
+      id: 'a4',
+      clientId: 'c1',
+      req: {
+        method: 'admin.workspace.update',
+        params: { name: 'Acme Corp', description: 'About us' },
+      },
+    })
+
+    const res = lastRes(frames, 'a4')
+    expect(res.t === 'res' && res.ok).toBe(true)
+    if (res.t === 'res' && res.ok) {
+      const result = res.result as { name: string; description: string | null }
+      expect(result.name).toBe('Acme Corp')
+      expect(result.description).toBe('About us')
+      // The frame carries plain settings data — nothing token-ish (R1).
+      expect(JSON.stringify(result)).not.toMatch(/token|bearer|authorization/i)
+    }
+    expect(http.patchCalls).toEqual([
+      { path: '/v1/admin/workspace', body: { name: 'Acme Corp', description: 'About us' } },
+    ])
   })
 
   it('frames a 403 as a structured coded error, not a bare throw', async () => {

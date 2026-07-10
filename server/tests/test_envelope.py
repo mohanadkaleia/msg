@@ -163,6 +163,7 @@ def _sample_payload(type_: str) -> dict[str, Any]:
         "reaction.added": {"message_id": m, "emoji": "👍"},
         "reaction.removed": {"message_id": m, "emoji": "👍"},
         "workspace.created": {"name": "Acme"},
+        "workspace.updated": {"name": "Acme Corp", "description": "About us"},
         "user.joined": {"user_id": u, "display_name": "Dana"},
         "user.left": {"user_id": u, "display_name": "Dana"},
         "user.profile_updated": {"user_id": u},

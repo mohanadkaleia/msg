@@ -87,4 +87,18 @@ describe('AdminView (ENG-151 PR-3)', () => {
     expect(wrapper.find('[data-testid="admin-members"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="admin-invites"]').exists()).toBe(false)
   })
+
+  it('the Workspace tab swaps to the settings panel (ENG-152)', async () => {
+    const wrapper = await mountView('owner', 'u_owner')
+
+    await wrapper.get('[data-testid="admin-tab-workspace"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="admin-workspace"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="admin-members"]').exists()).toBe(false)
+    expect(fake.adminWorkspaceGetSpy).toHaveBeenCalledTimes(1)
+    // The form is pre-filled from `admin.workspace.get`.
+    expect((wrapper.get('[data-testid="workspace-name"]').element as HTMLInputElement).value).toBe(
+      'Acme',
+    )
+  })
 })

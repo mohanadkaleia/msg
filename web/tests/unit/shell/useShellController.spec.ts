@@ -79,6 +79,27 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(fake.fetch).not.toHaveBeenCalled()
   })
 
+  it('workspaceName reads the workspace.info fold; falls back until it syncs (ENG-152)', async () => {
+    // No workspace.info seeded → the genesis event has not synced: fallback.
+    setWorkerClient(fake.client)
+    const first = await mountController(router)
+    expect(first.ctrl.workspaceName.value).toBe('msg')
+    expect(first.ctrl.workspaceInitials.value).toBe('MS')
+
+    // The REAL name (workspace.created + any workspace.updated renames) wins.
+    setActivePinia(createPinia())
+    fake.setWorkspaceInfo({ name: 'Acme Corp', description: null })
+    const second = await mountController(router)
+    expect(second.ctrl.workspaceName.value).toBe('Acme Corp')
+    expect(second.ctrl.workspaceInitials.value).toBe('AC')
+
+    // A store update (e.g. the admin's save echo) renames reactively.
+    useWorkspaceStore().applyWorkspaceUpdate({ name: 'Zenith', description: null })
+    await flushPromises()
+    expect(second.ctrl.workspaceName.value).toBe('Zenith')
+    expect(second.ctrl.workspaceInitials.value).toBe('ZE')
+  })
+
   it('flips the main panel to a scaffold view and back', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     setWorkerClient(fake.client)

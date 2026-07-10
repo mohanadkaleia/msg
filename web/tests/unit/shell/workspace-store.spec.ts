@@ -68,4 +68,25 @@ describe('workspace store', () => {
     expect(fake.fetch).not.toHaveBeenCalled()
     expect(fake.querySpy).toHaveBeenCalledWith({ q: 'directory.list' })
   })
+
+  it('loads the workspace identity fold and applies a save echo (ENG-152)', async () => {
+    fake.setWorkspaceInfo({ name: 'Acme', description: 'Widgets' })
+    const store = useWorkspaceStore()
+
+    await store.load()
+
+    // A ZERO-network projection read, refreshed with the sidebar.
+    expect(store.workspaceInfo).toEqual({ name: 'Acme', description: 'Widgets' })
+    expect(fake.querySpy).toHaveBeenCalledWith({ q: 'workspace.info' })
+    expect(fake.fetch).not.toHaveBeenCalled()
+
+    // The admin panel's PATCH echo applies immediately (optimistic rename).
+    store.applyWorkspaceUpdate({ name: 'Acme Corp', description: '' })
+    expect(store.workspaceInfo).toEqual({ name: 'Acme Corp', description: '' })
+
+    // A sync-driven refresh re-reads the fold (the meta event is the truth).
+    fake.setWorkspaceInfo({ name: 'Acme Corp', description: '' })
+    await store.refresh()
+    expect(store.workspaceInfo).toEqual({ name: 'Acme Corp', description: '' })
+  })
 })

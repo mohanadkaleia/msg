@@ -1,0 +1,34 @@
+{
+  "$id": "https://msg.dev/schemas/workspace.updated.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Payload for ``workspace.updated`` v1 (ENG-152) \u2014 workspace settings change.\n\nEvery field is optional and PRESENCE-SIGNIFICANT: the payload carries\nexactly the fields the admin changed (``name`` and/or ``description``), and\na client fold applies only the fields present (LWW by ascending sequence\nover ``workspace.created`` \u2192 ``workspace.updated``\\*). An absent field\nmeans \"unchanged\", so ``description: \"\"`` (cleared) and \"description not\ntouched\" stay distinguishable. Server-authored only \u2014 the type is in\n``SERVER_AUTHORED_EVENT_TYPES``, so a client upload is rejected\n``permission_denied`` (the ``user.profile_updated`` discipline).",
+  "properties": {
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Name"
+    }
+  },
+  "title": "msg workspace.updated payload (v1)",
+  "type": "object"
+}

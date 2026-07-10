@@ -45,7 +45,11 @@ from msgd.blobs.store import LocalDiskBlobStore
 from msgd.core import ids
 from msgd.core.hashing import hash_event
 from msgd.core.payloads import build_message_created_body
-from msgd.core.payloads.meta import build_user_joined_body, build_workspace_created_body
+from msgd.core.payloads.meta import (
+    build_user_joined_body,
+    build_workspace_created_body,
+    build_workspace_updated_body,
+)
 from msgd.core.time import now_rfc3339, to_rfc3339
 from msgd.db.models import Event, File, Invite, Stream, StreamMember, User, Workspace
 from msgd.events.emit import emit_event
@@ -846,6 +850,151 @@ async def test_imports_bundle_with_zero_event_channel(
     assert row.name == "empty-room"
     assert row.visibility == "public"
     assert row.archived_at is None
+
+
+def _fold_workspace_info(events: list[Event]) -> tuple[str | None, str | None]:
+    """The SERVER-side mirror of the web `getWorkspaceInfo` fold (ENG-152).
+
+    Replays the workspace-meta events in ascending ``server_sequence`` exactly
+    as ``web/src/worker/projection.ts::getWorkspaceInfo`` does: ``workspace.created``
+    names the workspace; each ``workspace.updated`` applies EXACTLY the fields
+    present (LWW; an absent field is unchanged). Used to prove the restored
+    ``workspaces`` ROW and the restored LOG agree — no row/log divergence.
+    """
+    name: str | None = None
+    description: str | None = None
+    for e in events:
+        payload = e.body.get("payload", {})
+        if e.type in ("workspace.created", "workspace.updated"):
+            if isinstance(payload.get("name"), str):
+                name = payload["name"]
+            if e.type == "workspace.updated" and isinstance(payload.get("description"), str):
+                description = payload["description"]
+    return name, description
+
+
+async def test_round_trip_renamed_workspace_row_and_log_agree(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    """ENG-152 (review Low): a RENAMED workspace round-trips with NO row/log split.
+
+    The bundle carries a ``workspace.updated`` event that renamed the workspace
+    away from its genesis name and set a description — exactly what the live
+    ``PATCH /v1/admin/workspace`` produces (row write + server-authored meta
+    event). After export → import into a FRESH instance, BOTH the restored
+    ``workspaces`` row AND the folded workspace-meta log must reflect the
+    RENAMED values — not the genesis name — so a client's ``getWorkspaceInfo``
+    and the operational row never disagree (the de-vacuuming ENG-164 did for
+    the user-profile columns).
+    """
+    await db_session.execute(text(_RESET))
+    ws = ids.new_workspace_id()
+    # The genesis name; the row is renamed below, mirroring the live PATCH.
+    db_session.add(Workspace(workspace_id=ws, name="Acme", file_quota_bytes=1))
+    await db_session.flush()
+    owner = ids.new_user_id()
+    db_session.add(
+        User(
+            user_id=owner,
+            workspace_id=ws,
+            email="alice@example.com",
+            password_hash=SECRET_HASH,
+            display_name="Alice",
+            role="owner",
+            is_bot=False,
+        )
+    )
+    await db_session.flush()
+    a_owner = _auth(ws, owner)
+
+    meta = ids.new_stream_id()
+    await emit_event(
+        db_session,
+        home_stream_id=meta,
+        body=build_workspace_created_body(
+            workspace_id=ws,
+            stream_id=meta,
+            author_user_id=owner,
+            author_device_id=a_owner["device_id"],
+            client_created_at=now_rfc3339(),
+            name="Acme",  # genesis name
+        ),
+    )
+    await emit_event(
+        db_session,
+        home_stream_id=meta,
+        body=build_user_joined_body(
+            workspace_id=ws,
+            stream_id=meta,
+            author_user_id=owner,
+            author_device_id=a_owner["device_id"],
+            client_created_at=now_rfc3339(),
+            user_id=owner,
+            display_name="Alice",
+        ),
+    )
+    # The live PATCH shape: rename the operational ROW *and* emit the
+    # server-authored workspace.updated so the log carries the new identity.
+    ws_row = (
+        (await db_session.execute(select(Workspace).where(Workspace.workspace_id == ws)))
+        .scalars()
+        .one()
+    )
+    ws_row.name = "Acme Corp"
+    ws_row.description = "Where widgets happen"
+    await emit_event(
+        db_session,
+        home_stream_id=meta,
+        body=build_workspace_updated_body(
+            workspace_id=ws,
+            stream_id=meta,
+            author_user_id=owner,
+            author_device_id=a_owner["device_id"],
+            client_created_at=now_rfc3339(),
+            name="Acme Corp",
+            description="Where widgets happen",
+        ),
+    )
+    await db_session.flush()
+
+    store = LocalDiskBlobStore(tmp_path / "a-blobs")
+    bundle = tmp_path / "bundle"
+    await export_workspace(db_session, store, bundle, exported_at=EXPORTED_AT, tool=TOOL)
+
+    # The manifest reflects the CURRENT (renamed) row, not the genesis name.
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["workspace"]["name"] == "Acme Corp"
+    assert manifest["workspace"]["description"] == "Where widgets happen"
+
+    # Import into a FRESH instance.
+    await db_session.execute(text(_RESET))
+    await import_workspace(db_session, LocalDiskBlobStore(tmp_path / "b-blobs"), bundle)
+
+    # 1. The restored operational ROW carries the renamed values.
+    restored = (
+        (await db_session.execute(select(Workspace).where(Workspace.workspace_id == ws)))
+        .scalars()
+        .one()
+    )
+    assert restored.name == "Acme Corp"
+    assert restored.description == "Where widgets happen"
+
+    # 2. The restored LOG folds to the SAME identity (no row/log divergence):
+    #    the workspace.updated event survived the round trip and the fold
+    #    reflects the rename, not the genesis "Acme".
+    meta_events = (
+        (
+            await db_session.execute(
+                select(Event).where(Event.stream_id == meta).order_by(Event.server_sequence)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert any(e.type == "workspace.updated" for e in meta_events)
+    folded_name, folded_description = _fold_workspace_info(list(meta_events))
+    assert folded_name == "Acme Corp" == restored.name
+    assert folded_description == "Where widgets happen" == restored.description
 
 
 async def test_rerun_of_completed_import_fails_cleanly(

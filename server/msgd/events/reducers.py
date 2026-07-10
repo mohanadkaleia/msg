@@ -212,6 +212,10 @@ async def _reduce_dm_created(db: AsyncSession, body: dict[str, Any]) -> None:
 #: (``message.created`` — ENG-66+; ``bot.*`` — M5) and dispatch as a no-op.
 REDUCERS: dict[str, Reducer] = {
     "workspace.created": _reduce_workspace_created,
+    # ENG-152: the `workspaces` row (name/description) is handler-authored
+    # operational state (PATCH /v1/admin/workspace writes it directly, the
+    # user.joined/users-row precedent) — no streams/members effect here.
+    "workspace.updated": _reduce_noop,
     "user.joined": _reduce_noop,
     "user.left": _reduce_noop,
     "user.profile_updated": _reduce_noop,

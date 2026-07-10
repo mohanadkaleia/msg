@@ -425,6 +425,8 @@ async def export_workspace(
         "workspace": {
             "workspace_id": workspace.workspace_id,
             "name": workspace.name,
+            # ENG-152: null = never set; "" = explicitly cleared (row verbatim).
+            "description": workspace.description,
             "created_at": to_rfc3339(workspace.created_at),
             "file_quota_bytes": workspace.file_quota_bytes,
         },

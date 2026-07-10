@@ -40,6 +40,10 @@ class Workspace(Base):
 
     workspace_id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Free-text workspace description (ENG-152). NULL = never set (pre-0010
+    # rows); an admin clearing it stores "" — the API stores what it was given
+    # verbatim so the `workspace.updated` payload and the row never disagree.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )

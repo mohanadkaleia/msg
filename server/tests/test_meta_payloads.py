@@ -21,6 +21,7 @@ from msgd.core.payloads import (
     build_user_joined_body,
     build_user_profile_updated_body,
     build_workspace_created_body,
+    build_workspace_updated_body,
     get_payload_model,
 )
 from msgd.core.time import now_rfc3339
@@ -30,6 +31,7 @@ def test_registry_has_all_meta_types() -> None:
     """Every ENG-65 meta type/version is registered (dispatch is total)."""
     for pair in [
         ("workspace.created", 1),
+        ("workspace.updated", 1),
         ("user.joined", 1),
         ("user.left", 1),
         ("user.profile_updated", 1),
@@ -145,6 +147,34 @@ def test_user_profile_updated_back_compat_and_resulting_state() -> None:
     }
     event_hash = hash_event(body)
     env = Envelope(body=Body(**body), event_hash=event_hash)
+    assert verify_hash(env)
+
+
+def test_build_workspace_updated_body_presence_and_hash_discipline() -> None:
+    """The payload carries EXACTLY the passed fields (presence-significant) and
+    the returned dict hash-verifies (model-is-source path, D2 — ENG-152)."""
+    common = {
+        "workspace_id": ids.new_workspace_id(),
+        "stream_id": ids.new_stream_id(),
+        "author_user_id": ids.new_user_id(),
+        "author_device_id": ids.new_device_id(),
+        "client_created_at": now_rfc3339(),
+    }
+
+    # Name-only: description ABSENT (not null) — a fold must not read "cleared".
+    body = build_workspace_updated_body(**common, name="Acme Corp")
+    assert body["type"] == "workspace.updated"
+    assert body["type_version"] == 1
+    assert body["payload"] == {"name": "Acme Corp"}
+
+    # Description-only, including the explicit-clear "" value.
+    body = build_workspace_updated_body(**common, description="")
+    assert body["payload"] == {"description": ""}
+
+    # Both fields; the dict hash-verifies as stored.
+    body = build_workspace_updated_body(**common, name="Acme", description="About us")
+    assert body["payload"] == {"name": "Acme", "description": "About us"}
+    env = Envelope(body=Body(**body), event_hash=hash_event(body))
     assert verify_hash(env)
 
 

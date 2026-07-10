@@ -1,9 +1,9 @@
 <script setup lang="ts">
-// AdminView — ENG-151 PR-3: the Admin surface (members + pending invites),
-// reached from the sidebar's `nav-admin` item (the shell's `activeView` flips
-// to 'admin' — sections are shell panels here, not router routes, matching
-// Inbox/Apps/Files). All data flows through the `client.admin.*` worker RPCs;
-// this view never touches HTTP or the token.
+// AdminView — ENG-151 PR-3: the Admin surface (members + pending invites +
+// workspace settings, ENG-152), reached from the sidebar's `nav-admin` item
+// (the shell's `activeView` flips to 'admin' — sections are shell panels here,
+// not router routes, matching Inbox/Apps/Files). All data flows through the
+// `client.admin.*` worker RPCs; this view never touches HTTP or the token.
 //
 // Role gating, two layers deep: the sidebar already hides `nav-admin` for
 // members/guests (`canAdmin`), and this view INDEPENDENTLY checks the auth
@@ -14,10 +14,11 @@ import { storeToRefs } from 'pinia'
 
 import AdminInvitesPanel from './AdminInvitesPanel.vue'
 import AdminMembersPanel from './AdminMembersPanel.vue'
+import AdminWorkspacePanel from './AdminWorkspacePanel.vue'
 import EmptyState from '../ui/EmptyState.vue'
 import { useAuthStore } from '../../stores/auth'
 
-type AdminTab = 'members' | 'invites'
+type AdminTab = 'members' | 'invites' | 'workspace'
 
 const { role, myUserId } = storeToRefs(useAuthStore())
 
@@ -29,6 +30,7 @@ const activeTab = ref<AdminTab>('members')
 const TABS: ReadonlyArray<{ key: AdminTab; label: string }> = [
   { key: 'members', label: 'Members' },
   { key: 'invites', label: 'Invites' },
+  { key: 'workspace', label: 'Workspace' },
 ]
 </script>
 
@@ -77,7 +79,8 @@ const TABS: ReadonlyArray<{ key: AdminTab; label: string }> = [
             :actor-role="role ?? ''"
             :actor-user-id="myUserId ?? ''"
           />
-          <AdminInvitesPanel v-else />
+          <AdminInvitesPanel v-else-if="activeTab === 'invites'" />
+          <AdminWorkspacePanel v-else />
         </div>
       </div>
     </template>

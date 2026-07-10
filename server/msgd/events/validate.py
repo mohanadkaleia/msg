@@ -100,9 +100,14 @@ _WRITE_MATRIX_TYPES = frozenset(
 #: ``_WRITE_MATRIX_TYPES``) they would fall to the D9 ``can_read`` else-branch and
 #: any member who can read workspace-meta could forge a bot install/removal into
 #: the roster fold (the exact ``user.profile_updated`` bug class).
+#: SECURITY (ENG-152): ``workspace.updated`` joins the family in the same PR that
+#: registers its payload model — the client workspace-identity fold renames the
+#: workspace from it, so a forged upload would let any member rename the
+#: workspace on every client (only ``PATCH /v1/admin/workspace`` may emit it).
 SERVER_AUTHORED_EVENT_TYPES = frozenset(
     {
         "workspace.created",
+        "workspace.updated",
         "user.joined",
         "user.left",
         "user.profile_updated",

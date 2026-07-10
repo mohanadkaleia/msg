@@ -12,6 +12,8 @@ import type {
   AdminInviteCreateParams,
   AdminMember,
   AdminMemberUpdateParams,
+  AdminWorkspace,
+  AdminWorkspaceUpdateParams,
   BackfillResult,
   DirectoryChannel,
   DirectoryUser,
@@ -38,6 +40,7 @@ import type {
   Unsubscribe,
   UploadProgress,
   WorkerClient,
+  WorkspaceInfoResult,
 } from '../../../src/worker'
 
 type SidebarStream = StreamRow & StreamBadge & DmParticipants
@@ -119,6 +122,19 @@ export class FakeWorker {
   /** The one-time join URL the next `admin.invites.create` resolves with. */
   createdInviteUrl = 'https://msg.example/join/raw-invite-token-1'
 
+  // -- ENG-152 workspace settings + identity fold ---------------------------
+  readonly adminWorkspaceGetSpy = vi.fn()
+  readonly adminWorkspaceUpdateSpy = vi.fn<(params: AdminWorkspaceUpdateParams) => void>()
+  private adminWorkspace: AdminWorkspace = {
+    workspace_id: 'w_test',
+    name: 'Acme',
+    description: null,
+  }
+  private adminWorkspaceGetError: RpcCodedError | null = null
+  private adminWorkspaceUpdateError: RpcCodedError | null = null
+  /** The `workspace.info` local-fold result (null name until "genesis synced"). */
+  private workspaceInfo: WorkspaceInfoResult = { name: null, description: null }
+
   // -- self-profile (`me.*`) surface ----------------------------------------
   // A seedable own-profile served by the `me.get`/`me.update` facade; `update`
   // mutates the seed like the server would, or rejects with a queued coded error.
@@ -179,6 +195,30 @@ export class FakeWorker {
   /** Make the NEXT `admin.invites.revoke` reject with the coded error `code`. */
   failNextAdminRevoke(code: string): this {
     this.adminRevokeError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Seed the settings row the `admin.workspace.get` facade serves (ENG-152). */
+  setAdminWorkspace(ws: Partial<AdminWorkspace>): this {
+    this.adminWorkspace = { ...this.adminWorkspace, ...ws }
+    return this
+  }
+
+  /** Make the NEXT `admin.workspace.get` reject with the coded error `code`. */
+  failNextAdminWorkspaceGet(code: string): this {
+    this.adminWorkspaceGetError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT `admin.workspace.update` reject with the coded error `code`. */
+  failNextAdminWorkspaceUpdate(code: string): this {
+    this.adminWorkspaceUpdateError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Seed the `workspace.info` fold result (the switcher/header name source). */
+  setWorkspaceInfo(info: WorkspaceInfoResult): this {
+    this.workspaceInfo = { ...info }
     return this
   }
 
@@ -475,6 +515,9 @@ export class FakeWorker {
         users: [...this.directory.users],
         channels: [...this.directory.channels],
       } as QueryResult<Q>)
+    }
+    if (params.q === 'workspace.info') {
+      return Promise.resolve({ ...this.workspaceInfo } as QueryResult<Q>)
     }
     if (params.q === 'message.get') {
       const found = [...this.messages.values()]
@@ -890,6 +933,36 @@ export class FakeWorker {
               return Promise.reject(new RpcCodedError('not-found', 'no such invite'))
             }
             return Promise.resolve({ ok: true as const })
+          },
+        },
+        // ENG-152 workspace settings: a seedable row; `update` applies the
+        // presence-significant fields like the server would (and mirrors them
+        // into the `workspace.info` fold, as the real meta-event sync does).
+        workspace: {
+          get: () => {
+            this.adminWorkspaceGetSpy()
+            if (this.adminWorkspaceGetError) {
+              const err = this.adminWorkspaceGetError
+              this.adminWorkspaceGetError = null
+              return Promise.reject(err)
+            }
+            return Promise.resolve({ ...this.adminWorkspace })
+          },
+          update: (params: AdminWorkspaceUpdateParams) => {
+            this.adminWorkspaceUpdateSpy(params)
+            if (this.adminWorkspaceUpdateError) {
+              const err = this.adminWorkspaceUpdateError
+              this.adminWorkspaceUpdateError = null
+              return Promise.reject(err)
+            }
+            if (params.name !== undefined) this.adminWorkspace.name = params.name
+            if (params.description !== undefined)
+              this.adminWorkspace.description = params.description
+            this.workspaceInfo = {
+              name: this.adminWorkspace.name,
+              description: this.adminWorkspace.description,
+            }
+            return Promise.resolve({ ...this.adminWorkspace })
           },
         },
       },

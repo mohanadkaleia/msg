@@ -629,6 +629,12 @@ export type QueryParams =
   // a defensive query-time filter additionally drops rows whose local stream row
   // is not readable-shaped (not a member / not a public channel).
   | { q: 'files.list' }
+  // ENG-152: the workspace identity (name + description) folded from the cached
+  // `workspace-meta` events (`workspace.created` names it; each server-authored
+  // `workspace.updated` renames/redescribes it, LWW by ascending sequence). The
+  // switcher/header reads this — a rename lands on every member's shell through
+  // the normal meta-event sync, no admin RPC involved. A pure LOCAL read.
+  | { q: 'workspace.info' }
 
 /**
  * Mutation taxonomy (ENG-81) — durable mutations carried on the existing
@@ -779,6 +785,18 @@ export interface DirectoryListResult {
 }
 
 /**
+ * `workspace.info` result (ENG-152) — the workspace identity folded from the
+ * cached `workspace-meta` events. `name` is `null` until the genesis
+ * `workspace.created` is synced (the shell falls back to its neutral default);
+ * `description` is `null` until a `workspace.updated` ever carried one (`''`
+ * once explicitly cleared).
+ */
+export interface WorkspaceInfoResult {
+  name: string | null
+  description: string | null
+}
+
+/**
  * One aggregated reaction chip for a message (ENG-102): a single `emoji` with its
  * reactor count, the reactor `user_ids`, their resolved `display_names` (for the
  * who-reacted tooltip, folded from the workspace directory), and `mine` (whether
@@ -881,6 +899,7 @@ export type QueryResultUnion =
   | ThreadsListResult
   | AttachmentsResult
   | FilesListResult
+  | WorkspaceInfoResult
 
 /** Result keyed to the query's `q` discriminant (WorkerClient.query<Q>). */
 export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' }
@@ -901,7 +920,9 @@ export type QueryResult<Q extends QueryParams> = Q extends { q: 'messages.list' 
                 ? AttachmentsResult
                 : Q extends { q: 'files.list' }
                   ? FilesListResult
-                  : never
+                  : Q extends { q: 'workspace.info' }
+                    ? WorkspaceInfoResult
+                    : never
 export type MutateResult<M extends MutateParams> = M extends {
   m: 'outbox.send' | 'outbox.react' | 'outbox.edit' | 'outbox.remove'
 }
@@ -1257,6 +1278,30 @@ export interface AdminInviteCreateResult {
   expires_at: string
 }
 
+/**
+ * The workspace settings row (`GET/PATCH /v1/admin/workspace`, server
+ * `WorkspaceInfo` — ENG-152). `description` is `null` when never set and `''`
+ * when explicitly cleared. The workspace ICON is a separate follow-up (it
+ * shares the avatar image-upload work).
+ */
+export interface AdminWorkspace {
+  workspace_id: string
+  name: string
+  description: string | null
+}
+
+/**
+ * `admin.workspace.update` params — `PATCH /v1/admin/workspace`. At least one
+ * of `name`/`description` must be given (an empty PATCH is a server 422).
+ * Fields are PRESENCE-significant: absent = unchanged; `description: ''`
+ * clears it. `name` is bounded 1..200 (the `/v1/setup` bound) and
+ * `description` ≤1000 server-side (422 beyond).
+ */
+export interface AdminWorkspaceUpdateParams {
+  name?: string
+  description?: string
+}
+
 /** `admin.invites.revoke` result — the server 204 folded to a plain ack. */
 export interface AdminInviteRevokeResult {
   ok: true
@@ -1372,6 +1417,9 @@ export type RpcRequest =
   | { method: 'admin.invites.list'; params: Record<string, never> }
   | { method: 'admin.invites.create'; params: AdminInviteCreateParams }
   | { method: 'admin.invites.revoke'; params: { id: string } }
+  // ENG-152 workspace settings (name + description; the icon is a follow-up).
+  | { method: 'admin.workspace.get'; params: Record<string, never> }
+  | { method: 'admin.workspace.update'; params: AdminWorkspaceUpdateParams }
   // Self-profile — HTTP pass-through over `/v1/me` (token worker-side;
   // structurally self-only; a 401/422 surfaces as a coded error).
   | { method: 'me.get'; params: Record<string, never> }
@@ -1547,6 +1595,11 @@ export interface WorkerClient {
       list(): Promise<AdminInvitesResult>
       create(params: AdminInviteCreateParams): Promise<AdminInviteCreateResult>
       revoke(params: { id: string }): Promise<AdminInviteRevokeResult>
+    }
+    // ENG-152 workspace settings (name + description; the icon is a follow-up).
+    workspace: {
+      get(): Promise<AdminWorkspace>
+      update(params: AdminWorkspaceUpdateParams): Promise<AdminWorkspace>
     }
   }
 

@@ -7,10 +7,12 @@
 
 import {
   createAdminInvite,
+  getAdminWorkspace,
   listAdminInvites,
   listAdminMembers,
   revokeAdminInvite,
   updateAdminMember,
+  updateAdminWorkspace,
 } from './admin'
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
@@ -26,6 +28,7 @@ import { searchMessages } from './search'
 import {
   applyEventsToProjection,
   getMessage,
+  getWorkspaceInfo,
   listAttachments,
   listDirectory,
   listFiles,
@@ -46,6 +49,7 @@ import {
   type AdminInvitesResult,
   type AdminMember,
   type AdminMembersResult,
+  type AdminWorkspace,
   type ApplyEventsToProjection,
   type AuthResult,
   type BackfillResult,
@@ -107,6 +111,9 @@ export interface RpcResultMap {
   'admin.invites.list': AdminInvitesResult
   'admin.invites.create': AdminInviteCreateResult
   'admin.invites.revoke': AdminInviteRevokeResult
+  // ENG-152 — workspace settings (name + description).
+  'admin.workspace.get': AdminWorkspace
+  'admin.workspace.update': AdminWorkspace
   // Self-profile HTTP pass-through (`/v1/me`) — structurally self-only.
   'me.get': MeProfile
   'me.update': MeProfile
@@ -514,6 +521,8 @@ export class WorkerCore {
         return getMessage(this.db, params.message_id).then((message) => ({ message }))
       case 'directory.list':
         return listDirectory(this.db)
+      case 'workspace.info':
+        return getWorkspaceInfo(this.db)
       case 'messages.reactions':
         return listReactions(this.db, params.message_ids, this.auth.status().my_user_id ?? '')
       case 'messages.thread':
@@ -631,6 +640,11 @@ export class WorkerCore {
     this.register('admin.invites.list', () => listAdminInvites(this.http))
     this.register('admin.invites.create', (req) => createAdminInvite(this.http, req.params))
     this.register('admin.invites.revoke', (req) => revokeAdminInvite(this.http, req.params))
+    // ENG-152 workspace settings — the PATCH also emits the server-authored
+    // `workspace.updated` meta event; the local `workspace.info` fold picks it
+    // up through normal sync, so nothing is persisted here either.
+    this.register('admin.workspace.get', () => getAdminWorkspace(this.http))
+    this.register('admin.workspace.update', (req) => updateAdminWorkspace(this.http, req.params))
   }
 
   // -- Self-profile handlers -------------------------------------------------

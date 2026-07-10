@@ -18,6 +18,7 @@ import type {
   StreamBadge,
   StreamRow,
   Unsubscribe,
+  WorkspaceInfoResult,
 } from '../worker'
 
 /** One @mention / #channel autocomplete candidate for the composer (ENG-101). */
@@ -39,6 +40,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const loaded = ref(false)
   /** Autocomplete source for the composer (ENG-101), refreshed with the sidebar. */
   const directory = ref<DirectoryListResult>({ users: [], channels: [] })
+  /** Workspace identity (ENG-152) — name/description folded from the cached
+   * workspace-meta events, refreshed with the sidebar (an admin rename lands
+   * here through normal sync). `name` is null until the genesis event syncs. */
+  const workspaceInfo = ref<WorkspaceInfoResult>({ name: null, description: null })
 
   /** Per-stream push unsubscribes, so we can diff + tear down cleanly. */
   const subs = new Map<string, Unsubscribe>()
@@ -138,12 +143,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   /** Re-query `streams.list` (+ the mention directory) and reconcile subscriptions. */
   async function refresh(): Promise<void> {
     const client = await resolveWorkerClient()
-    const [streamsRes, directoryRes] = await Promise.all([
+    const [streamsRes, directoryRes, infoRes] = await Promise.all([
       client.query({ q: 'streams.list' }),
       client.query({ q: 'directory.list' }),
+      client.query({ q: 'workspace.info' }),
     ])
     streams.value = streamsRes.streams
     directory.value = directoryRes
+    workspaceInfo.value = infoRes
     reconcileSubscriptions(client)
   }
 
@@ -177,6 +184,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function selectStream(streamId: string): void {
     selectedStreamId.value = streamId
+  }
+
+  /**
+   * Optimistically apply a saved workspace-settings update (ENG-152). The
+   * server has ALREADY persisted it (this is the PATCH response echoed back),
+   * and the server-authored `workspace.updated` meta event will confirm it on
+   * the next sync-driven refresh — this just makes the switcher/header rename
+   * immediate for the admin who saved.
+   */
+  function applyWorkspaceUpdate(info: { name: string; description: string | null }): void {
+    workspaceInfo.value = { name: info.name, description: info.description }
   }
 
   // -- ENG-104 channel & member management + DM creation -------------------
@@ -260,10 +278,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     usersById,
     userOf,
     displayNameOf,
+    workspaceInfo,
     mentionItems,
     load,
     refresh,
     selectStream,
+    applyWorkspaceUpdate,
     createChannel,
     renameChannel,
     archiveChannel,

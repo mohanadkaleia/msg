@@ -47,8 +47,9 @@ export type DrawerMode = 'none' | 'thread' | 'details'
  * Admin is REAL — ENG-151 PR-3; Files is REAL — ENG-152). */
 type ScaffoldView = Exclude<ActiveView, 'conversation' | 'inbox' | 'admin' | 'files'>
 
-/** The neutral workspace name shown in the sidebar header + rail glyph (NOT "Ranin"). */
-const WORKSPACE_NAME = 'msg'
+/** Fallback shown until the real workspace name syncs (the genesis
+ * `workspace.created` fold — ENG-152); neutral, NOT "Ranin". */
+const WORKSPACE_NAME_FALLBACK = 'msg'
 
 /** Copy for the scaffold placeholder EmptyState shown in the main panel. */
 const SCAFFOLD_COPY: Record<ScaffoldView, { title: string; body: string }> = {
@@ -69,8 +70,15 @@ export function useShellController() {
   // Live presence snapshot (ENG-128): `user_id → status`, threaded to the message
   // list so author avatars carry a REAL presence dot. Ephemeral, worker-owned.
   const { statuses: presenceStatuses } = storeToRefs(presence)
-  const { selectedStream, selectedStreamId, channels, dms, mentionItems, directory } =
-    storeToRefs(workspace)
+  const {
+    selectedStream,
+    selectedStreamId,
+    channels,
+    dms,
+    mentionItems,
+    directory,
+    workspaceInfo,
+  } = storeToRefs(workspace)
   const { displayMessages, hasMore, rows: messageRows, currentStreamId } = storeToRefs(messages)
   const { isOpen: threadOpen } = storeToRefs(thread)
 
@@ -110,9 +118,12 @@ export function useShellController() {
   /** Admin section is only offered to privileged roles. */
   const canAdmin = computed(() => role.value === 'admin' || role.value === 'owner')
 
-  const workspaceName = WORKSPACE_NAME
-  /** Up-to-two-letter glyph for the rail (neutral, derived from the workspace name). */
-  const workspaceInitials = computed(() => WORKSPACE_NAME.slice(0, 2).toUpperCase())
+  /** The REAL workspace name (ENG-152) — folded from the cached workspace-meta
+   * events (`workspace.created`, then any admin `workspace.updated` renames);
+   * the neutral fallback until the genesis event has synced. */
+  const workspaceName = computed(() => workspaceInfo.value.name ?? WORKSPACE_NAME_FALLBACK)
+  /** Up-to-two-letter glyph for the rail, derived from the workspace name. */
+  const workspaceInitials = computed(() => workspaceName.value.slice(0, 2).toUpperCase())
 
   /**
    * Directory-backed `user_id → display_name` map (ENG-136) — threaded to the

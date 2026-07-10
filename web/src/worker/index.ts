@@ -90,6 +90,10 @@ export {
   type AdminInviteCreateParams,
   type AdminInviteCreateResult,
   type AdminInviteRevokeResult,
+  // ENG-152 workspace settings (Admin UI) + the shell's workspace-identity fold.
+  type AdminWorkspace,
+  type AdminWorkspaceUpdateParams,
+  type WorkspaceInfoResult,
   // Self-profile (`/v1/me`) — the Profile UI reads these; worker-authed.
   type MeProfile,
   type MeUpdateParams,

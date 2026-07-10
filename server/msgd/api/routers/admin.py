@@ -1,9 +1,11 @@
-"""Admin router (ENG-64 D7, ENG-151): invites + member/role management.
+"""Admin router (ENG-64 D7, ENG-151, ENG-152): invites, members + workspace settings.
 
 ENG-64 shipped ``POST /v1/admin/invites`` (create only). ENG-151 adds the rest
 of the admin surface — the member roster, role changes + deactivation, and
 invite listing/revocation — all behind ``AdminAuth`` (owner/admin only; member
-and guest are 403'd by ``require_role`` before any handler body runs).
+and guest are 403'd by ``require_role`` before any handler body runs). ENG-152
+adds the workspace settings surface (GET/PATCH ``/v1/admin/workspace``: name +
+description; the icon is a separate follow-up).
 
 This is a PRIVILEGE-ESCALATION surface, so the authz is the crux. The role
 decision is factored into the pure, DB-free :func:`check_member_update` so it is
@@ -29,15 +31,17 @@ from msgd.api.schemas.admin import (
     MemberInfo,
     MemberListResponse,
     UpdateMemberRequest,
+    UpdateWorkspaceRequest,
+    WorkspaceInfo,
 )
 from msgd.api.schemas.auth import CreateInviteRequest, InviteResponse
 from msgd.auth.context import AuthContext
 from msgd.auth.sessions import utcnow
 from msgd.auth.tokens import mint_token
-from msgd.core.payloads import build_bot_removed_body
+from msgd.core.payloads import build_bot_removed_body, build_workspace_updated_body
 from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
-from msgd.db.models import BotToken, Invite, Session, Stream, User
+from msgd.db.models import BotToken, Invite, Session, Stream, User, Workspace
 from msgd.events.emit import emit_event
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -277,6 +281,86 @@ async def update_member(
 
     await db.commit()
     return _member_info(target)
+
+
+def _workspace_info(ws: Workspace) -> WorkspaceInfo:
+    """Project a ``workspaces`` row to the admin settings shape."""
+    return WorkspaceInfo(workspace_id=ws.workspace_id, name=ws.name, description=ws.description)
+
+
+@router.get("/workspace", response_model=WorkspaceInfo)
+async def get_workspace(ctx: AdminAuth, db: DbSession) -> WorkspaceInfo:
+    """The caller's workspace settings row (owner/admin only, ENG-152).
+
+    Workspace-scoped: the row is loaded by ``ctx.workspace_id`` (the session's
+    own workspace), never by a caller-supplied id — there is no cross-workspace
+    parameter on this surface.
+    """
+    ws = await db.get(Workspace, ctx.workspace_id)
+    assert ws is not None  # the session's workspace row always exists
+    return _workspace_info(ws)
+
+
+@router.patch("/workspace", response_model=WorkspaceInfo)
+async def update_workspace(
+    req: UpdateWorkspaceRequest, ctx: AdminAuth, db: DbSession
+) -> WorkspaceInfo:
+    """Update the workspace name and/or description (owner/admin only, ENG-152).
+
+    One transaction, mirroring ``PATCH /v1/me`` (the ``user.profile_updated``
+    precedent — handler writes the operational row AND emits the meta event):
+
+    1. Lock the caller's ``workspaces`` row ``FOR UPDATE`` (serializes
+       concurrent renames; the row is always ``ctx.workspace_id`` — no
+       cross-workspace vector exists).
+    2. Apply exactly the fields present (absent = unchanged; ``description``
+       may be ``""`` to clear). Validation is the schema's (name 1..200,
+       description ≤1000, empty PATCH 422).
+    3. Emit ONE server-authored ``workspace.updated`` into workspace-meta,
+       authored by the acting owner/admin on their current device, carrying
+       exactly the changed fields — the client workspace-identity fold applies
+       it (LWW), so every member's switcher/header renames. The type is in
+       ``SERVER_AUTHORED_EVENT_TYPES``: a client upload of it is rejected
+       ``permission_denied``, so this handler is the ONLY producer.
+
+    The export manifest (``manifest.workspace``) reads the same row, so an
+    export taken after this PATCH round-trips the new values.
+    """
+    ws = await db.scalar(
+        select(Workspace).where(Workspace.workspace_id == ctx.workspace_id).with_for_update()
+    )
+    assert ws is not None  # the session's workspace row always exists
+
+    if req.name is not None:
+        ws.name = req.name
+    if req.description is not None:
+        ws.description = req.description
+
+    # Setup always creates the single workspace-meta stream (seq 1), so it must
+    # exist for any real workspace — same assertion as PATCH /v1/me.
+    meta_stream_id = await db.scalar(
+        select(Stream.stream_id).where(
+            Stream.workspace_id == ctx.workspace_id,
+            Stream.kind == "workspace-meta",
+        )
+    )
+    assert meta_stream_id is not None
+    await emit_event(
+        db,
+        home_stream_id=meta_stream_id,
+        body=build_workspace_updated_body(
+            workspace_id=ctx.workspace_id,
+            stream_id=meta_stream_id,
+            author_user_id=ctx.user_id,
+            author_device_id=ctx.device_id,
+            client_created_at=now_rfc3339(),
+            name=req.name,
+            description=req.description,
+        ),
+    )
+
+    await db.commit()
+    return _workspace_info(ws)
 
 
 @router.get("/invites", response_model=InviteListResponse)

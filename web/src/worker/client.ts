@@ -18,6 +18,8 @@ import {
   type AdminMember,
   type AdminMembersResult,
   type AdminMemberUpdateParams,
+  type AdminWorkspace,
+  type AdminWorkspaceUpdateParams,
   type AuthResult,
   type AuthStatus,
   type BackfillResult,
@@ -212,6 +214,21 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
             method: 'admin.invites.revoke',
             params,
           }) as Promise<AdminInviteRevokeResult>,
+      },
+      // ENG-152 workspace settings (name + description; icon is a follow-up).
+      // The update ALSO lands on every member's shell via the server-authored
+      // `workspace.updated` meta event the local `workspace.info` fold reads.
+      workspace: {
+        get: () =>
+          caller.request({
+            method: 'admin.workspace.get',
+            params: {},
+          }) as Promise<AdminWorkspace>,
+        update: (params: AdminWorkspaceUpdateParams) =>
+          caller.request({
+            method: 'admin.workspace.update',
+            params,
+          }) as Promise<AdminWorkspace>,
       },
     },
     // Self-profile (`/v1/me`): HTTP pass-through mirroring `admin` — the tab

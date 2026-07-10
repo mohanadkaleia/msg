@@ -142,6 +142,36 @@ export function dmCreatedEvent(opts: {
 }
 
 /** A `workspace-meta` user lifecycle event (ENG-101 directory derivation). */
+/** A `workspace.created`/`workspace.updated` meta event (ENG-152 identity fold). */
+export function metaWorkspaceEvent(
+  streamId: string,
+  seq: number,
+  type: 'workspace.created' | 'workspace.updated',
+  payload: { name?: string; description?: string },
+): EventRow {
+  const eventId = `e_${streamId}_${seq}`
+  return {
+    stream_id: streamId,
+    server_sequence: seq,
+    event_id: eventId,
+    type,
+    envelope: {
+      body: {
+        event_id: eventId,
+        workspace_id: 'w_test',
+        stream_id: streamId,
+        type,
+        type_version: 1,
+        author_user_id: 'u_admin',
+        author_device_id: 'd_test',
+        client_created_at: '2026-01-01T00:00:00.000Z',
+        payload,
+      },
+      event_hash: `hash_${eventId}`,
+    },
+  }
+}
+
 export function metaUserEvent(
   streamId: string,
   seq: number,

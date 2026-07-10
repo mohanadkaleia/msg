@@ -43,6 +43,7 @@ import type {
   ThreadResult,
   ThreadsListResult,
   ThreadSummary,
+  WorkspaceInfoResult,
 } from './types'
 
 /** Default page size for `messages.list` when the caller omits `limit`. */
@@ -758,6 +759,39 @@ export async function listDirectory(db: MsgDb): Promise<DirectoryListResult> {
   )
 
   return { users, channels }
+}
+
+/**
+ * The workspace identity fold (ENG-152): name + description from the cached
+ * `workspace-meta` events. `workspace.created` names the workspace (genesis);
+ * each server-authored `workspace.updated` applies EXACTLY the fields present
+ * in its payload (LWW by ascending server_sequence — an absent field means
+ * "unchanged", so `description: ''` (cleared) never aliases "untouched").
+ * A pure LOCAL projection read, mirroring `buildUserDirectory` — a rename
+ * reaches every member through normal meta-event sync, no admin RPC involved.
+ * Forged uploads of `workspace.updated` are rejected server-side
+ * (SERVER_AUTHORED_EVENT_TYPES), so any stored instance is admin-authored.
+ * `name` stays `null` until the genesis event is synced; the shell falls back
+ * to its neutral default.
+ */
+export async function getWorkspaceInfo(db: MsgDb): Promise<WorkspaceInfoResult> {
+  const streams = await db.listStreams()
+  let name: string | null = null
+  let description: string | null = null
+  for (const meta of streams.filter((s) => s.kind === 'workspace-meta')) {
+    const events = await db.getEventsForStream(meta.stream_id) // ascending server_sequence
+    for (const event of events) {
+      const payload = event.envelope?.body?.payload
+      if (payload === null || typeof payload !== 'object') continue
+      const p = payload as Record<string, unknown>
+      if (event.type === 'workspace.created' || event.type === 'workspace.updated') {
+        if (typeof p.name === 'string') name = p.name
+        if (event.type === 'workspace.updated' && typeof p.description === 'string')
+          description = p.description
+      }
+    }
+  }
+  return { name, description }
 }
 
 /**

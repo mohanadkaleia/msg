@@ -22,9 +22,9 @@ it was returned exactly once at create time and is never persisted.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
     "MemberInfo",
@@ -32,7 +32,20 @@ __all__ = [
     "UpdateMemberRequest",
     "InviteInfo",
     "InviteListResponse",
+    "WorkspaceInfo",
+    "UpdateWorkspaceRequest",
+    "WORKSPACE_DESCRIPTION_MAX_LENGTH",
 ]
+
+#: Bound on the free-text workspace description (ENG-152).
+WORKSPACE_DESCRIPTION_MAX_LENGTH = 1000
+
+#: Same constraint as ``SetupRequest.workspace_name`` (1..200) — the rename
+#: cannot mint a name ``/v1/setup`` could not have.
+WorkspaceName = Annotated[str, Field(min_length=1, max_length=200)]
+
+#: ``""`` is a VALID value (it clears the description) — absence means unchanged.
+WorkspaceDescription = Annotated[str, Field(max_length=WORKSPACE_DESCRIPTION_MAX_LENGTH)]
 
 
 class MemberInfo(BaseModel):
@@ -71,6 +84,38 @@ class UpdateMemberRequest(BaseModel):
     def _require_a_change(self) -> UpdateMemberRequest:
         if self.role is None and self.active is None:
             raise ValueError("at least one of 'role' or 'active' must be provided")
+        return self
+
+
+class WorkspaceInfo(BaseModel):
+    """The workspace settings row (GET/PATCH /v1/admin/workspace, ENG-152).
+
+    ``description`` is ``None`` when never set; ``""`` when explicitly cleared
+    (the row stores what the admin last sent, verbatim). The workspace icon is
+    a separate follow-up (it shares the avatar image-upload work).
+    """
+
+    workspace_id: str
+    name: str
+    description: str | None
+
+
+class UpdateWorkspaceRequest(BaseModel):
+    """PATCH /v1/admin/workspace — change the workspace name and/or description.
+
+    PRESENCE-SIGNIFICANT fields, mirroring :class:`UpdateMemberRequest`: an
+    absent field is unchanged, and an empty PATCH is a 422. ``name`` reuses the
+    ``/v1/setup`` bound (1..200 — non-empty); ``description`` may be ``""``
+    (clears it), bounded at ``WORKSPACE_DESCRIPTION_MAX_LENGTH``.
+    """
+
+    name: WorkspaceName | None = None
+    description: WorkspaceDescription | None = None
+
+    @model_validator(mode="after")
+    def _require_a_change(self) -> UpdateWorkspaceRequest:
+        if self.name is None and self.description is None:
+            raise ValueError("at least one of 'name' or 'description' must be provided")
         return self
 
 

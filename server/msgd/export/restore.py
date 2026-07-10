@@ -467,14 +467,20 @@ async def import_workspace(
     # --- 3. ONE transaction: workspace -> users -> replay -> files -> rebuild
     ws_name = ws_raw.get("name")
     ws_quota = ws_raw.get("file_quota_bytes")
+    # ENG-152: tolerate the field's ABSENCE (a pre-0010 bundle) as None, but a
+    # present non-string/non-null value is a malformed manifest.
+    ws_description = ws_raw.get("description")
     if not isinstance(ws_name, str):
         raise RestoreError("manifest workspace.name missing or not a string")
     if not isinstance(ws_quota, int) or isinstance(ws_quota, bool):
         raise RestoreError("manifest workspace.file_quota_bytes missing or not an integer")
+    if ws_description is not None and not isinstance(ws_description, str):
+        raise RestoreError("manifest workspace.description is not a string or null")
     session.add(
         Workspace(
             workspace_id=workspace_id,
             name=ws_name,
+            description=ws_description,
             created_at=_parse_ts(ws_raw.get("created_at"), field="workspace.created_at"),
             file_quota_bytes=ws_quota,
         )

@@ -12,6 +12,7 @@ import type { ChannelLike, LockManagerLike } from '../../../src/worker/leader'
 import type {
   AdminInvite,
   AdminMember,
+  AdminWorkspace,
   EventBody,
   FromWorker,
   MeProfile,
@@ -318,6 +319,8 @@ export class FakeSyncServer {
   nextInviteToken = 'raw-invite-token-1'
   /** Every create-invite body the fake server accepted (role + optional ttl). */
   readonly createdInvites: { role: string; ttl_seconds?: number }[] = []
+  /** The settings row served by `GET/PATCH /v1/admin/workspace` (ENG-152). */
+  adminWorkspace: AdminWorkspace = { workspace_id: 'w_test', name: 'Acme', description: null }
 
   // -- self-profile model (`/v1/me`; HTTP pass-through like admin) ----------
   /** The caller's own profile served by `GET /v1/me` (tests seed it). */
@@ -659,6 +662,26 @@ export class FakeSyncServer {
     return { ok: true, value: { ...row } }
   }
 
+  /** `GET /v1/admin/workspace` — the settings row (ENG-152). */
+  respondAdminWorkspace(): ApiResult<AdminWorkspace> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    return { ok: true, value: { ...this.adminWorkspace } }
+  }
+
+  /**
+   * `PATCH /v1/admin/workspace` — apply the presence-significant fields to the
+   * seeded row and echo it (the real endpoint's 200 body; ENG-152).
+   */
+  respondAdminPatchWorkspace(body: {
+    name?: string
+    description?: string
+  }): ApiResult<AdminWorkspace> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    if (body.name !== undefined) this.adminWorkspace.name = body.name
+    if (body.description !== undefined) this.adminWorkspace.description = body.description
+    return { ok: true, value: { ...this.adminWorkspace } }
+  }
+
   // -- self-profile responders (mirror routers/me.py semantics) -------------
 
   /** `GET /v1/me` — the caller's own profile (self-only by construction). */
@@ -791,6 +814,7 @@ export class FakeSyncServer {
     if (path.startsWith('/v1/search')) return this.respondSearch()
     if (path.startsWith('/v1/admin/members')) return this.respondAdminMembers()
     if (path.startsWith('/v1/admin/invites')) return this.respondAdminInvites()
+    if (path === '/v1/admin/workspace') return this.respondAdminWorkspace()
     if (path === '/v1/me') return this.respondMe()
     if (path.startsWith('/v1/read-state')) return this.respondGetReadState()
     if (path.startsWith('/v1/prefs')) return this.respondGetPrefs()
@@ -943,6 +967,11 @@ export class FakeHttpClient implements HttpClient {
     if (path === '/v1/me') {
       return Promise.resolve(
         this.server.respondPatchMe(body as { display_name?: string }),
+      ) as Promise<ApiResult<T>>
+    }
+    if (path === '/v1/admin/workspace') {
+      return Promise.resolve(
+        this.server.respondAdminPatchWorkspace(body as { name?: string; description?: string }),
       ) as Promise<ApiResult<T>>
     }
     return Promise.resolve({ ok: true, value: undefined as T })

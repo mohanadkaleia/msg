@@ -25,6 +25,8 @@ import {
   type AdminMember,
   type AdminMembersResult,
   type AdminMemberUpdateParams,
+  type AdminWorkspace,
+  type AdminWorkspaceUpdateParams,
 } from './types'
 
 import type { ApiResult, HttpClient } from './http'
@@ -94,4 +96,29 @@ export async function revokeAdminInvite(
 ): Promise<AdminInviteRevokeResult> {
   unwrap(await http.del(`/v1/admin/invites/${encodeURIComponent(params.id)}`))
   return { ok: true }
+}
+
+/** `admin.workspace.get` → `GET /v1/admin/workspace` (the settings row; ENG-152). */
+export async function getAdminWorkspace(http: HttpClient): Promise<AdminWorkspace> {
+  return unwrap(await http.get<AdminWorkspace>('/v1/admin/workspace'))
+}
+
+/**
+ * `admin.workspace.update` → `PATCH /v1/admin/workspace`. The body carries
+ * ONLY the defined fields (`name?`, `description?` — the server 422s an empty
+ * PATCH; `description: ''` explicitly CLEARS it, so the empty string is sent,
+ * not stripped). The response is the updated settings row. Server-side the
+ * PATCH also emits the server-authored `workspace.updated` meta event the
+ * local `workspace.info` fold renames the switcher/header from — the tab
+ * needs no extra wiring beyond its normal sync subscription.
+ */
+export async function updateAdminWorkspace(
+  http: HttpClient,
+  params: AdminWorkspaceUpdateParams,
+): Promise<AdminWorkspace> {
+  const body = {
+    ...(params.name !== undefined ? { name: params.name } : {}),
+    ...(params.description !== undefined ? { description: params.description } : {}),
+  }
+  return unwrap(await http.patch<AdminWorkspace>('/v1/admin/workspace', body))
 }
