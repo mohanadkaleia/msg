@@ -184,12 +184,12 @@ const ALL_TABLES: readonly TableName[] = [
   'meta',
 ]
 
-describe.each(impls)('MsgDb conformance [$name]', ({ make }) => {
+describe.each(impls)('MsgDb conformance [$name]', ({ name, make }) => {
   // -- identity ---------------------------------------------------------------
 
-  it('advertises capabilities (fts=false pre-M6-2) and a persistence mode', async () => {
+  it('advertises capabilities (fts on SqliteDb only, ENG-166) and a persistence mode', async () => {
     const db = await make()
-    expect(db.capabilities).toEqual({ fts: false })
+    expect(db.capabilities).toEqual({ fts: name === 'SqliteDb' })
     expect(['persistent', 'memory']).toContain(db.persistence)
     await db.close()
   })
@@ -746,7 +746,7 @@ describe('SqliteDb rebuild ≡ incremental (invariant 6, ENG-165)', () => {
   it('openSqliteDb accepts a path string (the Node convenience branch) and is re-openable-safe DDL', async () => {
     const db = await openSqliteDb(':memory:')
     expect(db).toBeInstanceOf(SqliteDb)
-    expect(db.capabilities.fts).toBe(false)
+    expect(db.capabilities.fts).toBe(true) // ENG-166: FTS5 live on SqliteDb
     await db.putMessages([minimalMessage('m1', 's1', 1)])
     expect((await db.getMessage('m1'))?.text).toBe('text 1')
     await db.close()

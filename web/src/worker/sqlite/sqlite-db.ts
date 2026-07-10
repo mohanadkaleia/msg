@@ -12,26 +12,33 @@
 // Semantics mirror DexieDb method-for-method (see db.ts); the msgdb-conformance
 // suite runs the identical spec over MemoryDb, DexieDb and SqliteDb.
 //
-// No FTS5 yet — that is M6-2. `putMessages`/`deleteMessage` centralize the row
-// writes so the FTS maintenance hook slots in beside them (flip `capabilities.
-// fts` there).
+// FTS5 (ENG-166, M6-2): `messages_fts` is an EXTERNAL-CONTENT FTS5 table over
+// `messages.text`, maintained strictly inside `putMessages`/`deleteMessage` —
+// the two methods every message write flows through — in the SAME transaction
+// as the row write, so the index cannot drift from the projection.
+// `clearDerivedTables` wipes it too ('delete-all'), so a projection rebuild
+// reconstructs the index through the normal `putMessages` path (invariant 6
+// holds for search: rebuild ≡ incremental). `capabilities.fts` is true here;
+// WorkerCore routes `search` to the local index on that flag.
 
 import type {
   CursorRow,
   EventRow,
   FileRow,
+  FtsSearchOptions,
   MessageRow,
   MsgDb,
   OutboxRow,
   PrefsRow,
   ReactionRow,
   ReadStateRow,
+  SearchHit,
   StreamRow,
   TableName,
   ThreadParticipantRow,
 } from '../types'
 
-import type { SqlDriver } from './driver'
+import type { SqlDriver, SqlValue } from './driver'
 
 // ---------------------------------------------------------------------------
 // Schema — one table per MsgDb table: indexed key columns + the verbatim JSON
@@ -66,6 +73,17 @@ const SCHEMA_STATEMENTS: readonly string[] = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_messages_stream_seq ON messages (stream_id, created_seq)`,
   `CREATE INDEX IF NOT EXISTS idx_messages_thread_root ON messages (thread_root_id)`,
+  // ENG-166 (M6-2): the local full-text index — an EXTERNAL-CONTENT FTS5 table
+  // over `messages.text` (content= / content_rowid=), so the text is stored
+  // once (in `messages`) and the FTS table holds only the index. External
+  // content means SQLite does NOT maintain it automatically: every write goes
+  // through `putMessages`/`deleteMessage` below, which issue the documented
+  // 'delete'-with-old-values + insert maintenance in the same transaction.
+  `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+     text,
+     content='messages',
+     content_rowid='rowid'
+   )`,
   `CREATE TABLE IF NOT EXISTS reactions (
      message_id TEXT NOT NULL,
      author_user_id TEXT NOT NULL,
@@ -150,8 +168,8 @@ function parseRows<T>(rows: readonly { data: string }[]): T[] {
 export class SqliteDb implements MsgDb {
   /** File-backed SQLite — writes survive a restart (`:memory:` is test-only). */
   readonly persistence = 'persistent' as const
-  /** ENG-165: no FTS yet — M6-2 adds the FTS5 mirror and flips this to true. */
-  readonly capabilities = { fts: false } as const
+  /** ENG-166 (M6-2): FTS5 is live — WorkerCore serves `search` locally on this flag. */
+  readonly capabilities = { fts: true } as const
 
   constructor(private readonly driver: SqlDriver) {}
 
@@ -309,8 +327,13 @@ export class SqliteDb implements MsgDb {
     if (rows.length === 0) return
     await this.driver.transaction(async () => {
       for (const row of rows) {
-        // M6-2 FTS hook: the `messages_fts` delete+insert for `row` slots in
-        // HERE, inside the same transaction as the row upsert.
+        // ENG-166 FTS maintenance, external-content pattern: an external-content
+        // FTS5 table must be told the OLD values before its row changes (the
+        // documented 'delete' command), so — all inside this one transaction —
+        // (1) un-index the previous text if the message already exists, (2)
+        // upsert the row, (3) index the new text against the FRESH rowid
+        // (INSERT OR REPLACE deletes + re-inserts, assigning a new rowid).
+        await this.deleteFtsRow(row.message_id)
         await this.driver.execute(
           `INSERT OR REPLACE INTO messages (message_id, stream_id, created_seq, thread_root_id, text, data)
            VALUES (?, ?, ?, ?, ?, ?)`,
@@ -323,14 +346,46 @@ export class SqliteDb implements MsgDb {
             JSON.stringify(row),
           ],
         )
+        const fresh = await this.driver.select<{ rowid: number }>(
+          `SELECT rowid FROM messages WHERE message_id = ?`,
+          [row.message_id],
+        )
+        const rowid = fresh[0]?.rowid
+        if (rowid !== undefined) {
+          await this.driver.execute(`INSERT INTO messages_fts (rowid, text) VALUES (?, ?)`, [
+            rowid,
+            row.text,
+          ])
+        }
       }
     })
   }
 
+  /**
+   * Un-index a message's CURRENT text (the external-content FTS5 'delete'
+   * command, which requires the old values). No-op when the message has no
+   * row. Must run inside the same transaction as the row write it precedes.
+   */
+  private async deleteFtsRow(messageId: string): Promise<void> {
+    const old = await this.driver.select<{ rowid: number; text: string }>(
+      `SELECT rowid, text FROM messages WHERE message_id = ?`,
+      [messageId],
+    )
+    const row = old[0]
+    if (row === undefined) return
+    await this.driver.execute(
+      `INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', ?, ?)`,
+      [row.rowid, row.text],
+    )
+  }
+
   async deleteMessage(messageId: string): Promise<void> {
-    // M6-2 FTS hook: the `messages_fts` delete for `messageId` slots in here
-    // (same transaction as the row delete).
-    await this.driver.execute(`DELETE FROM messages WHERE message_id = ?`, [messageId])
+    // ENG-166: un-index BEFORE the row delete ('delete' needs the old text),
+    // same transaction — a message never lingers in the index after removal.
+    await this.driver.transaction(async () => {
+      await this.deleteFtsRow(messageId)
+      await this.driver.execute(`DELETE FROM messages WHERE message_id = ?`, [messageId])
+    })
   }
 
   async getMessage(messageId: string): Promise<MessageRow | undefined> {
@@ -383,6 +438,65 @@ export class SqliteDb implements MsgDb {
       [rootMessageId],
     )
     return parseRows<MessageRow>(rows)
+  }
+
+  /**
+   * The local FTS read (ENG-166, M6-2) — `capabilities.fts` backs onto this.
+   * `opts.match` arrives ALREADY sanitized (searchLocalMessages quotes every
+   * unit) and is bound as a parameter, never interpolated. Ranked best-first
+   * by `bm25(messages_fts)` (SQLite bm25 is smaller-is-better, so ASC), tied
+   * broken by `created_seq DESC` then `message_id DESC` — a total order, so
+   * OFFSET pagination is stable. Excludes tombstones (redacted text can never
+   * match, but the guard is explicit — mirrors the server `deleted == False`)
+   * and pending/failed optimistic rows (server FTS can never return one; their
+   * sentinel `created_seq` would also corrupt the before/after bounds).
+   */
+  async searchMessagesFts(opts: FtsSearchOptions): Promise<SearchHit[]> {
+    const conditions: string[] = [
+      `COALESCE(json_extract(m.data, '$.deleted'), 0) = 0`,
+      `json_extract(m.data, '$.state') IS NULL`,
+    ]
+    const params: SqlValue[] = [opts.match]
+    if (opts.streamId !== undefined) {
+      conditions.push(`m.stream_id = ?`)
+      params.push(opts.streamId)
+    }
+    if (opts.authorUserId !== undefined) {
+      conditions.push(`json_extract(m.data, '$.author_user_id') = ?`)
+      params.push(opts.authorUserId)
+    }
+    if (opts.beforeSeq !== undefined) {
+      conditions.push(`m.created_seq < ?`)
+      params.push(opts.beforeSeq)
+    }
+    if (opts.afterSeq !== undefined) {
+      conditions.push(`m.created_seq > ?`)
+      params.push(opts.afterSeq)
+    }
+    params.push(opts.limit, opts.offset)
+    const rows = await this.driver.select<{ data: string; score: number }>(
+      `SELECT m.data AS data, bm25(messages_fts) AS score
+       FROM messages_fts
+       JOIN messages m ON m.rowid = messages_fts.rowid
+       WHERE messages_fts MATCH ? AND ${conditions.join(' AND ')}
+       ORDER BY bm25(messages_fts) ASC, m.created_seq DESC, m.message_id DESC
+       LIMIT ? OFFSET ?`,
+      params,
+    )
+    return rows.map((r) => {
+      const row = JSON.parse(r.data) as MessageRow
+      return {
+        message_id: row.message_id,
+        stream_id: row.stream_id,
+        author_user_id: row.author_user_id,
+        text: row.text,
+        created_seq: row.created_seq,
+        // bm25 is smaller-is-better (negative for a match); negate so `rank`
+        // keeps the server convention (ts_rank_cd: HIGHER = more relevant).
+        rank: -r.score,
+        thread_root_id: row.thread_root_id ?? null,
+      }
+    })
   }
 
   // -- reactions (ENG-100 seq-aware LWW mirror) --------------------------------
@@ -627,6 +741,10 @@ export class SqliteDb implements MsgDb {
     // rebuild must PRESERVE them (mirrors DexieDb.clearDerivedTables). `events`
     // and `outbox` are source tables and likewise untouched.
     await this.driver.transaction(async () => {
+      // ENG-166: wipe the FTS index with the table it shadows ('delete-all' is
+      // the external-content bulk wipe) — the rebuild then reconstructs it
+      // through putMessages, so rebuild ≡ incremental holds for search too.
+      await this.driver.execute(`INSERT INTO messages_fts (messages_fts) VALUES ('delete-all')`)
       await this.driver.execute(`DELETE FROM messages`)
       await this.driver.execute(`DELETE FROM reactions`)
       await this.driver.execute(`DELETE FROM thread_participants`)

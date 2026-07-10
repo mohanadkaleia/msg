@@ -432,6 +432,33 @@ export interface MsgDbCapabilities {
   readonly fts: boolean
 }
 
+/**
+ * Local FTS query options (ENG-166, M6-2) — the seam between
+ * `searchLocalMessages` (worker/search.ts: grammar compile, cursor, limit
+ * clamp, result shape) and an FTS-capable backend (the SQL). `match` is an
+ * ALREADY-SANITIZED FTS5 MATCH expression — every term/phrase quoted, so no
+ * raw user input ever reaches the FTS query parser as operators. The filters
+ * mirror the server search WHERE clauses over the `messages` projection
+ * (`server/msgd/api/routers/search.py`); `before`/`after` are STRICT
+ * `created_seq` bounds, exactly like the HTTP params they carry.
+ */
+export interface FtsSearchOptions {
+  /** Sanitized FTS5 MATCH expression (quoted units, implicit AND). */
+  match: string
+  /** Scope to one stream (the resolved `in:` stream_id). */
+  streamId?: string
+  /** Scope to one author (the resolved `from:` user_id). */
+  authorUserId?: string
+  /** Strict `created_seq` upper bound (the `before` param). */
+  beforeSeq?: number
+  /** Strict `created_seq` lower bound (the `after` param). */
+  afterSeq?: number
+  /** Max rows to return (callers pass page+1 to probe for a next page). */
+  limit: number
+  /** Rows to skip — the integer local-pagination cursor. */
+  offset: number
+}
+
 export interface MsgDb {
   /** Whether writes survive a reload. `memory` = private-browsing fallback. */
   readonly persistence: 'persistent' | 'memory'
@@ -470,6 +497,15 @@ export interface MsgDb {
   putMessages(rows: readonly MessageRow[]): Promise<void>
   /** Remove a projected message by id (outbox.delete of an unsettled row). */
   deleteMessage(messageId: string): Promise<void>
+  /**
+   * OPTIONAL local FTS read (ENG-166, M6-2) — implemented iff
+   * `capabilities.fts` is true (SqliteDb); Dexie/Memory omit it and their
+   * search stays the server HTTP call. Returns ranked hits (`bm25` best-first,
+   * `created_seq DESC` tie-break) over the NON-DELETED, SETTLED `messages`
+   * rows — a tombstone or a pending/failed optimistic row never surfaces,
+   * matching what the server FTS could ever return.
+   */
+  searchMessagesFts?(opts: FtsSearchOptions): Promise<SearchHit[]>
   // -- ENG-100 reactions (seq-aware LWW; mirror of `reactions_proj`) ---------
   /** Upsert reaction rows by their `(message_id, author_user_id, emoji)` key. */
   putReactions(rows: readonly ReactionRow[]): Promise<void>

@@ -26,7 +26,7 @@ import { Outbox } from './outbox'
 import { EphemeralState } from './presence'
 import { PrefsManager, isPrefLevel } from './prefs'
 import { ReadStateManager } from './readstate'
-import { searchMessages } from './search'
+import { searchLocalMessages, searchMessages } from './search'
 import {
   applyEventsToProjection,
   getMessage,
@@ -625,12 +625,19 @@ export class WorkerCore {
   }
 
   // -- ENG-126 search + read-state/prefs + typing handlers -----------------
-  // `search` is an HTTP FTS read (token worker-side); `readState.mark`/`prefs.*`
+  // `search` routes by capability (ENG-166, M6-2): an FTS-capable backend
+  // (SqliteDb) answers from the local `messages_fts` index — zero network;
+  // Dexie/Memory (fts:false) keep the ENG-126 HTTP FTS read (token
+  // worker-side), byte-identical behavior to before. `readState.mark`/`prefs.*`
   // drive the synced-KV managers; `typing.send` is a fire-and-forget ephemeral
   // signal (client-throttled in EphemeralState, dropped by SyncEngine when offline).
 
   private registerSignals(): void {
-    this.register('search', (req) => searchMessages(this.http, req.params))
+    this.register('search', (req) =>
+      this.db.capabilities.fts
+        ? searchLocalMessages(this.db, req.params)
+        : searchMessages(this.http, req.params),
+    )
     this.register('readState.mark', (req) =>
       this.readState.mark(req.params.stream_id, req.params.last_read_seq),
     )
