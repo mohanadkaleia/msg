@@ -77,7 +77,7 @@ const props = defineProps<{
   canAdmin: boolean
 }>()
 
-const emit = defineEmits<{ openSwitcher: []; selectView: [view: ActiveView] }>()
+const emit = defineEmits<{ openSearch: []; selectView: [view: ActiveView] }>()
 
 const workspace = useWorkspaceStore()
 const auth = useAuthStore()
@@ -187,12 +187,9 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
       </button>
     </div>
 
-    <!-- Workspace selector pill (preserves `open-switcher`). -->
-    <WorkspaceSwitcher
-      :workspace-name="workspaceName"
-      :workspace-initials="workspaceInitials"
-      @open-switcher="emit('openSwitcher')"
-    />
+    <!-- Workspace selector pill (preserves `open-switcher`) — self-contained:
+         it opens its OWN workspace menu (ENG-152 nav cleanup), not the palette. -->
+    <WorkspaceSwitcher :workspace-name="workspaceName" :workspace-initials="workspaceInitials" />
 
     <!-- "+ New" — the ONE clearly-accented primary create action (ENG-152 PR-c).
          The menu opens the SAME dialogs the section "+" affordances open. -->
@@ -376,7 +373,9 @@ function dmStatus(stream: SidebarStream): PresenceStatus | undefined {
             Apps
           </SidebarItem>
 
-          <SidebarItem data-testid="nav-search" @click="emit('openSwitcher')">
+          <!-- Search row → the ONE unified search modal (ENG-152 nav cleanup;
+               it previously opened the palette — crossed quick-switcher wiring). -->
+          <SidebarItem data-testid="nav-search" @click="emit('openSearch')">
             <template #leading><Icon name="search" :size="16" /></template>
             Search
           </SidebarItem>

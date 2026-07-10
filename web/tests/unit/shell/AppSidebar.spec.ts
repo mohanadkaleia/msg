@@ -220,12 +220,15 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(wrapper.text()).toContain('Ranin')
     expect(wrapper.find('span.text-muted.uppercase').text()).toBe('Ranin')
     // The workspace selector pill preserves the open-switcher affordance and
-    // carries the "Local workspace" sub-label (ENG-152 hierarchy).
+    // carries the "Local workspace" sub-label (ENG-152 hierarchy). Clicking it
+    // opens the switcher's OWN workspace menu — NOT a palette event (ENG-152
+    // nav cleanup: the old openSwitcher wiring opened the command palette).
     const pill = wrapper.get('[data-testid="open-switcher"]')
     expect(pill.text()).toContain('msg')
     expect(pill.text()).toContain('Local workspace')
     await pill.trigger('click')
-    expect(wrapper.emitted('openSwitcher')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="workspace-menu"]').exists()).toBe(true)
+    expect(wrapper.emitted('openSwitcher')).toBeUndefined()
   })
 
   it('groups the nav under labeled Messages / Workspace headers (ENG-152 PR-c)', async () => {
@@ -392,13 +395,15 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(wrapper.get('[data-testid="inbox-unread"]').text()).toBe('5')
   })
 
-  it('opens the palette from the Search row (openSwitcher)', async () => {
+  it('opens the unified search from the Search row (openSearch — ENG-152 nav cleanup)', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
 
     await wrapper.get('[data-testid="nav-search"]').trigger('click')
-    expect(wrapper.emitted('openSwitcher')).toHaveLength(1)
+    // The Search row routes to the ONE search modal — never the palette event.
+    expect(wrapper.emitted('openSearch')).toHaveLength(1)
+    expect(wrapper.emitted('openSwitcher')).toBeUndefined()
   })
 
   it('renders the footer user card', async () => {

@@ -72,7 +72,6 @@ const {
   toggleDetails,
   closeDetails,
   onChannelLeft,
-  openPalette,
   onPaletteSelect,
   onPaletteCommand,
   onOpenStream,
@@ -87,10 +86,11 @@ const {
   onLogout,
 } = useShellController()
 
-// TopBar compose → the New DM dialog; TopBar search → the ENG-127 message-search
-// overlay. Both flags now live in the CONTROLLER (`newDmOpen` / `searchOpen`),
-// because the Cmd+K palette's "Start a direct message" / "Search messages"
-// commands open the SAME single-instance surfaces (ENG-136).
+// ENG-152 nav cleanup: EVERY search entry point — the TopBar field, the
+// sidebar's Search row, the palette's "Search" command, and the global ⌘/ —
+// routes to the ONE unified search modal (SearchOverlay) via the controller's
+// single `searchOpen` flag. ⌘K is the command palette, and the workspace pill
+// opens the WorkspaceSwitcher's own menu (self-contained — no shell wiring).
 
 /** The live MessageList, for the search jump's best-effort scroll-to-message. */
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
@@ -150,13 +150,13 @@ const gridCols = computed(() => {
       :workspace-name="workspaceName"
       :workspace-initials="workspaceInitials"
       :can-admin="canAdmin"
-      @open-switcher="openPalette"
+      @open-search="searchOpen = true"
       @select-view="setActiveView"
     />
 
     <!-- Right: a top-bar row spanning the main + drawer region, then the columns. -->
     <div class="flex min-w-0 flex-1 flex-col">
-      <TopBar @search="searchOpen = true" @compose="newDmOpen = true" />
+      <TopBar @search="searchOpen = true" />
 
       <div class="grid min-h-0 flex-1" :class="gridCols">
         <!-- Main column. The Inbox brings its own header + tabs, so the shared
@@ -244,12 +244,14 @@ const gridCols = computed(() => {
       @close="paletteOpen = false"
     />
 
-    <!-- ENG-127 message search (server FTS via the worker's `search` RPC), opened
-         from the top-bar search field. Jump closes it + selects the hit's stream. -->
+    <!-- The ONE unified search modal (ENG-127 server FTS via the worker's `search`
+         RPC; ENG-152 unification) — opened from the top-bar field, the sidebar's
+         Search row, the palette's "Search" command, or ⌘/. Jump closes it +
+         selects the hit's stream. -->
     <SearchOverlay :open="searchOpen" @close="searchOpen = false" @jump="onSearchJump" />
 
-    <!-- REAL compose target: a New DM dialog, opened from the TopBar compose
-         button OR the palette's "Start a direct message" command. -->
+    <!-- REAL compose target: a New DM dialog, opened from the sidebar's "+ New"
+         menu OR the palette's "Start a direct message" command. -->
     <NewDmDialog v-if="newDmOpen" @close="newDmOpen = false" />
 
     <!-- Palette command targets (ENG-136): the EXISTING create-channel dialog +

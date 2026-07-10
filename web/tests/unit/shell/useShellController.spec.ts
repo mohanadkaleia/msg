@@ -97,7 +97,7 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.scaffold.value).toBeNull()
   })
 
-  it('opens the palette on Cmd+K', async () => {
+  it('toggles the palette on Cmd+K (ENG-152 nav cleanup)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     setWorkerClient(fake.client)
     const { ctrl } = await mountController(router)
@@ -105,6 +105,31 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.paletteOpen.value).toBe(false)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
     expect(ctrl.paletteOpen.value).toBe(true)
+    // A second Cmd+K closes it again (toggle).
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    expect(ctrl.paletteOpen.value).toBe(false)
+  })
+
+  it('opens the unified search on Cmd+/ — and the two overlays displace each other', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    // Cmd+/ → the ONE search modal.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', metaKey: true }))
+    expect(ctrl.searchOpen.value).toBe(true)
+    expect(ctrl.paletteOpen.value).toBe(false)
+
+    // Cmd+K while search is open: the palette opens and search closes (both are
+    // full-screen overlays — never stacked).
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    expect(ctrl.paletteOpen.value).toBe(true)
+    expect(ctrl.searchOpen.value).toBe(false)
+
+    // And Cmd+/ while the palette is open flips back to search.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', ctrlKey: true }))
+    expect(ctrl.searchOpen.value).toBe(true)
+    expect(ctrl.paletteOpen.value).toBe(false)
   })
 
   // -- ENG-136 palette commands ----------------------------------------------

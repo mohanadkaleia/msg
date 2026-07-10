@@ -1,7 +1,9 @@
 <script setup lang="ts">
-// SearchOverlay — the ENG-127 message-search surface (Ranin), opened from the
-// top-bar search field. DISTINCT from the Cmd+K CommandPalette quick-switcher:
-// this searches MESSAGE TEXT through the worker's `search` RPC (ENG-126 → the
+// SearchOverlay — the ONE unified "Search anything" modal (ENG-127 surface;
+// ENG-152 unification). EVERY search entry point routes here: the top-bar
+// field, the sidebar's Search row, the palette's "Search" command, and the
+// global ⌘/. DISTINCT from the ⌘K CommandPalette (actions + navigation): this
+// searches MESSAGE TEXT through the worker's `search` RPC (ENG-126 → the
 // server's readable-scoped Postgres FTS endpoint, ENG-122). That is the ONE read
 // that is an HTTP call — made worker-side, so the token never reaches this tab.
 //
@@ -220,12 +222,16 @@ onBeforeUnmount(() => {
       <!-- Query input + filter grammar. -->
       <div class="flex items-center gap-2 border-b border-subtle px-4">
         <Icon name="search" :size="16" class="shrink-0 text-muted" />
+        <!-- NO border/outline/ring on the input — the modal CARD is the only box.
+             The `focus:`/`focus-visible:` variants out-specify the global
+             `:focus-visible` accent outline in style.css, which a plain
+             `outline-none` loses to (a text input always matches :focus-visible). -->
         <input
           ref="inputEl"
           v-model="input"
           type="text"
-          placeholder="Search messages…"
-          class="w-full bg-transparent py-3 text-sm text-primary outline-none placeholder:text-muted"
+          placeholder="Search anything…"
+          class="w-full bg-transparent py-3 text-sm text-primary outline-none placeholder:text-muted focus:outline-none focus-visible:outline-none"
           data-testid="search-input"
           autocomplete="off"
         />
@@ -243,9 +249,9 @@ onBeforeUnmount(() => {
 
         <!-- Prompt: no free text yet (filters alone don't search). -->
         <div v-else-if="!hasQuery" class="px-4 py-6 text-center" data-testid="search-prompt">
-          <p class="text-sm font-medium text-primary">Search messages</p>
+          <p class="text-sm font-medium text-primary">Search anything</p>
           <p class="mt-1 text-xs text-muted">
-            Type to search. Narrow with in:#channel or from:@name.
+            Type to search your messages. Narrow with in:#channel or from:@name.
           </p>
         </div>
 

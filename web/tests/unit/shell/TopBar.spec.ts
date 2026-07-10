@@ -1,7 +1,10 @@
-// tests/unit/shell/TopBar.spec.ts — ENG-136 PR-3 + ENG-152 PR-b. The top bar hosts
-// a centered search (opens the palette via a `search` event), a REAL compose action
-// (new DM), SCAFFOLD bell/more actions, and the EXPLICIT sync-state pill
-// (`topbar-sync`) driven by the sync store's tone/label — the local-first signal.
+// tests/unit/shell/TopBar.spec.ts — ENG-136 PR-3 + ENG-152 PR-b + nav cleanup.
+// The top bar hosts a centered search (opens the ONE unified search modal via a
+// `search` event, hinted ⌘/ — ⌘K belongs to the command palette), a SCAFFOLD
+// `more` menu, and the EXPLICIT sync-state pill (`topbar-sync`) driven by the
+// sync store's tone/label — the local-first signal. The compose button and the
+// notifications bell were REMOVED (user feedback): "+ New" owns creation and
+// the Inbox nav badge owns new-message indication.
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -9,31 +12,28 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import TopBar from '../../../src/components/shell/TopBar.vue'
 import { useSyncStore } from '../../../src/stores/sync'
 
-describe('TopBar (ENG-136 PR-3)', () => {
+describe('TopBar (ENG-136 PR-3 / ENG-152 nav cleanup)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
 
-  it('emits search from the centered search button (topbar-search)', async () => {
+  it('emits search from the centered search button (topbar-search), hinted ⌘/', async () => {
     const wrapper = mount(TopBar)
     const search = wrapper.get('[data-testid="topbar-search"]')
     expect(search.text()).toContain('Search anything…')
-    expect(search.text()).toContain('⌘K')
+    // ⌘/ is search's shortcut; the ⌘K chip must NOT come back (⌘K = palette).
+    expect(search.text()).toContain('⌘/')
+    expect(search.text()).not.toContain('⌘K')
     await search.trigger('click')
     expect(wrapper.emitted('search')).toHaveLength(1)
   })
 
-  it('emits compose from the compose action', async () => {
+  it('has NO compose button and NO notifications bell (ENG-152 nav cleanup)', () => {
     const wrapper = mount(TopBar)
-    const compose = wrapper.get('button[aria-label="New message"]')
-    await compose.trigger('click')
-    expect(wrapper.emitted('compose')).toHaveLength(1)
-  })
-
-  it('shows a scaffold notifications bell with an unread dot', () => {
-    const wrapper = mount(TopBar)
-    expect(wrapper.find('button[aria-label="Notifications"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="topbar-bell-dot"]').exists()).toBe(true)
+    expect(wrapper.find('button[aria-label="New message"]').exists()).toBe(false)
+    expect(wrapper.find('button[aria-label="Notifications"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="topbar-bell-dot"]').exists()).toBe(false)
+    // The scaffold `more` menu stays.
     expect(wrapper.find('button[aria-label="More"]').exists()).toBe(true)
   })
 })

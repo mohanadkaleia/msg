@@ -301,14 +301,23 @@ export function useShellController() {
     }
   }
 
-  function openPalette(): void {
-    paletteOpen.value = true
-  }
-
+  /**
+   * Global shortcuts (ENG-152 nav cleanup): ⌘K/Ctrl+K TOGGLES the command
+   * palette (actions + navigation); ⌘//Ctrl+/ opens the unified search modal.
+   * Each closes the other — both are full-screen z-50 overlays, so leaving the
+   * other open would stack them (the later-mounted search would hide the
+   * palette).
+   */
   function onGlobalKeydown(event: KeyboardEvent): void {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    if (!(event.metaKey || event.ctrlKey)) return
+    if (event.key.toLowerCase() === 'k') {
       event.preventDefault()
-      paletteOpen.value = true
+      searchOpen.value = false
+      paletteOpen.value = !paletteOpen.value
+    } else if (event.key === '/') {
+      event.preventDefault()
+      paletteOpen.value = false
+      searchOpen.value = true
     }
   }
 
@@ -507,7 +516,6 @@ export function useShellController() {
     toggleDetails,
     closeDetails,
     onChannelLeft,
-    openPalette,
     onPaletteSelect,
     onPaletteCommand,
     onOpenStream,

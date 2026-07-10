@@ -101,6 +101,24 @@ describe('SearchOverlay (ENG-127)', () => {
     expect(fake.searchSpy).toHaveBeenCalledWith({ q: 'hello', limit: 20 })
   })
 
+  it('is the unified "Search anything" modal with a borderless input (ENG-152)', async () => {
+    const wrapper = await mountOverlay()
+
+    // Unified identity: the modal input carries the top-bar's "Search anything…"
+    // placeholder (one search surface, one language).
+    const input = wrapper.get('[data-testid="search-input"]')
+    expect(input.attributes('placeholder')).toBe('Search anything…')
+    expect(wrapper.get('[data-testid="search-prompt"]').text()).toContain('Search anything')
+
+    // No inner border/box on the input — the modal CARD is the only border. The
+    // focus-visible variant out-specifies the global :focus-visible accent
+    // outline (a text input ALWAYS matches :focus-visible when focused).
+    const classes = input.classes()
+    expect(classes).toContain('outline-none')
+    expect(classes).toContain('focus-visible:outline-none')
+    expect(classes.some((c) => c.startsWith('border') || c.includes('ring-'))).toBe(false)
+  })
+
   it('shows a prompt (and never searches) while the free-text q is empty', async () => {
     const wrapper = await mountOverlay()
 

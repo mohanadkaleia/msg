@@ -47,7 +47,7 @@ export interface CommandSeams {
   openNewDm: () => void
   /** Open the existing ChannelBrowser (the `open-channel-browser` flow). */
   openChannelBrowser: () => void
-  /** Open the ENG-127 SearchOverlay (the `topbar-search` overlay). */
+  /** Open the ONE unified search modal (SearchOverlay — every entry point). */
   openSearch: () => void
   /** Cycle the theme preference light → dark → system (useTheme). */
   cycleTheme: () => void
@@ -86,10 +86,12 @@ export function buildCommands(seams: CommandSeams): PaletteCommand[] {
       run: seams.openChannelBrowser,
     },
     {
+      // The id stays 'search-messages' (stable, test-id-bearing); the title is
+      // the unified modal's "Search" identity (ENG-152 nav cleanup).
       id: 'search-messages',
-      title: 'Search messages',
+      title: 'Search',
       icon: 'search',
-      keywords: 'find',
+      keywords: 'find messages anything',
       run: seams.openSearch,
     },
     {

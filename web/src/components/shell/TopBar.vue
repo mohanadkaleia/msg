@@ -1,13 +1,15 @@
 <script setup lang="ts">
-// TopBar — ENG-136 "Ranin" top bar (PR-3). A full-width row above the main + drawer
-// region: a centered search "input" (a button — the shell opens the ENG-127 message
-// SearchOverlay from it; the `⌘K` hint chip stays for the keyboard-bound
-// quick-switcher palette) and right-aligned actions: compose (`square-pen`), a
-// notifications bell with an unread dot, and a `more` menu.
+// TopBar — ENG-136 "Ranin" top bar (PR-3; ENG-152 nav cleanup). A full-width row
+// above the main + drawer region: a centered search "input" (a button — the shell
+// opens the unified search modal from it; the `⌘/` hint chip matches the global
+// search shortcut, while `⌘K` belongs to the command palette) and a right-aligned
+// `more` menu (SCAFFOLD — no items wired yet).
 //
-// REAL: `compose` maps to "new direct message" upstream (AppShell opens the New DM
-// dialog). SCAFFOLD: the bell (notifications) and `more` menu are placeholders — the
-// bell shows a static accent unread dot; both no-op on click for now.
+// ENG-152 nav cleanup (user feedback): the compose (`square-pen`) button was
+// REMOVED — the sidebar's "+ New" button is the shell's ONE primary create
+// action, so a second top-bar compose affordance was redundant. The scaffold
+// notifications bell was REMOVED too — new-message indication lives on the
+// Inbox nav item's REAL unread badge (`inbox-unread`), the triage surface.
 //
 // ENG-152 PR-b: an EXPLICIT sync-state pill sits on the right (`topbar-sync`) —
 // the local-first identity signal. It is a pure read of the ENG-82 sync store
@@ -21,7 +23,7 @@ import { useSyncStore } from '../../stores/sync'
 import Icon from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
 
-const emit = defineEmits<{ search: []; compose: [] }>()
+const emit = defineEmits<{ search: [] }>()
 
 const sync = useSyncStore()
 const { tone, label } = storeToRefs(sync)
@@ -36,7 +38,7 @@ const syncText = computed(() => {
 
 <template>
   <div class="flex items-center gap-3 border-b border-subtle px-4 py-2">
-    <!-- Centered search — opens the message-search overlay (ENG-127). -->
+    <!-- Centered search — opens the unified search modal (ENG-127/ENG-152). -->
     <div class="mx-auto w-full max-w-xl">
       <button
         type="button"
@@ -48,7 +50,7 @@ const syncText = computed(() => {
         <span class="min-w-0 flex-1 truncate text-[13px] text-muted">Search anything…</span>
         <kbd
           class="shrink-0 rounded border border-subtle px-1.5 text-[11px] leading-tight text-muted"
-          >⌘K</kbd
+          >⌘/</kbd
         >
       </button>
     </div>
@@ -76,23 +78,8 @@ const syncText = computed(() => {
       <span>{{ syncText }}</span>
     </div>
 
-    <!-- Right-aligned actions. -->
+    <!-- Right-aligned actions. SCAFFOLD: overflow menu (no items wired). -->
     <div class="flex shrink-0 items-center gap-1">
-      <IconButton label="New message" title="New message" @click="emit('compose')">
-        <Icon name="square-pen" :size="18" />
-      </IconButton>
-      <!-- SCAFFOLD: notifications (static unread dot, no panel yet). -->
-      <span class="relative inline-flex">
-        <IconButton label="Notifications" title="Notifications">
-          <Icon name="bell" :size="18" />
-        </IconButton>
-        <span
-          aria-hidden="true"
-          class="absolute right-1 top-1 h-2 w-2 rounded-full bg-accent"
-          data-testid="topbar-bell-dot"
-        />
-      </span>
-      <!-- SCAFFOLD: overflow menu (no items wired). -->
       <IconButton label="More" title="More">
         <Icon name="more-horizontal" :size="18" />
       </IconButton>

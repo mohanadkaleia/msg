@@ -91,7 +91,7 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(wrapper.find('[role="complementary"][aria-label="Thread"]').exists()).toBe(false)
   })
 
-  it('opens the SEARCH overlay from the top-bar search; Cmd+K still opens the palette', async () => {
+  it('routes every search entry to the ONE overlay; Cmd+K toggles the palette (ENG-152)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     // Unstub CommandPalette so we can observe it opening.
     setWorkerClient(fake.client)
@@ -108,8 +108,7 @@ describe('AppShell (ENG-136 PR-C)', () => {
     })
     await flushPromises()
 
-    // ENG-127: the top-bar search opens the message-search overlay (NOT the
-    // quick-switcher palette — a distinct message-FTS surface).
+    // The top-bar search opens the unified search modal (NOT the palette).
     expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(false)
     await wrapper.get('[data-testid="topbar-search"]').trigger('click')
     expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(true)
@@ -120,10 +119,58 @@ describe('AppShell (ENG-136 PR-C)', () => {
     await wrapper.get('[data-testid="search-input"]').trigger('keydown', { key: 'Escape' })
     expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(false)
 
-    // The Cmd+K quick-switcher palette is UNCHANGED.
+    // The sidebar's Search row opens the SAME overlay (no second search UI).
+    await wrapper.get('[data-testid="nav-search"]').trigger('click')
+    expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="search-input"]').trigger('keydown', { key: 'Escape' })
+
+    // Cmd+K → the command palette; a second Cmd+K closes it (toggle).
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(true)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(false)
+
+    // Cmd+/ → the unified search modal (search's own shortcut).
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', metaKey: true }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="search-overlay"]').exists()).toBe(true)
+  })
+
+  it('the workspace pill opens the workspace menu — NOT the command palette (ENG-152)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const wrapper = mount(AppShell, {
+      attachTo: document.body,
+      global: {
+        plugins: [router],
+        stubs: {
+          MessageList: stubs.MessageList,
+          MessageComposer: stubs.MessageComposer,
+          ThreadPane: stubs.ThreadPane,
+        },
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="open-switcher"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    // The crossed wiring (pill → palette) must not come back.
+    expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="workspace-menu"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="workspace-menu-current"]').exists()).toBe(true)
+  })
+
+  it('the top bar carries no bell and no compose button (ENG-152 nav cleanup)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel', unread: 2 })
+    const wrapper = await mountShell(fake, router)
+
+    expect(wrapper.find('button[aria-label="Notifications"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="topbar-bell-dot"]').exists()).toBe(false)
+    expect(wrapper.find('button[aria-label="New message"]').exists()).toBe(false)
+    // New-message indication lives on the Inbox nav badge instead.
+    expect(wrapper.get('[data-testid="inbox-unread"]').text()).toBe('2')
   })
 
   it('palette "Create channel" command opens the EXISTING create-channel dialog (ENG-136)', async () => {
