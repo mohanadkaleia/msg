@@ -415,14 +415,28 @@ export const DERIVED_TABLES = [
 export type DerivedTable = (typeof DERIVED_TABLES)[number]
 
 // ---------------------------------------------------------------------------
-// MsgDb — the structural DB surface WorkerCore depends on (D-3, D-4). Two
-// implementations in db.ts: DexieDb (real/fake IndexedDB) and MemoryDb (Map).
+// MsgDb — the structural DB surface WorkerCore depends on (D-3, D-4). Three
+// implementations: DexieDb (real/fake IndexedDB) and MemoryDb (Map) in db.ts,
+// plus SqliteDb (ENG-165, M6 desktop) in sqlite/sqlite-db.ts.
 // The interface is intentionally small now; ENG-79/80/81 grow it.
 // ---------------------------------------------------------------------------
+
+/**
+ * Optional-feature flags a backend advertises (ENG-165, M6). `fts` = the
+ * backend maintains a local full-text index over `messages` and can serve
+ * search locally (M6-2 flips it on SqliteDb via FTS5); Dexie/Memory stay
+ * `false` — their search remains the server HTTP call. Callers branch on the
+ * FLAG, never on the concrete class.
+ */
+export interface MsgDbCapabilities {
+  readonly fts: boolean
+}
 
 export interface MsgDb {
   /** Whether writes survive a reload. `memory` = private-browsing fallback. */
   readonly persistence: 'persistent' | 'memory'
+  /** Optional-feature flags (ENG-165). See {@link MsgDbCapabilities}. */
+  readonly capabilities: MsgDbCapabilities
 
   // meta
   metaGet<T = unknown>(key: string): Promise<T | undefined>

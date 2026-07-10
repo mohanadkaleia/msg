@@ -100,6 +100,8 @@ export class MsgDB extends Dexie {
 
 export class DexieDb implements MsgDb {
   readonly persistence = 'persistent' as const
+  /** ENG-165: no local FTS — search stays the server HTTP call on this backend. */
+  readonly capabilities = { fts: false } as const
 
   constructor(private readonly db: MsgDB) {}
 
@@ -432,6 +434,8 @@ export class DexieDb implements MsgDb {
 
 export class MemoryDb implements MsgDb {
   readonly persistence = 'memory' as const
+  /** ENG-165: no local FTS — search stays the server HTTP call on this backend. */
+  readonly capabilities = { fts: false } as const
 
   private readonly metaMap = new Map<string, unknown>()
   private readonly eventsMap = new Map<string, EventRow>()
