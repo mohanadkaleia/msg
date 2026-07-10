@@ -852,6 +852,10 @@ def verify_bundle(root: Path | str, *, verbose: bool = False) -> VerifyReport:
     blob_index: dict[str, Any] = {}
     sidecar_digests: dict[str, Any] | None = None
     missing_blobs: set[str] = set()
+    #: ENG-152 workspace icon digest (``manifest.workspace.icon_sha256``) — a
+    #: referenced blob exactly like a user avatar, so the blob pass requires its
+    #: bytes on disk and does not flag them unreferenced.
+    manifest_icon_sha: str | None = None
     if manifest is not None:
 
         def _invalid(detail: str) -> None:
@@ -873,6 +877,11 @@ def verify_bundle(root: Path | str, *, verbose: bool = False) -> VerifyReport:
             manifest_wsid = wsid
         else:
             _invalid("workspace.workspace_id missing or not a string")
+        icon_raw = ws_raw.get("icon_sha256") if isinstance(ws_raw, dict) else None
+        if isinstance(icon_raw, str):
+            manifest_icon_sha = icon_raw
+        elif icon_raw is not None:
+            _invalid("workspace.icon_sha256 is not a string or null")
         streams_raw = manifest.get("streams")
         if isinstance(streams_raw, dict):
             manifest_streams = streams_raw
@@ -958,7 +967,14 @@ def verify_bundle(root: Path | str, *, verbose: bool = False) -> VerifyReport:
 
     # ---- Pass B: blobs (the # M4 SEAM pass) --------------------------------------
     _verify_blobs(
-        root, user_entries, file_entries, uploaded_sha256s, blob_index, missing_blobs, findings
+        root,
+        user_entries,
+        file_entries,
+        uploaded_sha256s,
+        blob_index,
+        missing_blobs,
+        manifest_icon_sha,
+        findings,
     )
 
     _fill_stream_counts(summaries, findings)
@@ -1306,6 +1322,7 @@ def _verify_blobs(
     uploaded_sha256s: set[str],
     blob_index: dict[str, Any],
     missing_blobs: set[str],
+    icon_sha256: str | None,
     findings: list[Finding],
 ) -> None:
     """The M4 blob pass (fills this module's long-reserved ``# M4 SEAM``).
@@ -1313,7 +1330,8 @@ def _verify_blobs(
     * every file under ``blobs/**`` re-hashed against its path digest
       (``blob_hash_mismatch``);
     * every referenced digest — ``files.json`` ``sha256`` + ``thumbnail_sha256``,
-      ``users.json`` ``avatar_sha256`` (ENG-152 profile pictures), every
+      ``users.json`` ``avatar_sha256`` (ENG-152 profile pictures), the
+      ``manifest.workspace.icon_sha256`` (ENG-152 workspace icon), every
       ``file.uploaded`` payload ``sha256``, and ``manifest.blobs.index`` —
       must exist on disk: ``blob_missing`` FAILURE, downgraded to a WARNING when
       the digest is declared in ``manifest.missing_blobs``;
@@ -1380,6 +1398,8 @@ def _verify_blobs(
         avatar = entry.get("avatar_sha256")
         if isinstance(avatar, str):
             referenced.setdefault(avatar, f"users.json avatar of {entry.get('user_id')!r}")
+    if isinstance(icon_sha256, str):
+        referenced.setdefault(icon_sha256, "manifest.workspace.icon_sha256")
     for sha in sorted(uploaded_sha256s):
         referenced.setdefault(sha, "a file.uploaded event payload")
     required = dict(referenced)

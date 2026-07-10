@@ -476,6 +476,17 @@ async def import_workspace(
         raise RestoreError("manifest workspace.file_quota_bytes missing or not an integer")
     if ws_description is not None and not isinstance(ws_description, str):
         raise RestoreError("manifest workspace.description is not a string or null")
+    # ENG-152 workspace icon: a present ref must be a blob-store digest (the same
+    # bare-hex form as every bundle blob key) or null/absent (a pre-0013 bundle);
+    # anything else is a malformed manifest — fail closed rather than store a ref
+    # the serve endpoint could never resolve (mirrors the users.json avatar check).
+    ws_icon = ws_raw.get("icon_sha256")
+    if ws_icon is not None and (
+        not isinstance(ws_icon, str) or not _BLOB_HEX_RE.fullmatch(ws_icon)
+    ):
+        raise RestoreError(
+            f"manifest workspace.icon_sha256 is not a sha256 hex digest or null: {ws_icon!r}"
+        )
     session.add(
         Workspace(
             workspace_id=workspace_id,
@@ -483,6 +494,9 @@ async def import_workspace(
             description=ws_description,
             created_at=_parse_ts(ws_raw.get("created_at"), field="workspace.created_at"),
             file_quota_bytes=ws_quota,
+            # Restored verbatim (validated above); its blob was restored by
+            # _restore_blobs from the manifest index, so ref + bytes arrive together.
+            icon_sha256=ws_icon,
         )
     )
     await session.flush()

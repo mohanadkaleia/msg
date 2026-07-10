@@ -13,20 +13,37 @@
 // sync store; it keeps the single `data-testid="sync-indicator"` so the golden-path
 // selector still resolves. Sign-out keeps `data-testid="logout"`, reachable from the
 // gear popover.
-import { computed, ref } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
+import { useWorkspaceIconUrl } from '../../composables/useWorkspaceIconUrl'
 import { useSyncStore } from '../../stores/sync'
 import Icon from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
 import StatusBadge from '../ui/StatusBadge.vue'
 import ThemeToggle from '../ui/ThemeToggle.vue'
 
-defineProps<{ workspaceInitials: string; workspaceName: string }>()
+const props = defineProps<{
+  workspaceInitials: string
+  workspaceName: string
+  /** ENG-152: the folded workspace icon sha (undefined = no icon → glyph). */
+  workspaceIconSha?: string | undefined
+}>()
 const emit = defineEmits<{ logout: [] }>()
 
 const sync = useSyncStore()
 const { tone, label } = storeToRefs(sync)
+
+// ENG-152: the workspace icon image (worker-fetched by sha). Null until loaded,
+// on a 404, or when no icon is set — the initials glyph shows in that case, and
+// a load error (img @error) falls back to the glyph too.
+const { url: iconUrl } = useWorkspaceIconUrl(() => toRef(props, 'workspaceIconSha').value)
+const iconFailed = ref(false)
+// A new icon (new url) gets a fresh chance to render before any error fallback.
+watch(iconUrl, () => {
+  iconFailed.value = false
+})
+const showIcon = computed(() => iconUrl.value !== null && !iconFailed.value)
 
 /** Map the sync store's coarse tone → the StatusBadge token tone. */
 const badgeTone = computed<'online' | 'syncing' | 'offline'>(() => {
@@ -66,12 +83,21 @@ function onLogout(): void {
       <div class="relative">
         <button
           type="button"
-          class="grid h-9 w-9 select-none place-items-center rounded-md bg-strong text-[13px] font-semibold text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          class="grid h-9 w-9 select-none place-items-center overflow-hidden rounded-md bg-strong text-[13px] font-semibold text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-background"
           :title="workspaceName"
           :aria-label="workspaceName"
           aria-current="true"
+          data-testid="workspace-icon"
+          :data-has-icon="showIcon ? 'true' : 'false'"
         >
-          {{ workspaceInitials }}
+          <img
+            v-if="showIcon && iconUrl"
+            :src="iconUrl"
+            alt=""
+            class="h-full w-full rounded-[inherit] object-cover"
+            @error="iconFailed = true"
+          />
+          <template v-else>{{ workspaceInitials }}</template>
         </button>
         <span
           aria-hidden="true"

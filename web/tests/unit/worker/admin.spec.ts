@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  clearWorkspaceIcon,
   createAdminInvite,
   getAdminWorkspace,
   listAdminInvites,
@@ -15,6 +16,7 @@ import {
   revokeAdminInvite,
   updateAdminMember,
   updateAdminWorkspace,
+  uploadWorkspaceIcon,
 } from '../../../src/worker/admin'
 import { WorkerCore } from '../../../src/worker/core'
 import { MemoryDb } from '../../../src/worker/db'
@@ -298,13 +300,23 @@ describe('token boundary (R1)', () => {
 describe('admin.workspace.get (GET /v1/admin/workspace)', () => {
   it('GETs the settings row and returns the server fields verbatim', async () => {
     const server = new FakeSyncServer()
-    server.adminWorkspace = { workspace_id: 'w_1', name: 'Acme', description: 'About us' }
+    server.adminWorkspace = {
+      workspace_id: 'w_1',
+      name: 'Acme',
+      description: 'About us',
+      icon_sha256: null,
+    }
     const http = new FakeHttpClient(server)
 
     const res = await getAdminWorkspace(http)
 
     expect(http.getCalls).toEqual(['/v1/admin/workspace'])
-    expect(res).toEqual({ workspace_id: 'w_1', name: 'Acme', description: 'About us' })
+    expect(res).toEqual({
+      workspace_id: 'w_1',
+      name: 'Acme',
+      description: 'About us',
+      icon_sha256: null,
+    })
   })
 
   it('folds a 403 (member/guest caller) into the coded `forbidden`', async () => {
@@ -331,13 +343,18 @@ describe('admin.workspace.update (PATCH /v1/admin/workspace)', () => {
 
   it("sends `description: ''` verbatim — the explicit clear is never dropped", async () => {
     const server = new FakeSyncServer()
-    server.adminWorkspace = { workspace_id: 'w_1', name: 'Acme', description: 'Old' }
+    server.adminWorkspace = {
+      workspace_id: 'w_1',
+      name: 'Acme',
+      description: 'Old',
+      icon_sha256: null,
+    }
     const http = new FakeHttpClient(server)
 
     const res = await updateAdminWorkspace(http, { description: '' })
 
     expect(http.patchCalls).toEqual([{ path: '/v1/admin/workspace', body: { description: '' } }])
-    expect(res).toEqual({ workspace_id: 'w_1', name: 'Acme', description: '' })
+    expect(res).toEqual({ workspace_id: 'w_1', name: 'Acme', description: '', icon_sha256: null })
   })
 
   it('folds a 422 (bad name / empty PATCH) into the coded `validation-error`', async () => {
@@ -346,6 +363,42 @@ describe('admin.workspace.update (PATCH /v1/admin/workspace)', () => {
     const http = new FakeHttpClient(server)
 
     expect(await codeOf(updateAdminWorkspace(http, { name: '' }))).toBe('validation-error')
+  })
+})
+
+describe('admin.workspace.uploadIcon / clearIcon (ENG-152)', () => {
+  it('POSTs the raw icon bytes + content type and returns the row with the new sha', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+
+    const res = await uploadWorkspaceIcon(http, blob)
+
+    expect(http.postBlobCalls).toEqual([
+      { path: '/v1/admin/workspace/icon', body: blob, contentType: 'image/png' },
+    ])
+    expect(typeof res.icon_sha256).toBe('string')
+    expect(res.icon_sha256).not.toBeNull()
+  })
+
+  it('DELETEs the icon and returns the row with a null sha', async () => {
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+    await uploadWorkspaceIcon(http, new Blob([new Uint8Array([9])], { type: 'image/png' }))
+
+    const res = await clearWorkspaceIcon(http)
+
+    expect(http.delCalls).toContain('/v1/admin/workspace/icon')
+    expect(res.icon_sha256).toBeNull()
+  })
+
+  it('folds a 403 (member/guest caller) into the coded `forbidden`', async () => {
+    const server = new FakeSyncServer()
+    server.adminError = forbidden
+    const http = new FakeHttpClient(server)
+    const blob = new Blob([new Uint8Array([1])], { type: 'image/png' })
+
+    expect(await codeOf(uploadWorkspaceIcon(http, blob))).toBe('forbidden')
   })
 })
 

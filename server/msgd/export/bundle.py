@@ -381,9 +381,14 @@ async def export_workspace(
 
     users_sha, avatar_blobs = await _export_users(session, dest / "users.json")
     files_sha, file_blobs = await _export_files(session, dest / "files.json")
+    # The workspace icon blob (ENG-152) rides in the bundle exactly like an
+    # avatar: a restored ``icon_sha256`` without its bytes would 404 on every
+    # serve, so ref + bytes must round-trip together.
+    icon_blobs = [workspace.icon_sha256] if workspace.icon_sha256 is not None else []
     # Every blob the bundle must carry: file content + thumbnails (ENG-118) +
-    # user avatars (ENG-152), deduplicated + sorted for a deterministic walk.
-    referenced_blobs = sorted(set(file_blobs) | set(avatar_blobs))
+    # user avatars + the workspace icon (ENG-152), deduplicated + sorted for a
+    # deterministic walk.
+    referenced_blobs = sorted(set(file_blobs) | set(avatar_blobs) | set(icon_blobs))
 
     # --- streams/<id>/<YYYY-MM>.ndjson, sorted by stream_id ------------------
     streams = (
@@ -444,6 +449,10 @@ async def export_workspace(
             "description": workspace.description,
             "created_at": to_rfc3339(workspace.created_at),
             "file_quota_bytes": workspace.file_quota_bytes,
+            # ENG-152 workspace icon: the content-addressed digest of the
+            # server-re-encoded icon blob (null = none). The BLOB rides in
+            # ``blobs/`` (referenced above), so ref + bytes round-trip together.
+            "icon_sha256": workspace.icon_sha256,
         },
         "streams": streams_manifest,
         "event_count_total": event_count_total,

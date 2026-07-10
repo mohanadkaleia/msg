@@ -52,6 +52,13 @@ class Workspace(Base):
         nullable=False,
         server_default=sa_text("10737418240"),  # 10 GiB
     )
+    # Workspace icon (ENG-152): the content-addressed digest of the workspace's
+    # SERVER-RE-ENCODED icon blob (256×256 WEBP minted by the owner/admin-only
+    # POST /v1/admin/workspace/icon — never the raw upload's hash). NULL = no
+    # icon. Serving is by ``ctx.workspace_id → this column`` only
+    # (GET /v1/workspace/icon), the same no-sha-oracle discipline as
+    # ``users.avatar_sha256`` (migration 0013).
+    icon_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class User(Base):

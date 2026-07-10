@@ -54,6 +54,7 @@ async def test_get_workspace_returns_the_settings_row(client: AsyncClient) -> No
         "workspace_id": owner["workspace_id"],
         "name": "Acme",
         "description": None,
+        "icon_sha256": None,
     }
 
 
@@ -100,6 +101,7 @@ async def test_patch_updates_name_and_description_and_persists(
         "workspace_id": owner["workspace_id"],
         "name": "Acme Corp",
         "description": "Where widgets happen",
+        "icon_sha256": None,
     }
 
     row = await db_session.get(Workspace, owner["workspace_id"])
@@ -123,6 +125,7 @@ async def test_patch_fields_are_presence_significant(
         "workspace_id": owner["workspace_id"],
         "name": "Renamed",
         "description": "Keep me",
+        "icon_sha256": None,
     }
 
     # Description-only PATCH leaves the name; "" clears the description.

@@ -91,13 +91,16 @@ class WorkspaceInfo(BaseModel):
     """The workspace settings row (GET/PATCH /v1/admin/workspace, ENG-152).
 
     ``description`` is ``None`` when never set; ``""`` when explicitly cleared
-    (the row stores what the admin last sent, verbatim). The workspace icon is
-    a separate follow-up (it shares the avatar image-upload work).
+    (the row stores what the admin last sent, verbatim). ``icon_sha256`` is the
+    content-addressed digest of the workspace's SERVER-RE-ENCODED icon blob
+    (``None`` = no icon), written only by ``POST /v1/admin/workspace/icon`` and
+    cleared by its DELETE — also the shape those endpoints echo back.
     """
 
     workspace_id: str
     name: str
     description: str | None
+    icon_sha256: str | None
 
 
 class UpdateWorkspaceRequest(BaseModel):

@@ -283,9 +283,19 @@ async def update_member(
     return _member_info(target)
 
 
-def _workspace_info(ws: Workspace) -> WorkspaceInfo:
-    """Project a ``workspaces`` row to the admin settings shape."""
-    return WorkspaceInfo(workspace_id=ws.workspace_id, name=ws.name, description=ws.description)
+def workspace_info_response(ws: Workspace) -> WorkspaceInfo:
+    """Project a ``workspaces`` row to the admin settings shape.
+
+    Shared with the workspace-icon endpoints (:mod:`msgd.api.routers
+    .workspace_icon`), which echo the same row shape after an icon write —
+    the ``me_response`` precedent.
+    """
+    return WorkspaceInfo(
+        workspace_id=ws.workspace_id,
+        name=ws.name,
+        description=ws.description,
+        icon_sha256=ws.icon_sha256,
+    )
 
 
 @router.get("/workspace", response_model=WorkspaceInfo)
@@ -298,7 +308,7 @@ async def get_workspace(ctx: AdminAuth, db: DbSession) -> WorkspaceInfo:
     """
     ws = await db.get(Workspace, ctx.workspace_id)
     assert ws is not None  # the session's workspace row always exists
-    return _workspace_info(ws)
+    return workspace_info_response(ws)
 
 
 @router.patch("/workspace", response_model=WorkspaceInfo)
@@ -360,7 +370,7 @@ async def update_workspace(
     )
 
     await db.commit()
-    return _workspace_info(ws)
+    return workspace_info_response(ws)
 
 
 @router.get("/invites", response_model=InviteListResponse)

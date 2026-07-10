@@ -104,8 +104,9 @@ class SeededA:
     member_id: str
     guest_id: str
     bundle_dir: Path
-    blob_shas: dict[str, bytes]  # sha -> content bytes (content, thumbnail, text, avatar)
+    blob_shas: dict[str, bytes]  # sha -> content bytes (content, thumbnail, text, avatar, icon)
     avatar_sha: str  # the owner's ENG-152 avatar blob digest
+    icon_sha: str  # the workspace's ENG-152 icon blob digest
     state: CapturedState
 
 
@@ -455,6 +456,7 @@ async def _seed_and_export(db: AsyncSession, tmp_path: Path) -> SeededA:
     thumb = b"WEBP-thumb-bytes" * 4
     text_blob = b"quarterly numbers, very private\n" * 8
     avatar = b"WEBP-avatar-bytes (server re-encode)" * 3
+    icon = b"WEBP-workspace-icon (server re-encode)" * 3
     content_sha = await store.put(_bytes_stream(content))
     thumb_sha = await store.put(_bytes_stream(thumb))
     text_sha = await store.put(_bytes_stream(text_blob))
@@ -462,6 +464,12 @@ async def _seed_and_export(db: AsyncSession, tmp_path: Path) -> SeededA:
     # row) that must round-trip as ref (users.json) + bytes (blobs/) together.
     avatar_sha = await store.put(_bytes_stream(avatar))
     await db.execute(update(User).where(User.user_id == owner).values(avatar_sha256=avatar_sha))
+    # ENG-152: the workspace icon — a WORKSPACE-referenced blob (manifest.workspace)
+    # that must round-trip as ref (manifest) + bytes (blobs/) together.
+    icon_sha = await store.put(_bytes_stream(icon))
+    await db.execute(
+        update(Workspace).where(Workspace.workspace_id == ws).values(icon_sha256=icon_sha)
+    )
 
     f_img, f_txt = sorted(ids.new_file_id() for _ in range(2))
     db.add(
@@ -545,8 +553,15 @@ async def _seed_and_export(db: AsyncSession, tmp_path: Path) -> SeededA:
         member_id=member,
         guest_id=guest,
         bundle_dir=bundle_dir,
-        blob_shas={content_sha: content, thumb_sha: thumb, text_sha: text_blob, avatar_sha: avatar},
+        blob_shas={
+            content_sha: content,
+            thumb_sha: thumb,
+            text_sha: text_blob,
+            avatar_sha: avatar,
+            icon_sha: icon,
+        },
         avatar_sha=avatar_sha,
+        icon_sha=icon_sha,
         state=state,
     )
 
@@ -609,7 +624,8 @@ async def test_round_trip_restores_projections_membership_blobs_and_users(
     assert seeded.dm_id not in b.guest_readable
 
     # --- blobs: every one restored, content-addressed, byte-exact -------------
-    assert result.blobs == len(seeded.blob_shas) == 4
+    # content + thumbnail + private text + owner avatar + workspace icon (ENG-152).
+    assert result.blobs == len(seeded.blob_shas) == 5
     for sha, content in seeded.blob_shas.items():
         restored = (tmp_path / "b-blobs" / sha[:2] / sha).read_bytes()
         assert restored == content
@@ -669,6 +685,8 @@ async def test_round_trip_restores_projections_membership_blobs_and_users(
     assert ws_row.workspace_id == seeded.workspace_id == result.workspace_id
     assert ws_row.name == "Acme"
     assert ws_row.file_quota_bytes == 1234567890
+    # ENG-152 workspace icon: the ref round-trips (its blob was restored above).
+    assert ws_row.icon_sha256 == seeded.icon_sha
 
 
 async def test_invariant6_rebuild_fixed_point_and_new_send_sequences_from_head(

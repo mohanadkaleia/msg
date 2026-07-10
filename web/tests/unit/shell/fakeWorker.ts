@@ -129,11 +129,16 @@ export class FakeWorker {
     workspace_id: 'w_test',
     name: 'Acme',
     description: null,
+    icon_sha256: null,
   }
   private adminWorkspaceGetError: RpcCodedError | null = null
   private adminWorkspaceUpdateError: RpcCodedError | null = null
   /** The `workspace.info` local-fold result (null name until "genesis synced"). */
-  private workspaceInfo: WorkspaceInfoResult = { name: null, description: null }
+  private workspaceInfo: WorkspaceInfoResult = {
+    name: null,
+    description: null,
+    icon_sha256: null,
+  }
 
   // -- self-profile (`me.*`) surface ----------------------------------------
   // A seedable own-profile served by the `me.get`/`me.update` facade; `update`
@@ -159,11 +164,16 @@ export class FakeWorker {
   readonly meUploadAvatarSpy = vi.fn<(blob: Blob) => void>()
   readonly meClearAvatarSpy = vi.fn()
   readonly userAvatarSpy = vi.fn<(userId: string, sha: string) => void>()
+  readonly workspaceIconSpy = vi.fn<(sha: string) => void>()
+  readonly workspaceUploadIconSpy = vi.fn<(blob: Blob) => void>()
+  readonly workspaceClearIconSpy = vi.fn()
   private avatarUploadError: RpcCodedError | null = null
   /** Counter minting deterministic fake re-encode digests. */
   private avatarSeq = 0
   /** Seeded `user_id:sha → Blob` the `users.avatar` facade serves. */
   private readonly avatarBlobs = new Map<string, Blob>()
+  /** Seeded `sha → Blob` the `workspace.icon` facade serves (ENG-152). */
+  private readonly workspaceIconBlobs = new Map<string, Blob>()
 
   // -- setup helpers -------------------------------------------------------
 
@@ -226,9 +236,14 @@ export class FakeWorker {
     return this
   }
 
-  /** Seed the `workspace.info` fold result (the switcher/header name source). */
-  setWorkspaceInfo(info: WorkspaceInfoResult): this {
-    this.workspaceInfo = { ...info }
+  /** Seed the `workspace.info` fold result (the switcher/header name source).
+   * `icon_sha256` defaults to null (ENG-152) so existing callers stay terse. */
+  setWorkspaceInfo(info: Partial<WorkspaceInfoResult> & { name: string | null }): this {
+    this.workspaceInfo = {
+      name: info.name,
+      description: info.description ?? null,
+      icon_sha256: info.icon_sha256 ?? null,
+    }
     return this
   }
 
@@ -259,6 +274,12 @@ export class FakeWorker {
   /** Seed the avatar bytes `users.avatar` serves for `userId` + `sha` (ENG-152). */
   setAvatarBlob(userId: string, sha: string, blob: Blob): this {
     this.avatarBlobs.set(`${userId}:${sha}`, blob)
+    return this
+  }
+
+  /** Seed the workspace-icon bytes `workspace.icon` serves for `sha` (ENG-152). */
+  setWorkspaceIconBlob(sha: string, blob: Blob): this {
+    this.workspaceIconBlobs.set(sha, blob)
     return this
   }
 
@@ -983,6 +1004,27 @@ export class FakeWorker {
             this.workspaceInfo = {
               name: this.adminWorkspace.name,
               description: this.adminWorkspace.description,
+              icon_sha256: this.adminWorkspace.icon_sha256,
+            }
+            return Promise.resolve({ ...this.adminWorkspace })
+          },
+          uploadIcon: (blob: Blob) => {
+            this.workspaceUploadIconSpy(blob)
+            this.adminWorkspace.icon_sha256 = 'icon-sha-fake'
+            this.workspaceInfo = {
+              name: this.adminWorkspace.name,
+              description: this.adminWorkspace.description,
+              icon_sha256: this.adminWorkspace.icon_sha256,
+            }
+            return Promise.resolve({ ...this.adminWorkspace })
+          },
+          clearIcon: () => {
+            this.workspaceClearIconSpy()
+            this.adminWorkspace.icon_sha256 = null
+            this.workspaceInfo = {
+              name: this.adminWorkspace.name,
+              description: this.adminWorkspace.description,
+              icon_sha256: null,
             }
             return Promise.resolve({ ...this.adminWorkspace })
           },
@@ -1064,6 +1106,13 @@ export class FakeWorker {
           return Promise.resolve({
             blob: this.avatarBlobs.get(`${userId}:${avatarSha256}`) ?? null,
           })
+        },
+      },
+      // ENG-152 workspace icon read: keyed by the folded icon sha.
+      workspace: {
+        icon: (iconSha256: string) => {
+          this.workspaceIconSpy(iconSha256)
+          return Promise.resolve({ blob: this.workspaceIconBlobs.get(iconSha256) ?? null })
         },
       },
       // ENG-129: a REAL-shaped prefs surface — `get` returns the seeded snapshot,

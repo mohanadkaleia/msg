@@ -122,3 +122,26 @@ export async function updateAdminWorkspace(
   }
   return unwrap(await http.patch<AdminWorkspace>('/v1/admin/workspace', body))
 }
+
+/**
+ * `admin.workspace.uploadIcon` → `POST /v1/admin/workspace/icon` (ENG-152). The
+ * tab hands over an opaque image `Blob` (structured clone); the worker POSTs the
+ * RAW bytes with the picked file's content type — owner/admin only server-side,
+ * which decodes + re-encodes to a normalized square (stripping EXIF) and echoes
+ * the settings row carrying the re-encode's `icon_sha256`. A 400 (not an image /
+ * bomb) surfaces as `invalid-image`; an over-cap body as `file-too-large`; a
+ * member/guest caller as `forbidden` — the avatar-upload discipline, admin-gated.
+ */
+export async function uploadWorkspaceIcon(http: HttpClient, blob: Blob): Promise<AdminWorkspace> {
+  return unwrap(
+    await http.postBlob<AdminWorkspace>('/v1/admin/workspace/icon', blob, {
+      contentType: blob.type || 'application/octet-stream',
+    }),
+  )
+}
+
+/** `admin.workspace.clearIcon` → `DELETE /v1/admin/workspace/icon`; echoes the
+ * (icon-less) settings row. */
+export async function clearWorkspaceIcon(http: HttpClient): Promise<AdminWorkspace> {
+  return unwrap(await http.del<AdminWorkspace>('/v1/admin/workspace/icon'))
+}

@@ -26,7 +26,11 @@ describe('worker/projection — getWorkspaceInfo (ENG-152 identity fold)', () =>
     await db.putStreams([stream({ stream_id: 's_meta', kind: 'workspace-meta', name: 'meta' })])
     await db.putEvents([metaWorkspaceEvent('s_meta', 1, 'workspace.created', { name: 'Acme' })])
 
-    expect(await getWorkspaceInfo(db)).toEqual({ name: 'Acme', description: null })
+    expect(await getWorkspaceInfo(db)).toEqual({
+      name: 'Acme',
+      description: null,
+      icon_sha256: null,
+    })
   })
 
   it('applies workspace.updated fields LWW, by ascending sequence', async () => {
@@ -41,7 +45,11 @@ describe('worker/projection — getWorkspaceInfo (ENG-152 identity fold)', () =>
       }),
     ])
 
-    expect(await getWorkspaceInfo(db)).toEqual({ name: 'Acme Corp', description: 'Widgets' })
+    expect(await getWorkspaceInfo(db)).toEqual({
+      name: 'Acme Corp',
+      description: 'Widgets',
+      icon_sha256: null,
+    })
   })
 
   it('a rename-only update leaves the description; an empty-string clears it', async () => {
@@ -53,11 +61,19 @@ describe('worker/projection — getWorkspaceInfo (ENG-152 identity fold)', () =>
       // Rename only — description ABSENT from the payload, so it survives.
       metaWorkspaceEvent('s_meta', 3, 'workspace.updated', { name: 'Renamed' }),
     ])
-    expect(await getWorkspaceInfo(db)).toEqual({ name: 'Renamed', description: 'Keep me' })
+    expect(await getWorkspaceInfo(db)).toEqual({
+      name: 'Renamed',
+      description: 'Keep me',
+      icon_sha256: null,
+    })
 
     // The explicit clear ('') applies — distinguishable from "untouched".
     await db.putEvents([metaWorkspaceEvent('s_meta', 4, 'workspace.updated', { description: '' })])
-    expect(await getWorkspaceInfo(db)).toEqual({ name: 'Renamed', description: '' })
+    expect(await getWorkspaceInfo(db)).toEqual({
+      name: 'Renamed',
+      description: '',
+      icon_sha256: null,
+    })
   })
 
   it('is null/null before the genesis event has synced (the shell falls back)', async () => {
@@ -67,7 +83,33 @@ describe('worker/projection — getWorkspaceInfo (ENG-152 identity fold)', () =>
       stream({ stream_id: 's_general', name: 'general' }),
     ])
 
-    expect(await getWorkspaceInfo(db)).toEqual({ name: null, description: null })
+    expect(await getWorkspaceInfo(db)).toEqual({ name: null, description: null, icon_sha256: null })
+  })
+
+  it('folds the icon ref LWW: a string sets it, an explicit null clears it (ENG-152)', async () => {
+    const db = new MemoryDb()
+    await db.putStreams([stream({ stream_id: 's_meta', kind: 'workspace-meta', name: 'meta' })])
+    await db.putEvents([
+      metaWorkspaceEvent('s_meta', 1, 'workspace.created', { name: 'Acme' }),
+      metaWorkspaceEvent('s_meta', 2, 'workspace.updated', { icon_sha256: 'abc123' }),
+      // A rename-only update leaves the icon untouched (absent = unchanged).
+      metaWorkspaceEvent('s_meta', 3, 'workspace.updated', { name: 'Acme Corp' }),
+    ])
+    expect(await getWorkspaceInfo(db)).toEqual({
+      name: 'Acme Corp',
+      description: null,
+      icon_sha256: 'abc123',
+    })
+
+    // A carried explicit null clears the icon.
+    await db.putEvents([
+      metaWorkspaceEvent('s_meta', 4, 'workspace.updated', { icon_sha256: null }),
+    ])
+    expect(await getWorkspaceInfo(db)).toEqual({
+      name: 'Acme Corp',
+      description: null,
+      icon_sha256: null,
+    })
   })
 
   it('ignores non-workspace meta events and non-meta streams', async () => {
@@ -82,6 +124,10 @@ describe('worker/projection — getWorkspaceInfo (ENG-152 identity fold)', () =>
       metaWorkspaceEvent('s_general', 1, 'workspace.updated', { name: 'Not me' }),
     ])
 
-    expect(await getWorkspaceInfo(db)).toEqual({ name: 'Acme', description: null })
+    expect(await getWorkspaceInfo(db)).toEqual({
+      name: 'Acme',
+      description: null,
+      icon_sha256: null,
+    })
   })
 })

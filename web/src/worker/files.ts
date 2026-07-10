@@ -233,6 +233,26 @@ export class FileManager {
     return { blob: res.value.blob, mime_type: res.value.mimeType }
   }
 
+  /**
+   * Fetch the caller's OWN workspace icon bytes (`workspace.icon`, ENG-152) from
+   * the workspace-readable serve endpoint. Shares the bounded download LRU; the
+   * cache key includes the FOLDED `icon_sha256`, so a changed icon (new sha) is a
+   * fresh key and re-fetches while the old entry ages out — no stale window. The
+   * serve endpoint takes NO parameter (it resolves the caller's own workspace),
+   * so `icon_sha256` is only a cache key, never sent. A 404 (no icon — the
+   * server's uniform not-found) returns a `null` blob and is NOT cached.
+   */
+  async fetchWorkspaceIcon(params: { icon_sha256: string }): Promise<AvatarFetchResult> {
+    const key = `workspace-icon:${params.icon_sha256}`
+    const cached = this.cacheGet(key)
+    if (cached) return { blob: cached.blob, mime_type: cached.mimeType }
+
+    const res = await this.http.getBlob('/v1/workspace/icon')
+    if (!res.ok) return { blob: null }
+    this.cachePut(key, res.value)
+    return { blob: res.value.blob, mime_type: res.value.mimeType }
+  }
+
   // -- upload state machine ------------------------------------------------
 
   /**

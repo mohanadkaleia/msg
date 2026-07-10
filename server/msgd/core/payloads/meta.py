@@ -79,19 +79,25 @@ class WorkspaceUpdatedV1(BaseModel):
     """Payload for ``workspace.updated`` v1 (ENG-152) — workspace settings change.
 
     Every field is optional and PRESENCE-SIGNIFICANT: the payload carries
-    exactly the fields the admin changed (``name`` and/or ``description``), and
-    a client fold applies only the fields present (LWW by ascending sequence
-    over ``workspace.created`` → ``workspace.updated``\\*). An absent field
-    means "unchanged", so ``description: ""`` (cleared) and "description not
-    touched" stay distinguishable. Server-authored only — the type is in
-    ``SERVER_AUTHORED_EVENT_TYPES``, so a client upload is rejected
-    ``permission_denied`` (the ``user.profile_updated`` discipline).
+    exactly the fields the admin changed (``name``, ``description`` and/or
+    ``icon_sha256``), and a client fold applies only the fields present (LWW by
+    ascending sequence over ``workspace.created`` → ``workspace.updated``\\*).
+    An absent field means "unchanged", so ``description: ""`` (cleared) and
+    "description not touched" stay distinguishable. ``icon_sha256`` (the
+    ENG-152 workspace icon) is the content-addressed digest of the workspace's
+    server-re-encoded icon blob; a CARRIED explicit ``null`` means "icon
+    cleared" (absent still means untouched) — the client ``workspace.info``
+    fold renders the icon via the workspace-readable serve endpoint.
+    Server-authored only — the type is in ``SERVER_AUTHORED_EVENT_TYPES``, so a
+    client upload is rejected ``permission_denied`` (the
+    ``user.profile_updated`` discipline).
     """
 
     model_config = ConfigDict(extra="allow")
 
     name: str | None = None
     description: str | None = None
+    icon_sha256: str | None = None
 
 
 class UserJoinedV1(BaseModel):
@@ -332,6 +338,13 @@ def build_workspace_created_body(
     return dumped
 
 
+#: Sentinel for :func:`build_workspace_updated_body`'s ``icon_sha256`` — the
+#: icon field is presence-significant AND nullable (a carried explicit ``null``
+#: means "icon cleared"), so ``None`` cannot double as "not passed" the way it
+#: does for ``name``/``description``.
+_ICON_UNCHANGED: Any = object()
+
+
 def build_workspace_updated_body(
     *,
     workspace_id: str,
@@ -341,17 +354,21 @@ def build_workspace_updated_body(
     client_created_at: str,
     name: str | None = None,
     description: str | None = None,
+    icon_sha256: str | None = _ICON_UNCHANGED,
     event_id: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a server-authored ``workspace.updated`` v1 body dict (ENG-152).
 
     Mirrors :func:`build_user_profile_updated_body`: the ACTING owner/admin
-    authors the event (``PATCH /v1/admin/workspace`` is ``require_role``-gated;
-    the type itself is in ``SERVER_AUTHORED_EVENT_TYPES`` so no client can
-    forge one). The payload carries ONLY the fields the caller passed —
-    presence is significant (absent = unchanged; ``description=""`` = cleared)
-    — so the changed dict is validated through the model and dumped with
-    ``exclude_unset``. The model is the source of truth, so
+    authors the event (``PATCH /v1/admin/workspace`` and the workspace-icon
+    endpoints are ``require_role``-gated; the type itself is in
+    ``SERVER_AUTHORED_EVENT_TYPES`` so no client can forge one). The payload
+    carries ONLY the fields the caller passed — presence is significant
+    (absent = unchanged; ``description=""`` = cleared) — so the changed dict
+    is validated through the model and dumped with ``exclude_unset``.
+    ``icon_sha256`` defaults to a "not passed" sentinel because for the icon
+    an EXPLICIT carried ``null`` is meaningful (icon cleared) while absence
+    still means untouched. The model is the source of truth, so
     ``hash_event(returned dict) == event_hash`` holds by construction (D2).
     """
     changed: dict[str, Any] = {}
@@ -359,6 +376,8 @@ def build_workspace_updated_body(
         changed["name"] = name
     if description is not None:
         changed["description"] = description
+    if icon_sha256 is not _ICON_UNCHANGED:
+        changed["icon_sha256"] = icon_sha256
     payload = WorkspaceUpdatedV1.model_validate(changed)
     body = Body(
         event_id=event_id if event_id is not None else ids.new_event_id(),

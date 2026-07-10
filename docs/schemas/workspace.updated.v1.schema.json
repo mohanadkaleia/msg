@@ -2,7 +2,7 @@
   "$id": "https://msg.dev/schemas/workspace.updated.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
-  "description": "Payload for ``workspace.updated`` v1 (ENG-152) \u2014 workspace settings change.\n\nEvery field is optional and PRESENCE-SIGNIFICANT: the payload carries\nexactly the fields the admin changed (``name`` and/or ``description``), and\na client fold applies only the fields present (LWW by ascending sequence\nover ``workspace.created`` \u2192 ``workspace.updated``\\*). An absent field\nmeans \"unchanged\", so ``description: \"\"`` (cleared) and \"description not\ntouched\" stay distinguishable. Server-authored only \u2014 the type is in\n``SERVER_AUTHORED_EVENT_TYPES``, so a client upload is rejected\n``permission_denied`` (the ``user.profile_updated`` discipline).",
+  "description": "Payload for ``workspace.updated`` v1 (ENG-152) \u2014 workspace settings change.\n\nEvery field is optional and PRESENCE-SIGNIFICANT: the payload carries\nexactly the fields the admin changed (``name``, ``description`` and/or\n``icon_sha256``), and a client fold applies only the fields present (LWW by\nascending sequence over ``workspace.created`` \u2192 ``workspace.updated``\\*).\nAn absent field means \"unchanged\", so ``description: \"\"`` (cleared) and\n\"description not touched\" stay distinguishable. ``icon_sha256`` (the\nENG-152 workspace icon) is the content-addressed digest of the workspace's\nserver-re-encoded icon blob; a CARRIED explicit ``null`` means \"icon\ncleared\" (absent still means untouched) \u2014 the client ``workspace.info``\nfold renders the icon via the workspace-readable serve endpoint.\nServer-authored only \u2014 the type is in ``SERVER_AUTHORED_EVENT_TYPES``, so a\nclient upload is rejected ``permission_denied`` (the\n``user.profile_updated`` discipline).",
   "properties": {
     "description": {
       "anyOf": [
@@ -15,6 +15,18 @@
       ],
       "default": null,
       "title": "Description"
+    },
+    "icon_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Icon Sha256"
     },
     "name": {
       "anyOf": [

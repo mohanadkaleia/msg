@@ -799,6 +799,11 @@ export interface DirectoryListResult {
 export interface WorkspaceInfoResult {
   name: string | null
   description: string | null
+  /** ENG-152: the content-addressed digest of the workspace's server-re-encoded
+   * icon, folded from the last `workspace.updated` that carried it (`null` = no
+   * icon / cleared). The rail renders the icon IMAGE (worker-fetched by sha) when
+   * set, else the workspace initials glyph. */
+  icon_sha256: string | null
 }
 
 /**
@@ -1297,13 +1302,16 @@ export interface AdminInviteCreateResult {
 /**
  * The workspace settings row (`GET/PATCH /v1/admin/workspace`, server
  * `WorkspaceInfo` — ENG-152). `description` is `null` when never set and `''`
- * when explicitly cleared. The workspace ICON is a separate follow-up (it
- * shares the avatar image-upload work).
+ * when explicitly cleared. `icon_sha256` is the content-addressed digest of
+ * the workspace's server-re-encoded icon (`null` = no icon); it is echoed by
+ * every workspace read/write and by the icon upload/clear RPCs, and the icon
+ * bytes are fetched via `client.workspace.icon`.
  */
 export interface AdminWorkspace {
   workspace_id: string
   name: string
   description: string | null
+  icon_sha256: string | null
 }
 
 /**
@@ -1437,9 +1445,17 @@ export type RpcRequest =
   | { method: 'admin.invites.list'; params: Record<string, never> }
   | { method: 'admin.invites.create'; params: AdminInviteCreateParams }
   | { method: 'admin.invites.revoke'; params: { id: string } }
-  // ENG-152 workspace settings (name + description; the icon is a follow-up).
+  // ENG-152 workspace settings (name + description).
   | { method: 'admin.workspace.get'; params: Record<string, never> }
   | { method: 'admin.workspace.update'; params: AdminWorkspaceUpdateParams }
+  // ENG-152 workspace icon: owner/admin upload/clear. The upload hands the
+  // worker an opaque Blob (structured clone) which the worker POSTs raw to
+  // `/v1/admin/workspace/icon` — token + `/v1/` path stay worker-side.
+  | { method: 'admin.workspace.uploadIcon'; params: { blob: Blob } }
+  | { method: 'admin.workspace.clearIcon'; params: Record<string, never> }
+  // ENG-152: fetch the caller's-own workspace icon bytes (workspace-readable
+  // serve; LRU-cached worker-side, keyed by the folded icon sha).
+  | { method: 'workspace.icon'; params: { icon_sha256: string } }
   // Self-profile — HTTP pass-through over `/v1/me` (token worker-side;
   // structurally self-only; a 401/422 surfaces as a coded error).
   | { method: 'me.get'; params: Record<string, never> }
@@ -1624,10 +1640,16 @@ export interface WorkerClient {
       create(params: AdminInviteCreateParams): Promise<AdminInviteCreateResult>
       revoke(params: { id: string }): Promise<AdminInviteRevokeResult>
     }
-    // ENG-152 workspace settings (name + description; the icon is a follow-up).
+    // ENG-152 workspace settings (name + description + icon).
     workspace: {
       get(): Promise<AdminWorkspace>
       update(params: AdminWorkspaceUpdateParams): Promise<AdminWorkspace>
+      /** ENG-152: set the workspace icon from a picked image `Blob` (owner/admin;
+       * the worker POSTs the raw bytes, the server re-encodes + strips metadata).
+       * Returns the settings row carrying the new `icon_sha256`. */
+      uploadIcon(blob: Blob): Promise<AdminWorkspace>
+      /** ENG-152: remove the workspace icon (`icon_sha256 → null`). */
+      clearIcon(): Promise<AdminWorkspace>
     }
   }
 
@@ -1658,6 +1680,16 @@ export interface WorkerClient {
    */
   users: {
     avatar(userId: string, avatarSha256: string): Promise<AvatarFetchResult>
+  }
+
+  /**
+   * Workspace-scoped reads (ENG-152). `icon` fetches the caller's OWN workspace
+   * icon bytes via the workspace-readable serve endpoint — worker-side fetch +
+   * LRU (keyed by the folded icon sha, so a changed icon re-fetches), only
+   * opaque bytes cross to the tab.
+   */
+  workspace: {
+    icon(iconSha256: string): Promise<AvatarFetchResult>
   }
 
   /**

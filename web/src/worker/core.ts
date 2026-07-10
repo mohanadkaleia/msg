@@ -6,6 +6,7 @@
 // unit-testable in vitest against fake-indexeddb or MemoryDb, no browser.
 
 import {
+  clearWorkspaceIcon,
   createAdminInvite,
   getAdminWorkspace,
   listAdminInvites,
@@ -13,6 +14,7 @@ import {
   revokeAdminInvite,
   updateAdminMember,
   updateAdminWorkspace,
+  uploadWorkspaceIcon,
 } from './admin'
 import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
@@ -112,9 +114,11 @@ export interface RpcResultMap {
   'admin.invites.list': AdminInvitesResult
   'admin.invites.create': AdminInviteCreateResult
   'admin.invites.revoke': AdminInviteRevokeResult
-  // ENG-152 — workspace settings (name + description).
+  // ENG-152 — workspace settings (name + description + icon).
   'admin.workspace.get': AdminWorkspace
   'admin.workspace.update': AdminWorkspace
+  'admin.workspace.uploadIcon': AdminWorkspace
+  'admin.workspace.clearIcon': AdminWorkspace
   // Self-profile HTTP pass-through (`/v1/me`) — structurally self-only.
   'me.get': MeProfile
   'me.update': MeProfile
@@ -123,6 +127,9 @@ export interface RpcResultMap {
   'me.uploadAvatar': MeProfile
   'me.clearAvatar': MeProfile
   'user.avatar': AvatarFetchResult
+  // ENG-152 workspace icon: the workspace-readable icon read (worker-side fetch
+  // + LRU; only bytes cross to the tab).
+  'workspace.icon': AvatarFetchResult
 }
 
 /** A handler typed to exactly one method's request variant and result. */
@@ -651,6 +658,14 @@ export class WorkerCore {
     // up through normal sync, so nothing is persisted here either.
     this.register('admin.workspace.get', () => getAdminWorkspace(this.http))
     this.register('admin.workspace.update', (req) => updateAdminWorkspace(this.http, req.params))
+    // ENG-152 workspace icon — the upload's Blob arrived by structured clone;
+    // the worker POSTs the raw bytes (token attached here, never tab-side). The
+    // resulting `workspace.updated` meta event syncs back and updates the
+    // `workspace.info` fold, which is how every member's rail sees the new icon.
+    this.register('admin.workspace.uploadIcon', (req) =>
+      uploadWorkspaceIcon(this.http, req.params.blob),
+    )
+    this.register('admin.workspace.clearIcon', () => clearWorkspaceIcon(this.http))
   }
 
   // -- Self-profile handlers -------------------------------------------------
@@ -671,6 +686,8 @@ export class WorkerCore {
     this.register('me.uploadAvatar', (req) => uploadAvatar(this.http, req.params.blob))
     this.register('me.clearAvatar', () => clearAvatar(this.http))
     this.register('user.avatar', (req) => this.files.fetchAvatar(req.params))
+    // ENG-152 workspace icon read: worker-side fetch + LRU, only bytes cross.
+    this.register('workspace.icon', (req) => this.files.fetchWorkspaceIcon(req.params))
   }
 }
 

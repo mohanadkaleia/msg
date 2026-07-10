@@ -53,6 +53,7 @@ const {
   canAdmin,
   workspaceName,
   workspaceInitials,
+  workspaceIconSha,
   myUserId,
   selectedStream,
   selectedStreamId,
@@ -149,6 +150,7 @@ const gridCols = computed(() => {
     <SpaceRail
       :workspace-initials="workspaceInitials"
       :workspace-name="workspaceName"
+      :workspace-icon-sha="workspaceIconSha"
       @logout="onLogout"
     />
 
@@ -156,6 +158,7 @@ const gridCols = computed(() => {
       :active-view="activeView"
       :workspace-name="workspaceName"
       :workspace-initials="workspaceInitials"
+      :workspace-icon-sha="workspaceIconSha"
       :can-admin="canAdmin"
       @open-search="searchOpen = true"
       @select-view="setActiveView"

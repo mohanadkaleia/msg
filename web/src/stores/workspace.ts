@@ -46,7 +46,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   /** Workspace identity (ENG-152) — name/description folded from the cached
    * workspace-meta events, refreshed with the sidebar (an admin rename lands
    * here through normal sync). `name` is null until the genesis event syncs. */
-  const workspaceInfo = ref<WorkspaceInfoResult>({ name: null, description: null })
+  const workspaceInfo = ref<WorkspaceInfoResult>({
+    name: null,
+    description: null,
+    icon_sha256: null,
+  })
 
   /** Per-stream push unsubscribes, so we can diff + tear down cleanly. */
   const subs = new Map<string, Unsubscribe>()
@@ -197,8 +201,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * the next sync-driven refresh — this just makes the switcher/header rename
    * immediate for the admin who saved.
    */
-  function applyWorkspaceUpdate(info: { name: string; description: string | null }): void {
-    workspaceInfo.value = { name: info.name, description: info.description }
+  function applyWorkspaceUpdate(info: {
+    name: string
+    description: string | null
+    /** ENG-152: absent leaves the folded icon untouched (a name/description-only
+     * echo must not drop the icon); `null` clears it. */
+    icon_sha256?: string | null
+  }): void {
+    workspaceInfo.value = {
+      name: info.name,
+      description: info.description,
+      icon_sha256:
+        info.icon_sha256 === undefined ? workspaceInfo.value.icon_sha256 : info.icon_sha256,
+    }
   }
 
   // -- ENG-104 channel & member management + DM creation -------------------

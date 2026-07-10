@@ -80,6 +80,8 @@ const props = defineProps<{
   activeView: ActiveView
   workspaceName: string
   workspaceInitials: string
+  /** ENG-152: the folded workspace icon sha (undefined = no icon → glyph). */
+  workspaceIconSha?: string | undefined
   canAdmin: boolean
 }>()
 
@@ -206,7 +208,11 @@ function dmAvatarSha(stream: SidebarStream): string | undefined {
 
     <!-- Workspace selector pill (preserves `open-switcher`) — self-contained:
          it opens its OWN workspace menu (ENG-152 nav cleanup), not the palette. -->
-    <WorkspaceSwitcher :workspace-name="workspaceName" :workspace-initials="workspaceInitials" />
+    <WorkspaceSwitcher
+      :workspace-name="workspaceName"
+      :workspace-initials="workspaceInitials"
+      :workspace-icon-sha="workspaceIconSha"
+    />
 
     <!-- "+ New" — compact, restrained create control (sidebar restructure).
          The menu opens the SAME dialogs the node "+" affordances open. -->

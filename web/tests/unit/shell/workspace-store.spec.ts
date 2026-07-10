@@ -76,17 +76,17 @@ describe('workspace store', () => {
     await store.load()
 
     // A ZERO-network projection read, refreshed with the sidebar.
-    expect(store.workspaceInfo).toEqual({ name: 'Acme', description: 'Widgets' })
+    expect(store.workspaceInfo).toEqual({ name: 'Acme', description: 'Widgets', icon_sha256: null })
     expect(fake.querySpy).toHaveBeenCalledWith({ q: 'workspace.info' })
     expect(fake.fetch).not.toHaveBeenCalled()
 
     // The admin panel's PATCH echo applies immediately (optimistic rename).
-    store.applyWorkspaceUpdate({ name: 'Acme Corp', description: '' })
-    expect(store.workspaceInfo).toEqual({ name: 'Acme Corp', description: '' })
+    store.applyWorkspaceUpdate({ name: 'Acme Corp', description: '', icon_sha256: null })
+    expect(store.workspaceInfo).toEqual({ name: 'Acme Corp', description: '', icon_sha256: null })
 
     // A sync-driven refresh re-reads the fold (the meta event is the truth).
     fake.setWorkspaceInfo({ name: 'Acme Corp', description: '' })
     await store.refresh()
-    expect(store.workspaceInfo).toEqual({ name: 'Acme Corp', description: '' })
+    expect(store.workspaceInfo).toEqual({ name: 'Acme Corp', description: '', icon_sha256: null })
   })
 })

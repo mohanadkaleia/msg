@@ -7,7 +7,7 @@
 // inline, and a failed load renders the retryable error state.
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AdminWorkspacePanel from '../../../src/components/admin/AdminWorkspacePanel.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
@@ -21,11 +21,16 @@ describe('AdminWorkspacePanel (ENG-152)', () => {
     setActivePinia(createPinia())
     fake = new FakeWorker()
     fake.setAdminWorkspace({ workspace_id: 'w_1', name: 'Acme', description: 'Widgets' })
+    // jsdom implements neither; install spies (the picked-icon preview uses them).
+    URL.createObjectURL = vi.fn(() => 'blob:icon-preview-1')
+    URL.revokeObjectURL = vi.fn()
   })
 
   afterEach(() => {
     setWorkerClient(undefined)
     document.body.innerHTML = ''
+    delete (URL as { createObjectURL?: unknown }).createObjectURL
+    delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
   })
 
   async function mountPanel(): Promise<VueWrapper> {
@@ -51,8 +56,27 @@ describe('AdminWorkspacePanel (ENG-152)', () => {
     expect(descInput(wrapper).value).toBe('Widgets')
     // Nothing changed yet — Save is disabled.
     expect(wrapper.get('[data-testid="workspace-save"]').attributes('disabled')).toBeDefined()
-    // The icon is a separate follow-up — the panel says so.
-    expect(wrapper.find('[data-testid="workspace-icon-note"]').exists()).toBe(true)
+    // The icon uploader is present (ENG-152); with no icon set it shows the glyph.
+    expect(wrapper.find('[data-testid="workspace-icon-upload"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="workspace-icon"]').attributes('data-has-icon')).toBe('false')
+  })
+
+  it('uploads an icon through the seam and previews it (ENG-152)', async () => {
+    const wrapper = await mountPanel()
+
+    const file = new File([new Uint8Array([1, 2, 3])], 'logo.png', { type: 'image/png' })
+    const input = wrapper.get('[data-testid="workspace-icon-upload"]').element as HTMLInputElement
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await wrapper.get('[data-testid="workspace-icon-upload"]').trigger('change')
+    await flushPromises()
+
+    expect(fake.workspaceUploadIconSpy).toHaveBeenCalledTimes(1)
+    // The just-picked preview renders immediately (data-has-icon flips true).
+    expect(wrapper.get('[data-testid="workspace-icon"]').attributes('data-has-icon')).toBe('true')
+    // A Remove control now exists; clicking it clears through the seam.
+    await wrapper.get('[data-testid="workspace-icon-remove"]').trigger('click')
+    await flushPromises()
+    expect(fake.workspaceClearIconSpy).toHaveBeenCalledTimes(1)
   })
 
   it('Save PATCHes only the changed fields and shows "Saved"', async () => {

@@ -35,6 +35,7 @@ from msgd.api.routers import (
     read_state,
     search,
     sync,
+    workspace_icon,
 )
 from msgd.api.spa import SPAStaticFiles
 from msgd.auth.ratelimit import RateLimiter
@@ -131,6 +132,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ENG-152 profile pictures: POST/DELETE /v1/me/avatar (self-only, re-encode
     # pipeline) + GET /v1/users/{id}/avatar (workspace-readable, never by hash).
     app.include_router(avatars.router)
+    # ENG-152 workspace icon: POST/DELETE /v1/admin/workspace/icon (owner/admin,
+    # re-encode pipeline) + GET /v1/workspace/icon (workspace-readable, no sha).
+    app.include_router(workspace_icon.router)
     app.include_router(events_upload.router)
     app.include_router(events_read.router)
     app.include_router(files.router)  # ENG-116: /v1/files (initiate + blob + download)

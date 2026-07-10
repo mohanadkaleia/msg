@@ -216,9 +216,9 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
             params,
           }) as Promise<AdminInviteRevokeResult>,
       },
-      // ENG-152 workspace settings (name + description; icon is a follow-up).
-      // The update ALSO lands on every member's shell via the server-authored
-      // `workspace.updated` meta event the local `workspace.info` fold reads.
+      // ENG-152 workspace settings (name + description + icon). Writes ALSO land
+      // on every member's shell via the server-authored `workspace.updated` meta
+      // event the local `workspace.info` fold reads.
       workspace: {
         get: () =>
           caller.request({
@@ -229,6 +229,18 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
           caller.request({
             method: 'admin.workspace.update',
             params,
+          }) as Promise<AdminWorkspace>,
+        // ENG-152: the icon Blob crosses by structured clone; the worker owns the
+        // POST (raw bytes + bearer). The echoed row carries the new icon sha.
+        uploadIcon: (blob: Blob) =>
+          caller.request({
+            method: 'admin.workspace.uploadIcon',
+            params: { blob },
+          }) as Promise<AdminWorkspace>,
+        clearIcon: () =>
+          caller.request({
+            method: 'admin.workspace.clearIcon',
+            params: {},
           }) as Promise<AdminWorkspace>,
       },
     },
@@ -254,6 +266,16 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
         caller.request({
           method: 'user.avatar',
           params: { user_id: userId, avatar_sha256: avatarSha256 },
+        }) as Promise<AvatarFetchResult>,
+    },
+    // Workspace-scoped reads (ENG-152): the caller's OWN workspace icon bytes via
+    // the workspace-readable serve endpoint — worker-side fetch + LRU keyed by
+    // the folded icon sha; the tab mints the object URL (useWorkspaceIconUrl).
+    workspace: {
+      icon: (iconSha256: string) =>
+        caller.request({
+          method: 'workspace.icon',
+          params: { icon_sha256: iconSha256 },
         }) as Promise<AvatarFetchResult>,
     },
     // Read-state (ENG-126): `mark` clears the unread/mention badge (optimistic +

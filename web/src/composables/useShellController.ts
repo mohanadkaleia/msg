@@ -166,6 +166,11 @@ export function useShellController() {
   const workspaceName = computed(() => workspaceInfo.value.name ?? WORKSPACE_NAME_FALLBACK)
   /** Up-to-two-letter glyph for the rail, derived from the workspace name. */
   const workspaceInitials = computed(() => workspaceName.value.slice(0, 2).toUpperCase())
+  /** ENG-152: the workspace icon ref (folded from `workspace.updated`) — the
+   * rail/switcher render the icon IMAGE (worker-fetched by sha) when set, else
+   * the initials glyph. `undefined` (not `null`) when absent, matching the
+   * `useWorkspaceIconUrl` getter contract. */
+  const workspaceIconSha = computed(() => workspaceInfo.value.icon_sha256 ?? undefined)
 
   /**
    * Directory-backed `user_id → display_name` map (ENG-136) — threaded to the
@@ -557,6 +562,7 @@ export function useShellController() {
     canAdmin,
     workspaceName,
     workspaceInitials,
+    workspaceIconSha,
     // store-derived refs
     myUserId,
     selectedStream,

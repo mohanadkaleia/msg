@@ -12,14 +12,30 @@
 // exactly one (the local-first workspace), shown as current — honest, no
 // invented workspaces. Popover mechanics mirror NewButton (toggle, Escape and
 // outside click close). The `open-switcher` test-id stays on the pill.
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 
+import { useWorkspaceIconUrl } from '../../composables/useWorkspaceIconUrl'
 import Icon from '../ui/Icon.vue'
 
-defineProps<{ workspaceName: string; workspaceInitials: string }>()
+const props = defineProps<{
+  workspaceName: string
+  workspaceInitials: string
+  /** ENG-152: the folded workspace icon sha (undefined = no icon → glyph). */
+  workspaceIconSha?: string | undefined
+}>()
 
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
+
+// ENG-152: the workspace icon image (worker-fetched by sha) shown in the pill +
+// menu glyphs. Falls back to the initials glyph when absent, on a 404, or on a
+// load error (img @error).
+const { url: iconUrl } = useWorkspaceIconUrl(() => toRef(props, 'workspaceIconSha').value)
+const iconFailed = ref(false)
+watch(iconUrl, () => {
+  iconFailed.value = false
+})
+const showIcon = computed(() => iconUrl.value !== null && !iconFailed.value)
 
 /** Close on a click anywhere outside the pill + menu. */
 function onDocumentClick(event: MouseEvent): void {
@@ -56,9 +72,16 @@ onBeforeUnmount(() => {
     >
       <span
         aria-hidden="true"
-        class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent-subtle text-[11px] font-semibold text-accent"
+        class="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-md bg-accent-subtle text-[11px] font-semibold text-accent"
       >
-        {{ workspaceInitials }}
+        <img
+          v-if="showIcon && iconUrl"
+          :src="iconUrl"
+          alt=""
+          class="h-full w-full rounded-[inherit] object-cover"
+          @error="iconFailed = true"
+        />
+        <template v-else>{{ workspaceInitials }}</template>
       </span>
       <span class="min-w-0 flex-1">
         <span class="block truncate text-[13px] font-semibold text-primary">{{
@@ -87,9 +110,16 @@ onBeforeUnmount(() => {
       >
         <span
           aria-hidden="true"
-          class="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-accent-subtle text-[10px] font-semibold text-accent"
+          class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md bg-accent-subtle text-[10px] font-semibold text-accent"
         >
-          {{ workspaceInitials }}
+          <img
+            v-if="showIcon && iconUrl"
+            :src="iconUrl"
+            alt=""
+            class="h-full w-full rounded-[inherit] object-cover"
+            @error="iconFailed = true"
+          />
+          <template v-else>{{ workspaceInitials }}</template>
         </span>
         <span class="min-w-0 flex-1">
           <span class="block truncate font-medium">{{ workspaceName }}</span>

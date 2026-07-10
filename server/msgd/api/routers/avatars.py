@@ -94,7 +94,7 @@ from msgd.blobs.thumbnails import render_avatar
 from msgd.db.engine import get_session
 from msgd.db.models import User
 
-__all__ = ["router"]
+__all__ = ["BodyTooLarge", "bytes_to_async_iter", "read_capped", "router"]
 
 router = APIRouter(prefix="/v1", tags=["avatars"])
 
@@ -103,34 +103,36 @@ Blobs = Annotated[BlobStore, Depends(get_blob_store)]
 ThumbnailExecutor = Annotated[ThreadPoolExecutor, Depends(get_thumbnail_executor)]
 
 
-class _BodyTooLarge(Exception):
-    """Internal sentinel: the streamed avatar body crossed the byte cap.
+class BodyTooLarge(Exception):
+    """Sentinel: the streamed image body crossed the byte cap.
 
-    Raised from inside :func:`_read_capped` so the handler can translate it to a
+    Raised from inside :func:`read_capped` so the handler can translate it to a
     ``413 /problems/file-too-large`` without ever holding more than the cap in
-    memory. Never escapes this module.
+    memory. Shared with the workspace-icon upload (ENG-152), which runs the
+    identical capped-read step.
     """
 
 
-async def _read_capped(source: AsyncIterator[bytes], max_bytes: int) -> bytes:
+async def read_capped(source: AsyncIterator[bytes], max_bytes: int) -> bytes:
     """Buffer ``source`` fully, aborting the moment the running total crosses the cap.
 
     The avatar pipeline NEEDS the whole body in memory for the decode (unlike the
     streaming file PUT), so the cap — not the client's honesty — is what bounds
     that buffer: a chunked/lying body is cut off at ``max_bytes`` (+ one chunk),
-    long before anything is decoded or stored.
+    long before anything is decoded or stored. Raises :class:`BodyTooLarge` on an
+    over-cap body. Shared with the workspace-icon upload (ENG-152).
     """
     chunks: list[bytes] = []
     total = 0
     async for chunk in source:
         total += len(chunk)
         if total > max_bytes:
-            raise _BodyTooLarge()
+            raise BodyTooLarge()
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-async def _bytes_to_async_iter(data: bytes) -> AsyncIterator[bytes]:
+async def bytes_to_async_iter(data: bytes) -> AsyncIterator[bytes]:
     """Yield ``data`` once — the adapter feeding the re-encoded WEBP into the store."""
     yield data
 
@@ -175,8 +177,8 @@ async def upload_avatar(
             pass  # unparseable — the streaming cap decides
 
     try:
-        raw = await _read_capped(request.stream(), settings.avatar_max_size_bytes)
-    except _BodyTooLarge:
+        raw = await read_capped(request.stream(), settings.avatar_max_size_bytes)
+    except BodyTooLarge:
         raise problems.file_too_large() from None
 
     # Bounded, contained decode of UNTRUSTED bytes + re-encode (ENG-118 machinery,
@@ -195,7 +197,7 @@ async def upload_avatar(
         raise problems.invalid_image()
 
     # Store ONLY the re-encoded bytes; the raw upload is never written anywhere.
-    sha256 = await blobs.put(_bytes_to_async_iter(avatar))
+    sha256 = await blobs.put(bytes_to_async_iter(avatar))
 
     # Row lock + update + event + commit — the PATCH /v1/me transaction shape.
     user = await db.scalar(select(User).where(User.user_id == ctx.user_id).with_for_update())

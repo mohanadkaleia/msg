@@ -147,7 +147,10 @@ export function metaWorkspaceEvent(
   streamId: string,
   seq: number,
   type: 'workspace.created' | 'workspace.updated',
-  payload: { name?: string; description?: string },
+  // Presence-significant, matching the server `WorkspaceUpdatedV1`: `icon_sha256`
+  // (ENG-152) may be a string (set) or an explicit null (cleared); absence means
+  // untouched — same nullable semantics as name/description.
+  payload: { name?: string; description?: string; icon_sha256?: string | null },
 ): EventRow {
   const eventId = `e_${streamId}_${seq}`
   return {

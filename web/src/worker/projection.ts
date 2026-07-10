@@ -778,6 +778,7 @@ export async function getWorkspaceInfo(db: MsgDb): Promise<WorkspaceInfoResult> 
   const streams = await db.listStreams()
   let name: string | null = null
   let description: string | null = null
+  let icon_sha256: string | null = null
   for (const meta of streams.filter((s) => s.kind === 'workspace-meta')) {
     const events = await db.getEventsForStream(meta.stream_id) // ascending server_sequence
     for (const event of events) {
@@ -788,10 +789,17 @@ export async function getWorkspaceInfo(db: MsgDb): Promise<WorkspaceInfoResult> 
         if (typeof p.name === 'string') name = p.name
         if (event.type === 'workspace.updated' && typeof p.description === 'string')
           description = p.description
+        // ENG-152 icon ref is presence-significant on `workspace.updated`: a
+        // carried string SETS it, a carried explicit null CLEARS it, absence
+        // leaves it untouched (LWW by ascending server_sequence).
+        if (event.type === 'workspace.updated' && 'icon_sha256' in p) {
+          const icon = p.icon_sha256
+          icon_sha256 = typeof icon === 'string' ? icon : null
+        }
       }
     }
   }
-  return { name, description }
+  return { name, description, icon_sha256 }
 }
 
 /**

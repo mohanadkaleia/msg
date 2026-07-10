@@ -320,7 +320,12 @@ export class FakeSyncServer {
   /** Every create-invite body the fake server accepted (role + optional ttl). */
   readonly createdInvites: { role: string; ttl_seconds?: number }[] = []
   /** The settings row served by `GET/PATCH /v1/admin/workspace` (ENG-152). */
-  adminWorkspace: AdminWorkspace = { workspace_id: 'w_test', name: 'Acme', description: null }
+  adminWorkspace: AdminWorkspace = {
+    workspace_id: 'w_test',
+    name: 'Acme',
+    description: null,
+    icon_sha256: null,
+  }
 
   // -- self-profile model (`/v1/me`; HTTP pass-through like admin) ----------
   /** The caller's own profile served by `GET /v1/me` (tests seed it). */
@@ -330,6 +335,8 @@ export class FakeSyncServer {
   // -- ENG-152 avatars --------------------------------------------------------
   /** `user_id → served avatar bytes` for `GET /v1/users/{id}/avatar`. */
   readonly avatarBlobs = new Map<string, Uint8Array>()
+  /** Served workspace-icon bytes for `GET /v1/workspace/icon` (ENG-152). */
+  workspaceIconBytes: Uint8Array | null = null
   /** Counter minting deterministic fake "re-encode" digests on upload. */
   private avatarSeq = 0
 
@@ -791,6 +798,36 @@ export class FakeSyncServer {
     return { ok: true, value: { ...this.meProfile } }
   }
 
+  /** `POST /v1/admin/workspace/icon` (ENG-152) — the server re-encode's digest,
+   * echoed on the settings row; the serve endpoint starts serving the bytes. */
+  respondUploadWorkspaceIcon(): ApiResult<AdminWorkspace> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    this.avatarSeq++
+    const sha = `ws-reencoded-${this.avatarSeq}-`.padEnd(64, '0')
+    this.adminWorkspace = { ...this.adminWorkspace, icon_sha256: sha }
+    this.workspaceIconBytes = new Uint8Array([0xbb, this.avatarSeq])
+    return { ok: true, value: { ...this.adminWorkspace } }
+  }
+
+  /** `DELETE /v1/admin/workspace/icon` — null the ref and stop serving bytes. */
+  respondClearWorkspaceIcon(): ApiResult<AdminWorkspace> {
+    if (this.adminError) return { ok: false, error: this.adminError }
+    this.adminWorkspace = { ...this.adminWorkspace, icon_sha256: null }
+    this.workspaceIconBytes = null
+    return { ok: true, value: { ...this.adminWorkspace } }
+  }
+
+  /** `GET /v1/workspace/icon` — bytes when set, else the uniform 404. */
+  respondGetWorkspaceIcon(): ApiResult<{ blob: Blob; mimeType: string }> {
+    if (!this.workspaceIconBytes) {
+      return { ok: false, error: { status: 404, code: 'not-found', title: 'Not found' } }
+    }
+    return {
+      ok: true,
+      value: { blob: new Blob([this.workspaceIconBytes.slice().buffer]), mimeType: 'image/webp' },
+    }
+  }
+
   /** `GET /v1/users/{id}/avatar` — bytes when set, else the uniform 404. */
   respondGetAvatarBlob(userId: string): ApiResult<{ blob: Blob; mimeType: string }> {
     const bytes = this.avatarBlobs.get(userId)
@@ -1040,6 +1077,9 @@ export class FakeHttpClient implements HttpClient {
     if (path === '/v1/me/avatar') {
       return Promise.resolve(this.server.respondClearAvatar()) as Promise<ApiResult<T>>
     }
+    if (path === '/v1/admin/workspace/icon') {
+      return Promise.resolve(this.server.respondClearWorkspaceIcon()) as Promise<ApiResult<T>>
+    }
     return Promise.resolve({ ok: true, value: undefined as T })
   }
 
@@ -1055,6 +1095,9 @@ export class FakeHttpClient implements HttpClient {
     })
     if (path === '/v1/me/avatar') {
       return Promise.resolve(this.server.respondUploadAvatar()) as Promise<ApiResult<T>>
+    }
+    if (path === '/v1/admin/workspace/icon') {
+      return Promise.resolve(this.server.respondUploadWorkspaceIcon()) as Promise<ApiResult<T>>
     }
     return Promise.resolve({ ok: true, value: undefined as T })
   }
@@ -1087,6 +1130,9 @@ export class FakeHttpClient implements HttpClient {
     const avatarMatch = /^\/v1\/users\/(.+)\/avatar$/.exec(path)
     if (avatarMatch?.[1] !== undefined) {
       return Promise.resolve(this.server.respondGetAvatarBlob(avatarMatch[1]))
+    }
+    if (path === '/v1/workspace/icon') {
+      return Promise.resolve(this.server.respondGetWorkspaceIcon())
     }
     return Promise.resolve(this.server.respondGetBlob(path))
   }
