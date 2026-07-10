@@ -121,6 +121,24 @@ describe('ui/NavGroup', () => {
     expect(wrapper.get('button').attributes('aria-expanded')).toBe('true')
   })
 
+  it('renders the trailing action slot OUTSIDE the toggle button (no collapse on action click)', async () => {
+    const wrapper = mount(NavGroup, {
+      props: { title: 'DMs', storageKey: 'dms' },
+      slots: {
+        default: '<div>x</div>',
+        action: '<button type="button" data-testid="group-action">+</button>',
+      },
+    })
+    const header = wrapper.get('button[aria-expanded]')
+    const action = wrapper.get('[data-testid="group-action"]')
+    // The action is a sibling of the toggle button, never nested inside it.
+    expect(action.element.closest('button[aria-expanded]')).toBeNull()
+    // Clicking the action must NOT toggle the group.
+    await action.trigger('click')
+    expect(header.attributes('aria-expanded')).toBe('true')
+    expect(window.localStorage.getItem('msg:nav-group:dms')).toBeNull()
+  })
+
   it('renders the optional icon slot and passes data-testid through to the header', () => {
     const wrapper = mount(NavGroup, {
       props: { title: 'Messages', storageKey: 'messages' },

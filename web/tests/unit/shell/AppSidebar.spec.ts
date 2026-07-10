@@ -231,67 +231,91 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(wrapper.emitted('openSwitcher')).toBeUndefined()
   })
 
-  it('groups the nav under labeled Messages / Workspace headers (ENG-152 PR-c)', async () => {
+  it('flattens the nav: top-level Inbox/DMs/Channels, no "Messages" header (restructure)', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
 
-    const messages = wrapper.get('[data-testid="nav-group-messages"]')
-    const workspaceGroup = wrapper.get('[data-testid="nav-group-workspace"]')
-    expect(messages.text()).toBe('Messages')
-    expect(workspaceGroup.text()).toBe('Workspace')
+    // The "Messages" category header is GONE — its former children are
+    // top-level nodes now.
+    expect(wrapper.find('[data-testid="nav-group-messages"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Messages')
 
-    // Document order: Messages (Inbox, DMs, Channels) precedes Workspace
-    // (Files, Apps, Search) — same items + routes, just organized.
+    // DMs and Channels are expandable nodes; Workspace keeps its group.
+    expect(wrapper.get('[data-testid="nav-group-dms"]').text()).toBe('DMs')
+    expect(wrapper.get('[data-testid="nav-group-channels"]').text()).toBe('Channels')
+    expect(wrapper.get('[data-testid="nav-group-workspace"]').text()).toBe('Workspace')
+
+    // Document order: Inbox (leaf) · DMs · Channels · Workspace (Files, Apps,
+    // Search) — same items + routes, just reorganized.
     const html = wrapper.html()
     const at = (needle: string) => html.indexOf(needle)
-    expect(at('nav-group-messages')).toBeLessThan(at('nav-inbox'))
-    expect(at('nav-inbox')).toBeLessThan(at('nav-group-workspace'))
+    expect(at('nav-inbox')).toBeLessThan(at('nav-group-dms'))
+    expect(at('nav-group-dms')).toBeLessThan(at('nav-group-channels'))
+    expect(at('nav-group-channels')).toBeLessThan(at('sidebar-channel'))
     expect(at('sidebar-channel')).toBeLessThan(at('nav-group-workspace'))
     expect(at('nav-group-workspace')).toBeLessThan(at('nav-files'))
     expect(at('nav-group-workspace')).toBeLessThan(at('nav-apps'))
     expect(at('nav-group-workspace')).toBeLessThan(at('nav-search'))
   })
 
-  it('indents each group under a thin border-subtle connector rule (group restyle)', async () => {
+  it('indents each node’s children under a thin border-subtle connector rule', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_dana'] })
+    fake.setDirectory([{ user_id: 'u_dana', display_name: 'Dana' }], [])
     setWorkerClient(fake.client)
+    useAuthStore().myUserId = 'u_me'
     const wrapper = await mountSidebar()
 
-    // One indented item block per group (Messages + Workspace), each carrying
-    // the single vertical connector line in the subtle border token.
+    // One indented child block per collapsible node (DMs + Channels +
+    // Workspace), each carrying the single vertical connector line in the
+    // subtle border token.
     const blocks = wrapper.findAll('[data-testid="nav-group-items"]')
-    expect(blocks).toHaveLength(2)
+    expect(blocks).toHaveLength(3)
     for (const block of blocks) {
       expect(block.classes()).toContain('border-l')
       expect(block.classes()).toContain('border-subtle')
       expect(block.classes()).toContain('pl-2')
     }
-    // The items live INSIDE the indented blocks.
-    expect(blocks[0]!.find('[data-testid="nav-inbox"]').exists()).toBe(true)
-    expect(blocks[0]!.find('[data-testid="sidebar-channel"]').exists()).toBe(true)
-    expect(blocks[1]!.find('[data-testid="nav-files"]').exists()).toBe(true)
-    expect(blocks[1]!.find('[data-testid="nav-search"]').exists()).toBe(true)
+    // The children live INSIDE their node's indented block…
+    expect(blocks[0]!.find('[data-testid="sidebar-dm"]').exists()).toBe(true)
+    expect(blocks[1]!.find('[data-testid="sidebar-channel"]').exists()).toBe(true)
+    expect(blocks[2]!.find('[data-testid="nav-files"]').exists()).toBe(true)
+    expect(blocks[2]!.find('[data-testid="nav-search"]').exists()).toBe(true)
+    // …while Inbox is a TOP-LEVEL leaf, inside no block.
+    for (const block of blocks) {
+      expect(block.find('[data-testid="nav-inbox"]').exists()).toBe(false)
+    }
+    expect(wrapper.find('[data-testid="nav-inbox"]').exists()).toBe(true)
   })
 
-  it('collapses a group from its header, tracking aria-expanded, and persists (group restyle)', async () => {
+  it('collapses the DMs node from its header, tracking aria-expanded, and persists', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
 
-    const header = wrapper.get('[data-testid="nav-group-messages"]')
+    const header = wrapper.get('[data-testid="nav-group-dms"]')
     const block = wrapper.findAll('[data-testid="nav-group-items"]')[0]!.element as HTMLElement
 
-    // Default EXPANDED (the E2E flows click sidebar rows without toggling).
+    // Default EXPANDED (the E2E flows click sidebar rows without toggling),
+    // chevron pointing DOWN.
     expect(header.attributes('aria-expanded')).toBe('true')
+    expect(header.find('svg.lucide-chevron-down-icon, svg.lucide-chevron-down').exists()).toBe(true)
     expect(block.style.display).not.toBe('none')
 
-    // Collapse: aria flips, the item block hides (v-show), state persists.
+    // Collapse: aria flips, the chevron turns, the child block hides (v-show),
+    // state persists per node.
     await header.trigger('click')
     expect(header.attributes('aria-expanded')).toBe('false')
+    expect(header.find('svg.lucide-chevron-right-icon, svg.lucide-chevron-right').exists()).toBe(
+      true,
+    )
     expect(block.style.display).toBe('none')
-    expect(window.localStorage.getItem('msg:nav-group:messages')).toBe('collapsed')
-    // The OTHER group is untouched.
+    expect(window.localStorage.getItem('msg:nav-group:dms')).toBe('collapsed')
+    // The OTHER nodes are untouched.
+    expect(wrapper.get('[data-testid="nav-group-channels"]').attributes('aria-expanded')).toBe(
+      'true',
+    )
     expect(wrapper.get('[data-testid="nav-group-workspace"]').attributes('aria-expanded')).toBe(
       'true',
     )
@@ -300,29 +324,36 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     await header.trigger('click')
     expect(header.attributes('aria-expanded')).toBe('true')
     expect(block.style.display).not.toBe('none')
-    expect(window.localStorage.getItem('msg:nav-group:messages')).toBe('expanded')
+    expect(window.localStorage.getItem('msg:nav-group:dms')).toBe('expanded')
   })
 
-  it('restores a persisted collapsed group on mount (group restyle)', async () => {
-    window.localStorage.setItem('msg:nav-group:workspace', 'collapsed')
+  it('restores a persisted collapsed node on mount', async () => {
+    window.localStorage.setItem('msg:nav-group:channels', 'collapsed')
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
 
-    expect(wrapper.get('[data-testid="nav-group-workspace"]').attributes('aria-expanded')).toBe(
+    expect(wrapper.get('[data-testid="nav-group-channels"]').attributes('aria-expanded')).toBe(
       'false',
     )
-    // Messages (no stored state) stays expanded.
-    expect(wrapper.get('[data-testid="nav-group-messages"]').attributes('aria-expanded')).toBe(
+    // DMs + Workspace (no stored state) stay expanded.
+    expect(wrapper.get('[data-testid="nav-group-dms"]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-testid="nav-group-workspace"]').attributes('aria-expanded')).toBe(
       'true',
     )
   })
 
-  it('shows the "+ New" button and wires its menu to the REAL create flows', async () => {
+  it('shows the compact "+ New" button and wires its menu to the REAL create flows', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     fake.setDirectory([{ user_id: 'u_dana', display_name: 'Dana' }], [])
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
+
+    // Compact, restrained secondary control (restructure) — no accent fill,
+    // no full-width hero treatment.
+    const newBtn = wrapper.get('[data-testid="new-button"]')
+    expect(newBtn.classes()).not.toContain('bg-accent')
+    expect(newBtn.classes()).not.toContain('w-full')
 
     // "New channel" → the EXISTING CreateChannelDialog.
     await wrapper.get('[data-testid="new-button"]').trigger('click')
@@ -474,7 +505,7 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(wrapper.get('[data-testid="local-first-note"]').text()).toBe('Offline · Local')
   })
 
-  it('labels a DM row with the OTHER participant’s name + a live presence dot (ENG-149)', async () => {
+  it('labels a DM row with the OTHER participant’s name and NO presence dot (restructure)', async () => {
     fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_dana'] })
     fake.setDirectory([{ user_id: 'u_dana', display_name: 'Dana' }], [])
     setWorkerClient(fake.client)
@@ -488,16 +519,12 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(dm.text()).not.toContain('s_dm')
     // The avatar initial follows the resolved name…
     expect(dm.text()).toContain('D')
-    // …and the presence dot reflects the OTHER participant's live status.
-    expect(dm.get('[data-testid="presence-dot"]').attributes('data-status')).toBe('online')
-
-    // Presence flips are honored (offline → muted dot).
-    usePresenceStore().statuses = new Map<string, PresenceStatus>([['u_dana', 'offline']])
-    await flushPromises()
-    expect(dm.get('[data-testid="presence-dot"]').attributes('data-status')).toBe('offline')
+    // …but the presence dot is GONE from DM rows (sidebar restructure feedback)
+    // even while the counterpart's live presence is known.
+    expect(dm.find('[data-testid="presence-dot"]').exists()).toBe(false)
   })
 
-  it('keeps the id label and shows no dot for a DM with unresolvable participants', async () => {
+  it('keeps the id label for a DM with unresolvable participants (no dot either)', async () => {
     // No dm_user_ids (genesis not cached) — the row keeps its previous fallback.
     fake.addStream({ stream_id: 's_dm_bare', kind: 'dm' })
     setWorkerClient(fake.client)

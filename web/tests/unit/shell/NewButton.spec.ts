@@ -1,7 +1,8 @@
-// tests/unit/shell/NewButton.spec.ts — ENG-152 PR-c "+ New" primary create
-// action. The accent button toggles a small menu of the REAL create flows (New
-// message / New channel — the parent wires them to the EXISTING dialogs); each
-// item emits + closes; Escape and outside clicks close. "Invite people" is
+// tests/unit/shell/NewButton.spec.ts — ENG-152 "+ New" create action, restyled
+// COMPACT in the sidebar restructure (a small ghost control, not a full-width
+// accent hero). It toggles a small menu of the REAL create flows (New message /
+// New channel — the parent wires them to the EXISTING dialogs); each item
+// emits + closes; Escape and outside clicks close. "Invite people" is
 // deliberately absent — no web invite-creation seam exists.
 import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -17,12 +18,16 @@ describe('NewButton (ENG-152)', () => {
     document.body.innerHTML = ''
   })
 
-  it('renders the ONE accent primary button and no menu until opened', () => {
+  it('renders a compact secondary button and no menu until opened', () => {
     const wrapper = mountButton()
     const button = wrapper.get('[data-testid="new-button"]')
     expect(button.text()).toContain('New')
-    // The clearly-accented primary control (ui/Button primary variant).
-    expect(button.classes()).toContain('bg-accent')
+    // Compact + restrained (restructure): the ghost variant with a subtle
+    // border — NOT the old full-width accent hero.
+    expect(button.classes()).not.toContain('bg-accent')
+    expect(button.classes()).not.toContain('w-full')
+    expect(button.classes()).toContain('bg-transparent')
+    expect(button.classes()).toContain('border-subtle')
     expect(button.attributes('aria-haspopup')).toBe('menu')
     expect(wrapper.find('[data-testid="new-menu"]').exists()).toBe(false)
   })

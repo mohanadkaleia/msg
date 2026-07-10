@@ -1,14 +1,19 @@
 <script setup lang="ts">
 // ui/NavGroup.vue — ENG-152 sidebar-group restyle. A TOP-LEVEL collapsible nav
-// group (Messages / Workspace): the former static 11px uppercase header becomes
-// a toggle button — optional leading `#icon` slot, title, and a right-aligned
-// chevron (down = expanded, right = collapsed) — over an INDENTED item block
-// with a single thin connector rule (`border-l border-subtle`, tokens only)
-// running down its left edge, visually tying the group's items to the header.
+// group (DMs / Channels / Workspace): the former static 11px uppercase header
+// becomes a toggle button — optional leading `#icon` slot, title, and a
+// right-aligned chevron (down = expanded, right = collapsed) — over an INDENTED
+// item block with a single thin connector rule (`border-l border-subtle`,
+// tokens only) running down its left edge, visually tying the group's items to
+// the header.
 //
-// Distinct from ui/NavSection (the smaller DMs/Channels/Admin sub-sections that
-// nest INSIDE a group): only the group draws the connector line, so there is
-// exactly one rule per group, never nested double rails.
+// Distinct from ui/NavSection (the smaller sub-sections, e.g. Admin, that nest
+// INSIDE a group): only the group draws the connector line, so there is exactly
+// one rule per group, never nested double rails.
+//
+// The optional trailing `#action` slot (ENG-152 sidebar restructure) renders
+// OUTSIDE the toggle button — e.g. the DMs "+" / Channels "⌕ +" affordances —
+// so clicking an action never collapses the group.
 //
 // Collapsed/expanded state persists per group in localStorage
 // (`msg:nav-group:<storageKey>` — the same guarded read/write pattern as
@@ -16,8 +21,8 @@
 // expanded so a fresh profile (and every E2E run) sees the full nav.
 //
 // `data-testid` (and any other attrs) land on the HEADER BUTTON via $attrs —
-// preserving the existing `nav-group-messages` / `nav-group-workspace` ids as
-// the addressable (now interactive) header element.
+// preserving `nav-group-dms` / `nav-group-channels` / `nav-group-workspace` as
+// the addressable (interactive) header element.
 import { ref } from 'vue'
 
 import Icon from './Icon.vue'
@@ -61,21 +66,26 @@ function toggle(): void {
 
 <template>
   <section>
-    <button
-      type="button"
-      class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-secondary transition-colors hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-      :aria-expanded="open"
-      v-bind="$attrs"
-      @click="toggle"
-    >
-      <span v-if="$slots.icon" aria-hidden="true" class="flex shrink-0 items-center text-muted">
-        <slot name="icon" />
+    <div class="flex items-center gap-1">
+      <button
+        type="button"
+        class="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-secondary transition-colors hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        :aria-expanded="open"
+        v-bind="$attrs"
+        @click="toggle"
+      >
+        <span v-if="$slots.icon" aria-hidden="true" class="flex shrink-0 items-center text-muted">
+          <slot name="icon" />
+        </span>
+        <span class="truncate">{{ title }}</span>
+        <span aria-hidden="true" class="ml-auto flex shrink-0 items-center text-muted">
+          <Icon :name="open ? 'chevron-down' : 'chevron-right'" :size="14" />
+        </span>
+      </button>
+      <span v-if="$slots.action" class="shrink-0 pr-1">
+        <slot name="action" />
       </span>
-      <span class="truncate">{{ title }}</span>
-      <span aria-hidden="true" class="ml-auto flex shrink-0 items-center text-muted">
-        <Icon :name="open ? 'chevron-down' : 'chevron-right'" :size="14" />
-      </span>
-    </button>
+    </div>
     <!-- The indented item block: one thin token-styled connector rule down its
          left edge (subtle, not loud). v-show (not v-if) so collapse/expand never
          re-mounts stream rows. -->

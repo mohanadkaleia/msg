@@ -166,8 +166,8 @@ test('m3 messaging core: react · edit · delete · thread · mention · channel
 
   // --- 8) Start a DM with the second member → a DM stream appears -------------
   // The owner starts with no DMs. A DM stream's name is server-null; ENG-149
-  // resolves the row label tab-side to the OTHER participant's display name (from
-  // the DM's own cached `dm.created`), with a live presence dot.
+  // resolves the row label tab-side to the OTHER participant's display name
+  // (from the DM's own cached `dm.created`).
   await expect(page1.getByTestId('sidebar-dm')).toHaveCount(0)
   await page1.getByTestId('open-new-dm').click()
   await expect(page1.getByTestId('new-dm')).toBeVisible()
@@ -178,12 +178,9 @@ test('m3 messaging core: react · edit · delete · thread · mention · channel
   // ENG-149: the row is labeled by the participant's name once the DM's genesis
   // event lands in the local cache (WS fanout / newest-page pull) — never the id.
   await expect(page1.getByTestId('sidebar-dm')).toContainText('Second', { timeout: WS_TIMEOUT })
-  // The second member is logged in in ctx2 → their presence dot reads online.
-  await expect(page1.getByTestId('sidebar-dm').getByTestId('presence-dot')).toHaveAttribute(
-    'data-status',
-    'online',
-    { timeout: WS_TIMEOUT },
-  )
+  // Sidebar restructure: DM rows carry NO presence dot (presence lives on
+  // message rows + the footer card instead).
+  await expect(page1.getByTestId('sidebar-dm').getByTestId('presence-dot')).toHaveCount(0)
   // Creating the DM switched to it — the conversation header shows the name too.
   await expect(page1.getByTestId('channel-header')).toContainText('Second', {
     timeout: WS_TIMEOUT,
