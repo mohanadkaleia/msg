@@ -163,6 +163,17 @@ jobs:
         working-directory: web
         run: pnpm install --frozen-lockfile
 
+      # ENG-167 (M6-3): the headless workspace-mirror gate
+      # (tests/integration/m6-workspace-mirror.spec.ts, part of `pnpm test`)
+      # spawns the REAL `msgctl verify` via `uv run --project <repo>`, so this
+      # Node job also needs uv. The spec HARD-FAILS under CI when uv is absent
+      # (it must never silently skip), so removing this step turns the job red.
+      - name: Set up uv (for msgctl verify in the M6 mirror gate)
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
       - name: Lint
         working-directory: web
         run: pnpm lint
@@ -191,6 +202,17 @@ jobs:
       - name: Invariant suite (§12 — pending-settling + client rebuild)
         working-directory: web
         run: pnpm test tests/unit/worker/invariant5-pending-settling.property.spec.ts tests/unit/worker/invariant6-client-rebuild.property.spec.ts
+
+      # ENG-167 (M6-3): the headless workspace-mirror gate, re-run as its own
+      # named signal (same pattern as the invariant suite above — the file also
+      # runs inside `pnpm test`). Drives the REAL SyncEngine+WorkerCore in
+      # full-mirror mode (SqliteDb + Node-fs seams) into a temp dir, then spawns
+      # the REAL `msgctl verify --json` (via the uv step above) and asserts
+      # exit 0 — plus rebuild-from-disk ≡ incremental and crash-resume
+      # convergence. §12 invariant 6 EXTENDED to the on-disk NDJSON log.
+      - name: M6 workspace-mirror gate (msgctl verify exit 0)
+        working-directory: web
+        run: pnpm test tests/integration/m6-workspace-mirror.spec.ts
 
       - name: Build
         working-directory: web

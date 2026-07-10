@@ -22,6 +22,7 @@ import { hashEvent, JCSError, type JSONValue } from '../core'
 
 import { backoffDelay } from './backoff'
 import type { HttpClient } from './http'
+import type { WorkspaceMirror } from './mirror/workspace-mirror'
 import {
   noopApplyToProjection,
   type ApplyEventsToProjection,
@@ -88,6 +89,24 @@ export interface SyncEngineDeps {
   wsUrl?: string
   /** Watchdog window override (tests). */
   heartbeatTimeoutMs?: number
+  /**
+   * M6-3 (ENG-167) full-mirror mode: every stream is forward-synced
+   * gapless-from-1 — `syncOneStream` ALWAYS `catchUp`s from the cursor (cold
+   * start = after 0) and NEVER takes the `coldNewestPage` newest-window path,
+   * so the local `events` cache (and the on-disk NDJSON mirror) holds the
+   * COMPLETE log of every readable stream. Default false — the web client's
+   * windowed behavior is byte-for-byte unchanged.
+   */
+  fullMirror?: boolean
+  /**
+   * M6-3 (ENG-167) on-disk workspace mirror. When present, `/v1/sync` stream
+   * lists are registered into `workspace.json` BEFORE any pull
+   * (registration-before-write), and every `applyForward` contiguous run is
+   * appended + fsynced to `streams/<id>/<YYYY-MM>.ndjson` BEFORE the cursor
+   * persists (durable-log-first). Only meaningful with `fullMirror` (the log
+   * must be gapless-from-1 for `msgctl verify`); absent on the web → inert.
+   */
+  mirror?: WorkspaceMirror
 }
 
 /** Thrown to unwind a bootstrap that has already transitioned to `degraded`. */
@@ -144,6 +163,8 @@ export class SyncEngine {
   private readonly isOnlineFn: () => boolean
   private readonly wsUrl: string | undefined
   private readonly heartbeatTimeoutMs: number
+  private readonly fullMirror: boolean
+  private readonly mirror: WorkspaceMirror | undefined
 
   constructor(deps: SyncEngineDeps) {
     this.http = deps.http
@@ -164,6 +185,8 @@ export class SyncEngine {
     this.isOnlineFn = deps.isOnline ?? (() => true)
     this.wsUrl = deps.wsUrl
     this.heartbeatTimeoutMs = deps.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS
+    this.fullMirror = deps.fullMirror ?? false
+    this.mirror = deps.mirror
     this.online = this.isOnlineFn()
   }
 
@@ -397,6 +420,10 @@ export class SyncEngine {
     }
     const streams = res.value.streams
     await this.db.putStreams(streams.map(toStreamRow))
+    // M6-3 registration-before-write: every synced stream must be in
+    // `workspace.json` BEFORE its first NDJSON line lands (an unregistered
+    // stream dir is an `msgctl verify` FAILURE), so register ahead of any pull.
+    if (this.mirror) await this.mirror.registerStreams(streams)
     // Post-rebuild self-heal (ENG-80 contract): a projection-version bump drops
     // `cursors` but keeps `events`. Re-derive each absent cursor from the local
     // `events` cache FIRST so the head-diff below pulls only the missing tail,
@@ -430,6 +457,15 @@ export class SyncEngine {
       const seqs = await this.db.listEventSequences(stream.stream_id)
       const run = topContiguousRun(seqs)
       if (!run) continue
+      // M6-3: the durable NDJSON log, not the local events cache, is the
+      // desktop's source of truth. If the log head is BEHIND the cache (a crash
+      // between `putEvents` and the mirror append), re-deriving the cursor from
+      // the cache would claim contiguity the disk never got — and full-mirror
+      // catch-up (after=cursor) would never re-pull the missing tail, leaving a
+      // permanent gap in the log. Leave the cursor absent instead: full-mirror
+      // mode then forward-pulls from 0 and the mirror's dedupe filter appends
+      // exactly the missing lines (projection re-application is idempotent).
+      if (this.mirror && (await this.mirror.headSeq(stream.stream_id)) < run.last) continue
       await this.db.putCursors([
         {
           stream_id: stream.stream_id,
@@ -444,6 +480,16 @@ export class SyncEngine {
     const cursor = await this.db.getCursor(stream.stream_id)
     const last = cursor?.last_contiguous_seq ?? 0
 
+    if (this.fullMirror) {
+      // M6-3 full-mirror mode: ALWAYS forward catch-up from the cursor (cold
+      // start = after 0, i.e. from seq 1). The `coldNewestPage` newest-window
+      // path is NEVER taken — it would leave 1..N-window unpulled and the
+      // on-disk log gapped, breaking verify's gapless-from-1 core requirement.
+      if (stream.head_seq > last) {
+        await this.catchUp(stream.stream_id, last, epoch, 'bootstrap')
+      }
+      return
+    }
     if (stream.kind === 'workspace-meta') {
       // Always synced forward from seq 1 (after = last, 0 if cold): the client
       // needs the full channel/member state; small by construction (§7).
@@ -583,6 +629,16 @@ export class SyncEngine {
       } else break // gap — stop; the cursor does not jump the hole
     }
     const newLast = next - 1
+    // M6-3 durable-log-first (the msgctl `_write_page` → cursor discipline):
+    // the applied run's NDJSON bytes are appended + fsynced BEFORE the cursor
+    // persists, so a crash between the two leaves a durable log ahead of a
+    // stale cursor — the restart re-pull is deduped by the mirror's
+    // log-derived head, never the reverse (a cursor claiming lines the disk
+    // never got). A mirror failure aborts here: the cursor must not advance
+    // past bytes that never became durable.
+    if (this.mirror && applied.length > 0) {
+      await this.mirror.appendApplied(streamId, applied)
+    }
     const firstRow = rows[0]
     const firstSeq = firstRow ? firstRow.server_sequence : startLast
     const oldest = Math.min(cursor?.oldest_loaded_seq ?? firstSeq, firstSeq)
@@ -745,6 +801,8 @@ export class SyncEngine {
         const res = await this.http.get<SyncResponse>('/v1/sync')
         if (this.isStale(epoch) || !res.ok) return
         await this.db.putStreams(res.value.streams.map(toStreamRow))
+        // M6-3 registration-before-write, live-path twin of bootstrap's hook.
+        if (this.mirror) await this.mirror.registerStreams(res.value.streams)
         const meta =
           res.value.streams.find((s) => s.stream_id === streamId) ??
           ({
@@ -755,7 +813,12 @@ export class SyncEngine {
             head_seq: seq,
             member: false,
           } satisfies SyncStreamMeta)
-        if (meta.head_seq > 0) await this.coldNewestPage(meta, epoch, 'live')
+        if (meta.head_seq > 0) {
+          // Full-mirror: a mid-session new channel is still pulled forward from
+          // seq 1 (gapless log), never as a newest-window page.
+          if (this.fullMirror) await this.catchUp(streamId, 0, epoch, 'live')
+          else await this.coldNewestPage(meta, epoch, 'live')
+        }
       } catch (err) {
         if (!(err instanceof BootstrapAborted) && !(err instanceof PullFailed)) {
           console.warn('[sync] new-channel pull failed', { streamId, error: errText(err) })
@@ -820,6 +883,9 @@ export class SyncEngine {
     const res = await this.http.get<SyncResponse>('/v1/sync')
     if (!res.ok) return
     await this.db.putStreams(res.value.streams.map(toStreamRow))
+    // M6-3 registration-before-write: a stream this client just authored into
+    // existence must be registered before its first WS-delivered line lands.
+    if (this.mirror) await this.mirror.registerStreams(res.value.streams)
   }
 
   // -- internals -----------------------------------------------------------

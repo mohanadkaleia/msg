@@ -31,6 +31,11 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    include: ['tests/unit/**/*.spec.ts'],
+    // tests/integration holds the M6-3 headless workspace-mirror gate (ENG-167):
+    // Node-environment specs that drive the real SyncEngine/WorkerCore against a
+    // temp dir and spawn `msgctl verify` (needs `uv`; the spec self-skips where
+    // uv is absent and HARD-FAILS under CI so the gate cannot silently vanish —
+    // see tests/integration/m6-workspace-mirror.spec.ts).
+    include: ['tests/unit/**/*.spec.ts', 'tests/integration/**/*.spec.ts'],
   },
 })

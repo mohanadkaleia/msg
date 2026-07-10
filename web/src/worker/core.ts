@@ -20,6 +20,9 @@ import { AuthManager } from './auth'
 import { checkProjectionVersion } from './db'
 import { FileManager } from './files'
 import { createHttpClient, type HttpClient } from './http'
+import { rebuildFromEventLog, type RebuildFromDiskResult } from './mirror/rebuild'
+import type { BlobCache } from './mirror/seams'
+import type { WorkspaceMirror } from './mirror/workspace-mirror'
 import { clearAvatar, getMe, updateMe, uploadAvatar } from './me'
 import { MetaAuthor } from './meta'
 import { Outbox } from './outbox'
@@ -171,6 +174,24 @@ export interface WorkerCoreOptions {
    * (real `WebSocket`); tests inject a fake so no socket is opened.
    */
   wsFactory?: WsFactory
+  /**
+   * M6-3 (ENG-167) full-mirror mode (desktop): forward-sync every stream
+   * gapless-from-1 and disable bounded-cache eviction (`evictStream` becomes a
+   * no-op — a full mirror must never shed events). Default false; the web
+   * client's windowed behavior is unchanged.
+   */
+  fullMirror?: boolean
+  /**
+   * M6-3 (ENG-167) on-disk workspace mirror (desktop). Injected together with
+   * `fullMirror`; the web passes neither, so the mirror is inert there. Also
+   * enables {@link WorkerCore.rebuildFromDisk}.
+   */
+  mirror?: WorkspaceMirror
+  /**
+   * M6-3 (ENG-167) content-addressed offline blob store (desktop). `file.fetch`
+   * tees verified downloaded bytes into it so attachments open offline.
+   */
+  blobStore?: BlobCache
 }
 
 export class WorkerCore {
@@ -197,6 +218,10 @@ export class WorkerCore {
   private readonly ephemeral: EphemeralState
   /** Latest sync state — gates the outbox drain to `live` + detects the rising edge. */
   private syncLive = false
+  /** M6-3: full-mirror mode — evictStream is a no-op (the mirror keeps everything). */
+  private readonly fullMirror: boolean
+  /** M6-3: the on-disk workspace mirror (desktop); undefined on the web (inert). */
+  private readonly mirror: WorkspaceMirror | undefined
 
   constructor(
     private readonly db: MsgDb,
@@ -220,11 +245,16 @@ export class WorkerCore {
       })
     this.http = http
     this.auth = new AuthManager(db, http)
+    this.fullMirror = options.fullMirror ?? false
+    this.mirror = options.mirror
     this.sync = new SyncEngine({
       http,
       wsFactory: options.wsFactory ?? browserWsFactory,
       db,
       getToken: () => this.auth.getToken(),
+      // M6-3 (ENG-167): full-mirror + on-disk NDJSON mirror, desktop-only knobs.
+      fullMirror: this.fullMirror,
+      ...(this.mirror ? { mirror: this.mirror } : {}),
       // ENG-126: route the four signal frames OUT of the event-sync path. The
       // handler shape-validates each arm defensively (D9); a malformed frame is
       // ignored, never crashing the socket or entering the cursor machinery.
@@ -257,6 +287,14 @@ export class WorkerCore {
       // Fan an upload-progress frame to the tab that subscribed on this upload_id.
       publishUpload: (uploadId, progress) =>
         this.publish({ kind: 'upload', upload_id: uploadId }, progress),
+      // M6-3: tee verified downloaded bytes into the content-addressed offline
+      // blob store (desktop only; the sha lookup rides the `files` projection).
+      ...(options.blobStore
+        ? {
+            blobStore: options.blobStore,
+            lookupFileSha: async (fileId: string) => (await this.db.getFile(fileId))?.sha256,
+          }
+        : {}),
     })
     this.meta = new MetaAuthor({
       db,
@@ -447,11 +485,29 @@ export class WorkerCore {
    * (no apply loop until ENG-79); ships proven-safe.
    */
   async evictStream(streamId: string): Promise<void> {
+    // M6-3 (ENG-167): a full mirror keeps EVERY event — eviction would punch
+    // holes in the gapless local log the on-disk mirror is derived from.
+    if (this.fullMirror) return
     const seqs = await this.db.listEventSequences(streamId) // ascending
     if (seqs.length <= MAX_CACHED_EVENTS_PER_STREAM) return
     const cutoff = seqs.length - MAX_CACHED_EVENTS_PER_STREAM
     const toDelete = seqs.slice(0, cutoff)
     await this.db.deleteEventsBySequence(streamId, toDelete)
+  }
+
+  /**
+   * M6-3 (ENG-167): rebuild-from-disk — §12 invariant 6 EXTENDED to the on-disk
+   * NDJSON log (the desktop analogue of `msgctl rebuild`). Drops `events` + the
+   * derived tables, repopulates from the mirror's log (each event's
+   * `event_hash` re-verified, fail-closed BEFORE anything is dropped), and
+   * replays the projections through the SAME `rebuildProjections` the
+   * incremental path uses. Requires a configured mirror (desktop).
+   */
+  async rebuildFromDisk(): Promise<RebuildFromDiskResult> {
+    if (!this.mirror) {
+      throw new RpcCodedError('no_mirror', 'rebuildFromDisk requires a configured workspace mirror')
+    }
+    return rebuildFromEventLog(this.db, this.mirror.log)
   }
 
   /** Drop all subscriptions held by a disconnecting client. */

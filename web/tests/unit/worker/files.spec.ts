@@ -6,10 +6,11 @@
 // hard-failure + explicit retry, the download LRU, and the token boundary. MemoryDb
 // + a real Outbox + a fake Files-API server — no browser, no real network, no token.
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { sha256Hex } from '../../../src/core'
 import { FileManager } from '../../../src/worker/files'
+import type { BlobCache } from '../../../src/worker/mirror/seams'
 import { MemoryDb } from '../../../src/worker/db'
 import { Outbox } from '../../../src/worker/outbox'
 import { META_DEVICE_ID, type AuthStatus, type UploadProgress } from '../../../src/worker/types'
@@ -377,5 +378,99 @@ describe('FileManager — token boundary', () => {
     expect(Object.keys(fetched).sort()).toEqual(['blob', 'mime_type'])
     // The bearer never crossed the RPC surface — it lives only behind the http client.
     expect(JSON.stringify(http.getBlobCalls)).not.toContain('Bearer')
+  })
+})
+
+describe('FileManager — M6-3 offline blob tee (ENG-167)', () => {
+  // jsdom's Blob lacks `arrayBuffer()` (a real worker Blob has it) — polyfill
+  // it over FileReader, mirroring the makeFile() polyfill above.
+  beforeAll(() => {
+    if (typeof Blob.prototype.arrayBuffer !== 'function') {
+      Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+        configurable: true,
+        value(this: Blob): Promise<ArrayBuffer> {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as ArrayBuffer)
+            reader.onerror = () => reject(reader.error ?? new Error('read failed'))
+            reader.readAsArrayBuffer(this)
+          })
+        },
+      })
+    }
+  })
+
+  class MemoryBlobCache implements BlobCache {
+    readonly blobs = new Map<string, Uint8Array>()
+    put(sha256: string, bytes: Uint8Array): Promise<void> {
+      this.blobs.set(sha256, bytes)
+      return Promise.resolve()
+    }
+    get(sha256: string): Promise<Uint8Array | null> {
+      return Promise.resolve(this.blobs.get(sha256) ?? null)
+    }
+    has(sha256: string): Promise<boolean> {
+      return Promise.resolve(this.blobs.has(sha256))
+    }
+  }
+
+  function makeTeeing(sha: string | undefined): {
+    server: FakeSyncServer
+    manager: FileManager
+    store: MemoryBlobCache
+  } {
+    const db = new MemoryDb()
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+    const outbox = new Outbox({ db, http, authStatus: () => AUTH, publishStream: () => {} })
+    const store = new MemoryBlobCache()
+    const manager = new FileManager({
+      http,
+      outbox,
+      authStatus: () => AUTH,
+      publishUpload: () => {},
+      blobStore: store,
+      lookupFileSha: () => Promise.resolve(sha),
+    })
+    return { server, manager, store }
+  }
+
+  it('tees VERIFIED full-blob bytes into the store, keyed by the projected sha', async () => {
+    // presentFile serves `size` zero bytes — key the lookup by their true sha.
+    const sha = await sha256Hex(new Uint8Array(4))
+    const { server, manager, store } = makeTeeing(sha)
+    const fileId = server.presentFile({ size_bytes: 4, sha256: sha })
+    const res = await manager.fetch({ file_id: fileId, variant: 'blob' })
+    expect(res.blob).not.toBeNull()
+    await flush()
+    expect(await store.has(sha)).toBe(true)
+    expect((await store.get(sha))?.length).toBe(4)
+  })
+
+  it('never stores bytes that fail the sha verification (fail-closed tee)', async () => {
+    const wrongSha = 'b'.repeat(64) // the projection claims a different digest
+    const { server, manager, store } = makeTeeing(wrongSha)
+    const fileId = server.presentFile({ size_bytes: 4, sha256: wrongSha })
+    const res = await manager.fetch({ file_id: fileId, variant: 'blob' })
+    expect(res.blob).not.toBeNull() // the fetch itself still serves the tab
+    await flush()
+    expect(store.blobs.size).toBe(0) // …but the offline store took nothing
+  })
+
+  it('stays inert without a configured store (web default) and for misses', async () => {
+    const db = new MemoryDb()
+    const server = new FakeSyncServer()
+    const http = new FakeHttpClient(server)
+    const outbox = new Outbox({ db, http, authStatus: () => AUTH, publishStream: () => {} })
+    const manager = new FileManager({
+      http,
+      outbox,
+      authStatus: () => AUTH,
+      publishUpload: () => {},
+    })
+    const fileId = server.presentFile({ size_bytes: 2 })
+    const res = await manager.fetch({ file_id: fileId, variant: 'blob' })
+    expect(res.blob).not.toBeNull()
+    await flush() // nothing to assert beyond "no crash" — no store exists
   })
 })
