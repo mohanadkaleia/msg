@@ -341,6 +341,58 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.drawerMode.value).toBe('none')
   })
 
+  // -- ENG-152 user-details drawer (hovercard click → right drawer) ----------
+
+  it('opens the user-details drawer for a user_id and resolves the record', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    fake.setDirectory([{ user_id: 'u_ana', display_name: 'Ana', title: 'Eng' }], [])
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    expect(ctrl.drawerMode.value).toBe('none')
+    ctrl.openUserDetails('u_ana')
+    expect(ctrl.drawerMode.value).toBe('user')
+    expect(ctrl.detailsUser.value?.display_name).toBe('Ana')
+    expect(ctrl.detailsPresence.value).toBe('offline')
+
+    // Close returns the drawer to the prior (none) state.
+    ctrl.closeUserDetails()
+    expect(ctrl.drawerMode.value).toBe('none')
+    expect(ctrl.detailsUser.value).toBeNull()
+  })
+
+  it('overlays the user-details panel and RESTORES the prior channel-details state on close', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('details')
+
+    ctrl.openUserDetails('u_ana')
+    expect(ctrl.drawerMode.value).toBe('user') // overlays details
+
+    ctrl.closeUserDetails()
+    expect(ctrl.drawerMode.value).toBe('details') // prior state restored
+  })
+
+  it('overlays the user-details panel over an open thread and restores it on close', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const root = fake.addMessage('s_a', { created_seq: 1, text: 'root' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.onOpenThread(root.message_id)
+    await flushPromises()
+    expect(ctrl.drawerMode.value).toBe('thread')
+
+    ctrl.openUserDetails('u_ana')
+    expect(ctrl.drawerMode.value).toBe('user')
+
+    ctrl.closeUserDetails()
+    expect(ctrl.drawerMode.value).toBe('thread') // the thread is revealed again
+  })
+
   it('closes the details drawer when navigating away from the conversation', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     setWorkerClient(fake.client)

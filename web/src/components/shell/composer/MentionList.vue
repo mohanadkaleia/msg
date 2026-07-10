@@ -8,6 +8,7 @@
 import { nextTick, ref, watch } from 'vue'
 
 import UserAvatar from '../../ui/UserAvatar.vue'
+import UserPopover from '../../ui/UserPopover.vue'
 
 import type { MentionItem } from './mentions'
 
@@ -69,15 +70,22 @@ defineExpose({ onKeyDown })
       @mousedown.prevent="commit(index)"
     >
       <!-- User rows carry an avatar (image when set, initial otherwise, ENG-152);
-           channel rows keep the # glyph. -->
-      <UserAvatar
+           channel rows keep the # glyph. Hover previews the profile (ENG-152) but
+           is NOT clickable here — a click on the row selects the mention. -->
+      <UserPopover
         v-if="item.kind === 'user'"
-        class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-[10px] font-semibold text-accent"
-        aria-hidden="true"
         :user-id="item.id"
         :name="item.label"
-        :sha="item.avatar_sha"
-      />
+        :clickable="false"
+      >
+        <UserAvatar
+          class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-[10px] font-semibold text-accent"
+          aria-hidden="true"
+          :user-id="item.id"
+          :name="item.label"
+          :sha="item.avatar_sha"
+        />
+      </UserPopover>
       <span v-else class="text-muted">#</span>
       <span class="truncate">{{ item.label }}</span>
     </button>

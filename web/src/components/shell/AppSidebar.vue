@@ -61,6 +61,7 @@ import NavGroup from '../ui/NavGroup.vue'
 import NavSection from '../ui/NavSection.vue'
 import SidebarItem from '../ui/SidebarItem.vue'
 import UserAvatar from '../ui/UserAvatar.vue'
+import UserPopover from '../ui/UserPopover.vue'
 import ChannelBrowser from './ChannelBrowser.vue'
 import ChannelSettingsDialog from './ChannelSettingsDialog.vue'
 import CreateChannelDialog from './CreateChannelDialog.vue'
@@ -265,13 +266,18 @@ function dmAvatarSha(stream: SidebarStream): string | undefined {
         >
           <template #leading>
             <!-- Avatar (image when set, initial otherwise) — the DM-row presence
-                 dot was removed (sidebar restructure feedback). -->
-            <UserAvatar
-              class="grid h-4 w-4 place-items-center rounded-full bg-accent-subtle text-[10px] font-semibold text-accent"
-              :user-id="dmOtherUserId(stream)"
-              :name="labelFor(stream)"
-              :sha="dmAvatarSha(stream)"
-            />
+                 dot was removed (sidebar restructure feedback); presence now shows
+                 on demand in the UserPopover hovercard. Clicking the avatar opens
+                 the counterpart's user-details drawer WITHOUT selecting the DM
+                 (@click.stop), so the row text stays the "open conversation" hit. -->
+            <UserPopover :user-id="dmOtherUserId(stream)" :name="labelFor(stream)" @click.stop>
+              <UserAvatar
+                class="grid h-4 w-4 place-items-center rounded-full bg-accent-subtle text-[10px] font-semibold text-accent"
+                :user-id="dmOtherUserId(stream)"
+                :name="labelFor(stream)"
+                :sha="dmAvatarSha(stream)"
+              />
+            </UserPopover>
           </template>
           {{ labelFor(stream) }}
           <template v-if="stream.mention" #trailing>

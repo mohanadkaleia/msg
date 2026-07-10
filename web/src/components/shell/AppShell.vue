@@ -38,6 +38,7 @@ import TopBar from './TopBar.vue'
 import TypingIndicator from './TypingIndicator.vue'
 import EmptyState from '../ui/EmptyState.vue'
 import { useShellController } from '../../composables/useShellController'
+import { provideOpenUserDetails } from '../../composables/useUserDetails'
 import type { SidebarStream } from '../../stores/workspace'
 
 const {
@@ -59,6 +60,11 @@ const {
   displayMessages,
   hasMore,
   drawerMode,
+  detailsUser,
+  detailsPresence,
+  detailsRole,
+  openUserDetails,
+  closeUserDetails,
   mainTitle,
   headerPresence,
   names,
@@ -86,6 +92,10 @@ const {
   onOpenThread,
   onLogout,
 } = useShellController()
+
+// ENG-152: any interactive avatar/name (message rows, sidebar DM rows) opens the
+// right-drawer user-details panel through this provided seam — no prop-drilling.
+provideOpenUserDetails(openUserDetails)
 
 // ENG-152 nav cleanup: EVERY search entry point — the TopBar field, the
 // sidebar's Search row, the palette's "Search" command, and the global ⌘/ —
@@ -123,10 +133,12 @@ function onOpenMembers(): void {
   if (selectedStream.value) settingsFor.value = selectedStream.value
 }
 
-/** Drawer grid column: 24rem for the thread (unchanged), 16rem (~250px) for details. */
+/** Drawer grid column: 24rem for the thread (unchanged), 16rem (~250px) for
+ * channel details, 18rem for the user-details profile (ENG-152). */
 const gridCols = computed(() => {
   if (drawerMode.value === 'thread') return 'grid-cols-[1fr_24rem]'
   if (drawerMode.value === 'details') return 'grid-cols-[1fr_16rem]'
+  if (drawerMode.value === 'user') return 'grid-cols-[1fr_18rem]'
   return 'grid-cols-[1fr]'
 })
 </script>
@@ -226,9 +238,13 @@ const gridCols = computed(() => {
         <RightDrawer
           :mode="drawerMode"
           :stream="selectedStream"
+          :user="detailsUser"
+          :user-presence="detailsPresence"
+          :user-role="detailsRole"
           @close="closeDetails"
           @open-members="onOpenMembers"
           @left="onChannelLeft"
+          @close-user="closeUserDetails"
         />
       </div>
     </div>

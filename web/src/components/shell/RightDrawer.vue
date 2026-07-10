@@ -12,17 +12,26 @@
 //
 // The details branch hosts <ChannelDetailsDrawer> for the selected stream
 // (landmark aria-label="Details"), forwarding its close / open-members / left
-// events to the shell. A mount-only CSS entrance gives each open a subtle
-// slide-in without ever delaying the close.
+// events to the shell. The user branch hosts <UserDetailsDrawer> (ENG-152,
+// landmark aria-label="Profile") for a clicked member. A mount-only CSS entrance
+// gives each open a subtle slide-in without ever delaying the close.
 import ChannelDetailsDrawer from './ChannelDetailsDrawer.vue'
 import ThreadPane from './ThreadPane.vue'
+import UserDetailsDrawer from './UserDetailsDrawer.vue'
 import type { DrawerMode } from '../../composables/useShellController'
 import type { SidebarStream } from '../../stores/workspace'
+import type { DirectoryUser, PresenceStatus } from '../../worker'
 
 defineProps<{
   mode: DrawerMode
   /** The selected stream the Details panel describes (ignored for 'thread'). */
   stream?: SidebarStream | null
+  /** The member the user-details panel describes (ENG-152; only for 'user'). */
+  user?: DirectoryUser | null
+  /** The member's live presence for the user-details panel. */
+  userPresence?: PresenceStatus
+  /** Read-only role for the user-details panel, when known (self only). */
+  userRole?: string | undefined
 }>()
 
 defineEmits<{
@@ -32,6 +41,8 @@ defineEmits<{
   'open-members': []
   /** The user left the channel — the shell closes + reselects. */
   left: []
+  /** User-details ✕ — the shell clears the overlay, restoring the prior state. */
+  'close-user': []
 }>()
 </script>
 
@@ -56,6 +67,20 @@ defineEmits<{
       @close="$emit('close')"
       @open-members="$emit('open-members')"
       @left="$emit('left')"
+    />
+  </div>
+
+  <div
+    v-else-if="mode === 'user' && user"
+    role="complementary"
+    aria-label="Profile"
+    class="drawer-panel h-full w-72 shrink-0 overflow-hidden"
+  >
+    <UserDetailsDrawer
+      :user="user"
+      :presence="userPresence ?? 'offline'"
+      :role="userRole"
+      @close="$emit('close-user')"
     />
   </div>
 </template>

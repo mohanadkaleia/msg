@@ -1,6 +1,8 @@
+/* eslint-disable vue/one-component-per-file -- lightweight leaf stubs, not real SFCs */
 // tests/unit/shell/RightDrawer.spec.ts — ENG-136 "Ranin" right drawer host.
-// The drawer renders EITHER the thread pane OR the channel Details panel, keyed on
-// `mode` ('none' | 'thread' | 'details'). The thread branch must behave EXACTLY as
+// The drawer renders EITHER the thread pane OR the channel Details panel OR the
+// ENG-152 user-details panel, keyed on `mode` ('none' | 'thread' | 'details' |
+// 'user'). The thread branch must behave EXACTLY as
 // the old boolean-open wrapper (synchronous mount/unmount, "Thread" complementary
 // landmark, ThreadPane VERBATIM inside); the details branch hosts
 // ChannelDetailsDrawer and forwards its close/open-members/left events. Both leaves
@@ -19,10 +21,19 @@ const ChannelDetailsDrawerStub = defineComponent({
   template: '<div data-testid="details-stub" />',
 })
 
+const UserDetailsDrawerStub = defineComponent({
+  name: 'UserDetailsDrawer',
+  emits: ['close'],
+  template: '<div data-testid="user-details-stub" />',
+})
+
 const stubs = {
   ThreadPane: { template: '<div data-testid="thread-pane-stub" />' },
   ChannelDetailsDrawer: ChannelDetailsDrawerStub,
+  UserDetailsDrawer: UserDetailsDrawerStub,
 }
+
+const user = { user_id: 'u_ana', display_name: 'Ana' }
 
 const stream: SidebarStream = {
   stream_id: 's_a',
@@ -35,8 +46,11 @@ const stream: SidebarStream = {
 }
 
 function mountDrawer(props: {
-  mode: 'none' | 'thread' | 'details'
+  mode: 'none' | 'thread' | 'details' | 'user'
   stream?: SidebarStream | null
+  user?: { user_id: string; display_name: string } | null
+  userPresence?: 'online' | 'offline'
+  userRole?: string
 }) {
   return mount(RightDrawer, { props, global: { stubs } })
 }
@@ -90,6 +104,26 @@ describe('RightDrawer (ENG-136 drawer-mode host)', () => {
     await wrapper.setProps({ mode: 'thread' })
     expect(wrapper.find('[data-testid="details-stub"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="thread-pane-stub"]').exists()).toBe(true)
+  })
+
+  it('mounts UserDetailsDrawer as a Profile complementary landmark in user mode', () => {
+    const wrapper = mountDrawer({ mode: 'user', user, userPresence: 'online', userRole: 'admin' })
+    const panel = wrapper.get('[role="complementary"]')
+    expect(panel.attributes('aria-label')).toBe('Profile')
+    expect(wrapper.find('[data-testid="user-details-stub"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="thread-pane-stub"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="details-stub"]').exists()).toBe(false)
+  })
+
+  it('renders nothing in user mode without a user record', () => {
+    const wrapper = mountDrawer({ mode: 'user', user: null })
+    expect(wrapper.find('[role="complementary"]').exists()).toBe(false)
+  })
+
+  it('forwards the user-details panel close as close-user', () => {
+    const wrapper = mountDrawer({ mode: 'user', user, userPresence: 'offline' })
+    wrapper.getComponent(UserDetailsDrawerStub).vm.$emit('close')
+    expect(wrapper.emitted('close-user')).toHaveLength(1)
   })
 
   it('forwards the details panel close / open-members / left events', () => {

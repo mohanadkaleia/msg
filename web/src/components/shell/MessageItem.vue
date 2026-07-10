@@ -23,6 +23,7 @@ import type { FileRow } from '../../worker'
 import EmojiPicker from '../ui/EmojiPicker.vue'
 import Icon from '../ui/Icon.vue'
 import UserAvatar from '../ui/UserAvatar.vue'
+import UserPopover from '../ui/UserPopover.vue'
 import AttachmentFile from './AttachmentFile.vue'
 import AttachmentImage from './AttachmentImage.vue'
 import ReactionPill from './ReactionPill.vue'
@@ -228,17 +229,24 @@ function confirmDelete(): void {
          (empty) gutter so its text aligns under the first message's text. -->
     <div class="w-10 shrink-0" data-testid="message-gutter">
       <!-- No presence dot on message rows (ENG-152 conversation-pane cleanup):
-           live presence stays on the sidebar/DM header/people pickers only. -->
-      <UserAvatar
+           live presence stays on the sidebar/DM header/people pickers only. It
+           surfaces on demand via the UserPopover hovercard; a click opens the
+           right-drawer user-details panel. -->
+      <UserPopover
         v-if="props.showHeader && !isDeleted"
-        class="flex h-10 w-10 items-center justify-center rounded-full bg-accent-subtle text-sm font-semibold text-accent"
-        data-testid="message-avatar"
-        :title="authorName"
-        aria-hidden="true"
         :user-id="props.message.author_user_id"
         :name="authorName"
-        :sha="authorAvatarSha"
-      />
+      >
+        <UserAvatar
+          class="flex h-10 w-10 items-center justify-center rounded-full bg-accent-subtle text-sm font-semibold text-accent"
+          data-testid="message-avatar"
+          :title="authorName"
+          aria-hidden="true"
+          :user-id="props.message.author_user_id"
+          :name="authorName"
+          :sha="authorAvatarSha"
+        />
+      </UserPopover>
     </div>
 
     <!-- Content column — aligns under the avatar for both leading + grouped rows. -->
@@ -251,9 +259,11 @@ function confirmDelete(): void {
 
       <template v-else>
         <div v-if="props.showHeader" class="flex items-baseline gap-2">
-          <span class="text-sm font-semibold text-primary" data-testid="message-author">{{
-            authorName
-          }}</span>
+          <UserPopover :user-id="props.message.author_user_id" :name="authorName">
+            <span class="text-sm font-semibold text-primary" data-testid="message-author">{{
+              authorName
+            }}</span>
+          </UserPopover>
           <span class="text-xs text-muted" data-testid="message-time">
             <template v-if="isPending">Sending…</template>
             <template v-else>{{ time }}</template>

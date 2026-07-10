@@ -30,7 +30,7 @@ import { useSyncStore } from '../stores/sync'
 import { useThreadStore } from '../stores/thread'
 import { useWorkspaceStore, type SidebarStream } from '../stores/workspace'
 
-import type { PresenceStatus } from '../worker'
+import type { DirectoryUser, PresenceStatus } from '../worker'
 
 /** Which panel the main column renders: the live timeline, the Inbox, or a scaffold. */
 export type ActiveView = 'conversation' | 'inbox' | 'apps' | 'files' | 'admin'
@@ -41,7 +41,7 @@ export type ActiveView = 'conversation' | 'inbox' | 'apps' | 'files' | 'admin'
  * `'thread'` derives from the thread store's `isOpen` (so thread open/close
  * behavior — including the synchronous close — is EXACTLY the pre-details flow).
  */
-export type DrawerMode = 'none' | 'thread' | 'details'
+export type DrawerMode = 'none' | 'thread' | 'details' | 'user'
 
 /** The views that still render a scaffold placeholder (Inbox is REAL — ENG-136;
  * Admin is REAL — ENG-151 PR-3; Files is REAL — ENG-152). */
@@ -100,15 +100,56 @@ export function useShellController() {
   const detailsOpen = ref(false)
 
   /**
-   * The single drawer-mode truth the shell lays out on. Thread WINS: `'thread'`
-   * whenever the thread store is open (so a thread opened through any path —
-   * including directly on the store — always displaces the details drawer), else
-   * `'details'` when requested, else `'none'`.
+   * The user whose details panel is open (ENG-152), or null. This is an OVERLAY:
+   * it does not clear the thread/details state, so closing it (→ null) restores
+   * whatever the drawer was showing before — "close returns to the prior state".
+   */
+  const detailsUserId = ref<string | null>(null)
+
+  /**
+   * The single drawer-mode truth the shell lays out on. User-details WINS (it is
+   * an on-demand overlay the user just clicked into), then thread (opened through
+   * any path — including directly on the store — displaces the channel details),
+   * then the channel `'details'` when requested, else `'none'`.
    */
   const drawerMode = computed<DrawerMode>(() => {
+    if (detailsUserId.value !== null) return 'user'
     if (threadOpen.value) return 'thread'
     return detailsOpen.value ? 'details' : 'none'
   })
+
+  /** The directory record the user-details panel renders (name-only stub when the
+   * directory has no record yet), or null when no user panel is open. */
+  const detailsUser = computed<DirectoryUser | null>(() => {
+    const id = detailsUserId.value
+    if (id === null) return null
+    return workspace.userOf(id) ?? { user_id: id, display_name: workspace.displayNameOf(id) }
+  })
+
+  /** Live presence for the user-details panel (`offline` when unknown). */
+  const detailsPresence = computed<PresenceStatus>(() => {
+    const id = detailsUserId.value
+    return id === null ? 'offline' : (presenceStatuses.value.get(id) ?? 'offline')
+  })
+
+  /** Read-only role for the user-details panel — known only for the signed-in
+   * user (the directory carries no other member's role), so `undefined` for others. */
+  const detailsRole = computed<string | undefined>(() =>
+    detailsUserId.value !== null && detailsUserId.value === myUserId.value
+      ? (role.value ?? undefined)
+      : undefined,
+  )
+
+  /** Open the right-drawer user-details panel for a member (ENG-152). Overlay: the
+   * prior thread/details state is preserved and restored on close. */
+  function openUserDetails(userId: string): void {
+    detailsUserId.value = userId
+  }
+
+  /** Close the user-details overlay, revealing the prior drawer state. */
+  function closeUserDetails(): void {
+    detailsUserId.value = null
+  }
 
   // Mutual exclusion, store-side: a thread opened directly on the thread store
   // (not just via onOpenThread) still closes the details drawer.
@@ -527,6 +568,13 @@ export function useShellController() {
     hasMore,
     threadOpen,
     drawerMode,
+    // user-details drawer (ENG-152)
+    detailsUserId,
+    detailsUser,
+    detailsPresence,
+    detailsRole,
+    openUserDetails,
+    closeUserDetails,
     // computed view state
     headerLabel,
     headerPresence,
