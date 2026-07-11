@@ -54,7 +54,11 @@ class WSCloseCode(IntEnum):
     to a client: 401 → 4401, 429 → 4029, 408 → 4408.
     """
 
-    UNAUTHENTICATED = 4401  # missing/unknown/expired token or deactivated user
+    # Missing/unknown/expired token or deactivated user — pre-accept reject AND the
+    # mid-socket revocation close (ENG-153): the hub closes a live socket with this
+    # same code when its user is deactivated or its session is revoked, telling the
+    # client to re-authenticate (which then fails the same uniform way pre-accept).
+    UNAUTHENTICATED = 4401
     FORBIDDEN = 4403  # authenticated bot token lacking the events:read scope (ENG-159)
     TOO_MANY_CONNECTIONS = 4029  # over the per-user connection cap (§5)
     HEARTBEAT_TIMEOUT = 4408  # missed the server heartbeat ping (§7)

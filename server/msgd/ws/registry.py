@@ -28,10 +28,20 @@ class Connection:
 
     Snapshot caveat (security round 1, hardening note 2): ``role``/``workspace_id``
     are captured once at connect. **Stream membership is re-checked live per-send**
-    by the hub, so channel removal cuts fanout on the next event; but session
-    revocation and workspace-role changes are NOT re-evaluated mid-socket (that
-    needs a hub teardown signal — M2/M3). "Instant revocation" is therefore scoped
-    to stream membership, not session validity.
+    by the hub, so channel removal cuts fanout on the next event. Session
+    revocation and account deactivation are enforced by the hub CLOSE-SIGNAL
+    (ENG-153): admin deactivation force-closes every socket of the user
+    (:meth:`~msgd.ws.hub.Hub.disconnect_user`) and a session revoke force-closes
+    exactly the sockets authenticated by that session
+    (:meth:`~msgd.ws.hub.Hub.disconnect_session`). Workspace-role changes remain
+    NOT re-evaluated mid-socket (still deferred).
+
+    ``session_token_hash`` is the sha256 hash of the bearer session token this
+    socket authenticated with — the SAME value ``DELETE /v1/auth/sessions/{id}``
+    takes as its path id — so a per-session close can target exactly the revoked
+    session's sockets without touching the user's other valid sessions. It is
+    ``None`` for bot-token connections (ENG-159), whose credential family has no
+    session row; a bot is torn down via user-level deactivation instead.
     """
 
     websocket: WebSocket
@@ -39,6 +49,7 @@ class Connection:
     role: str
     workspace_id: str
     device_id: str
+    session_token_hash: str | None = None
 
 
 class Registry:

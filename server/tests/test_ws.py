@@ -28,7 +28,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
-from authutil import accept_invite, create_invite, do_setup, join_token, make_app
+from authutil import (
+    accept_invite,
+    auth_header,
+    create_invite,
+    do_login,
+    do_setup,
+    join_token,
+    make_app,
+)
 from eventsutil import (
     bootstrap_channel,
     lifecycle_body,
@@ -567,3 +575,350 @@ async def test_ws_malformed_subprotocol_rejects_4401(ws_app: FastAPI) -> None:
         ):
             code = await _connect_expect_close(client, subprotocols)
             assert code == WSCloseCode.UNAUTHENTICATED, subprotocols
+
+
+# --- T13 (ENG-153): revocation close-signal — deactivation / session revoke ------
+
+
+class _ClosableSocket:
+    """A fake socket recording its close — stands in for a live client (ENG-153)."""
+
+    def __init__(self) -> None:
+        self.closed_with: tuple[int, str] | None = None
+
+    async def send_json(self, data: Any, mode: str = "text") -> None:
+        return None
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        self.closed_with = (code, reason or "")
+
+
+class _BrokenCloseSocket(_ClosableSocket):
+    """A socket whose close always raises — an already-torn-down/wedged client."""
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        raise RuntimeError("already closing")
+
+
+def _conn(
+    socket: _ClosableSocket,
+    *,
+    user_id: str,
+    workspace_id: str = "ws_x",
+    session_token_hash: str | None = None,
+) -> Connection:
+    """A registry :class:`Connection` around a fake socket (unit tests only)."""
+    return Connection(
+        websocket=cast(WebSocket, socket),
+        user_id=user_id,
+        role="member",
+        workspace_id=workspace_id,
+        device_id=ids.new_device_id(),
+        session_token_hash=session_token_hash,
+    )
+
+
+async def test_ws_deactivation_force_closes_socket_and_blocks_reconnect(
+    ws_app: FastAPI, db_session: AsyncSession
+) -> None:
+    """The ENG-153 teeth: admin deactivation force-closes the target's live socket.
+
+    A member is receiving live fanout; ``PATCH …/members/{id}`` ``active:false``
+    closes their socket ``4401`` (no post-deactivation frame can reach it — the
+    connection leaves the registry before the close I/O), the owner's own delivery
+    is unaffected by the mid-fanout disconnect, and the dead bearer cannot
+    reconnect (pre-accept 4401) — closed socket + no reconnect = full revocation.
+    """
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        member = await _invite_user(client, owner, role="member")
+        channel = await bootstrap_channel(client, db_session, owner)
+
+        async with (
+            _aconnect(client, subprotocols=_bearer(owner["token"])) as ws_owner,
+            _aconnect(client, subprotocols=_bearer(member["token"])) as ws_member,
+        ):
+            await _sync(ws_owner)
+            await _sync(ws_member)
+
+            # The member IS receiving live fanout before the deactivation.
+            first = message_body(auth=owner, stream_id=channel, text="one")
+            await post_batch(client, owner["token"], [wire_item(first)])
+            frame = await _recv_event(ws_member)
+            assert frame["event"]["body"]["event_id"] == first["event_id"]
+            await _recv_event(ws_owner)
+
+            r = await client.patch(
+                f"/v1/admin/members/{member['user_id']}",
+                json={"active": False},
+                headers=auth_header(owner["token"]),
+            )
+            assert r.status_code == 200, r.text
+
+            # The PATCH itself force-closed the member's socket with the re-auth code.
+            with pytest.raises(WebSocketDisconnect) as excinfo:
+                while True:
+                    await ws_member.receive_json(timeout=2.0)
+            assert excinfo.value.code == WSCloseCode.UNAUTHENTICATED
+            assert not hub.is_online(member["user_id"])
+
+            # Post-deactivation fanout: the OWNER still receives (a mid-fanout
+            # disconnect never disturbs other users' delivery); the member's
+            # connection is out of the registry, so no frame can reach it.
+            second = message_body(auth=owner, stream_id=channel, text="two")
+            await post_batch(client, owner["token"], [wire_item(second)])
+            frame = await _recv_event(ws_owner)
+            assert frame["event"]["body"]["event_id"] == second["event_id"]
+
+        # Full revocation: the deactivated user's bearer cannot reopen a socket —
+        # sessions were bulk-deleted and deactivated_at committed BEFORE the close,
+        # so a reconnect race always lands on the uniform pre-accept 4401.
+        code = await _connect_expect_close(client, _bearer(member["token"]))
+        assert code == WSCloseCode.UNAUTHENTICATED
+
+
+async def test_ws_deactivation_without_close_signal_keeps_fanout(
+    ws_app: FastAPI, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NON-VACUITY proof: absent the close-signal, the deactivated socket lives on.
+
+    With ``hub.disconnect_user`` neutered, the same deactivation PATCH leaves the
+    member's already-open socket receiving live fanout — the exact ENG-153 gap
+    (fanout re-checks stream membership per send, never ``deactivated_at`` or
+    session validity). This is what proves the close assertion in the previous
+    test is load-bearing and not a side effect of the session bulk-delete.
+    """
+
+    async def _neutered(user_id: str, *, code: int, reason: str = "") -> None:
+        return None
+
+    monkeypatch.setattr(hub, "disconnect_user", _neutered)
+
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        member = await _invite_user(client, owner, role="member")
+        channel = await bootstrap_channel(client, db_session, owner)
+
+        async with _aconnect(client, subprotocols=_bearer(member["token"])) as ws:
+            await _sync(ws)
+
+            r = await client.patch(
+                f"/v1/admin/members/{member['user_id']}",
+                json={"active": False},
+                headers=auth_header(owner["token"]),
+            )
+            assert r.status_code == 200, r.text
+
+            # The gap: the deactivated member STILL gets the next event's frame.
+            body = message_body(auth=owner, stream_id=channel, text="leak")
+            await post_batch(client, owner["token"], [wire_item(body)])
+            frame = await _recv_event(ws)
+            assert frame["event"]["body"]["event_id"] == body["event_id"]
+
+
+async def test_ws_session_revoke_closes_only_that_sessions_socket(
+    ws_app: FastAPI, db_session: AsyncSession
+) -> None:
+    """Session-revoke parity WITHOUT over-close: only the revoked session's socket dies.
+
+    One user, two valid sessions (A: accept-invite, B: login), one socket each.
+    ``DELETE /v1/auth/sessions/{hash(A)}`` closes A's socket ``4401`` while B's
+    socket stays open AND keeps receiving fanout — revoking one device must never
+    kick the user's other valid sessions (the per-session ``token_hash`` captured
+    on the connection is what scopes the close).
+    """
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        invite = await create_invite(client, owner["token"], role="member")
+        raw = join_token(invite.json()["url"])
+        email = f"{ids.new_ulid().lower()}@example.com"
+        accepted = await accept_invite(client, raw, email=email)
+        assert accepted.status_code == 200, accepted.text
+        session_a: dict[str, Any] = accepted.json()
+        login = await do_login(client, email=email, password="another-valid-password")
+        assert login.status_code == 200, login.text
+        session_b: dict[str, Any] = login.json()
+        assert session_b["user_id"] == session_a["user_id"]
+
+        channel = await bootstrap_channel(client, db_session, owner)
+
+        async with (
+            _aconnect(client, subprotocols=_bearer(session_a["token"])) as ws_a,
+            _aconnect(client, subprotocols=_bearer(session_b["token"])) as ws_b,
+        ):
+            await _sync(ws_a)
+            await _sync(ws_b)
+
+            first = message_body(auth=owner, stream_id=channel, text="one")
+            await post_batch(client, owner["token"], [wire_item(first)])
+            for ws in (ws_a, ws_b):
+                frame = await _recv_event(ws)
+                assert frame["event"]["body"]["event_id"] == first["event_id"]
+
+            # Revoke session A from session B (the session id IS the token hash).
+            r = await client.delete(
+                f"/v1/auth/sessions/{hash_token(session_a['token'])}",
+                headers=auth_header(session_b["token"]),
+            )
+            assert r.status_code == 204, r.text
+
+            # A's socket is force-closed with the re-auth code…
+            with pytest.raises(WebSocketDisconnect) as excinfo:
+                while True:
+                    await ws_a.receive_json(timeout=2.0)
+            assert excinfo.value.code == WSCloseCode.UNAUTHENTICATED
+
+            # …while B's socket survives and KEEPS its fanout (no over-close).
+            assert hub.is_online(session_a["user_id"])
+            second = message_body(auth=owner, stream_id=channel, text="two")
+            await post_batch(client, owner["token"], [wire_item(second)])
+            frame = await _recv_event(ws_b)
+            assert frame["event"]["body"]["event_id"] == second["event_id"]
+
+
+async def test_ws_redeactivate_fires_no_spurious_close_signal(
+    ws_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The transition guard: only the active→inactive EDGE fires the close-signal.
+
+    Re-deactivating an already-inactive member is the documented 200 no-op and
+    must not spuriously call ``disconnect_user`` again; a reactivate→deactivate
+    round trip IS a new transition and fires again. Reactivation itself never
+    fires (there is nothing to close).
+    """
+    calls: list[str] = []
+    original = hub.disconnect_user
+
+    async def _recording(user_id: str, *, code: int, reason: str = "") -> None:
+        calls.append(user_id)
+        await original(user_id, code=code, reason=reason)
+
+    monkeypatch.setattr(hub, "disconnect_user", _recording)
+
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        member = await _invite_user(client, owner, role="member")
+        headers = auth_header(owner["token"])
+        url = f"/v1/admin/members/{member['user_id']}"
+
+        r = await client.patch(url, json={"active": False}, headers=headers)
+        assert r.status_code == 200, r.text
+        assert calls == [member["user_id"]]
+
+        # Idempotent re-deactivate: 200, but NO second close-signal.
+        r = await client.patch(url, json={"active": False}, headers=headers)
+        assert r.status_code == 200, r.text
+        assert calls == [member["user_id"]]
+
+        # Reactivate never fires; the NEXT deactivation is a fresh transition.
+        r = await client.patch(url, json={"active": True}, headers=headers)
+        assert r.status_code == 200, r.text
+        assert calls == [member["user_id"]]
+        r = await client.patch(url, json={"active": False}, headers=headers)
+        assert r.status_code == 200, r.text
+        assert calls == [member["user_id"], member["user_id"]]
+
+
+async def test_ws_bot_deactivation_closes_bot_socket(
+    ws_app: FastAPI, db_session: AsyncSession
+) -> None:
+    """Deactivating a BOT closes its socket too — same user-level close-signal.
+
+    A bot socket authenticates via a bot token (no session row), so its
+    ``session_token_hash`` is None; the deactivation path still tears it down via
+    ``disconnect_user``. Driven with a fake registered connection so the test
+    exercises the PATCH→hub wiring without a full bot-token WS handshake.
+    """
+    async with make_ws_client(ws_app) as client:
+        owner = await do_setup(client)
+        bot_id = ids.new_user_id()
+        db_session.add(
+            User(
+                user_id=bot_id,
+                workspace_id=owner["workspace_id"],
+                email="bot@example.com",
+                password_hash="x",
+                display_name="Helper Bot",
+                role="member",
+                is_bot=True,
+            )
+        )
+        await db_session.flush()
+
+        socket = _ClosableSocket()
+        conn = _conn(
+            socket,
+            user_id=bot_id,
+            workspace_id=owner["workspace_id"],
+            session_token_hash=None,
+        )
+        assert hub.try_register(conn, max_connections=10)
+
+        r = await client.patch(
+            f"/v1/admin/members/{bot_id}",
+            json={"active": False},
+            headers=auth_header(owner["token"]),
+        )
+        assert r.status_code == 200, r.text
+        assert socket.closed_with == (WSCloseCode.UNAUTHENTICATED, "account deactivated")
+        assert not hub.is_online(bot_id)
+
+
+async def test_hub_disconnect_user_isolates_close_failures() -> None:
+    """Hub unit: a raising close is swallowed, the registry still empties, others live.
+
+    A wedged/already-closing socket cannot make ``disconnect_user`` raise into the
+    (already-committed) admin request, cannot keep itself registered, and cannot
+    disturb another user's connection. An unknown user is a clean no-op.
+    """
+    broken = _BrokenCloseSocket()
+    healthy = _ClosableSocket()
+    other = _ClosableSocket()
+    hub.try_register(_conn(broken, user_id="u_target"), max_connections=10)
+    hub.try_register(_conn(healthy, user_id="u_target"), max_connections=10)
+    hub.try_register(_conn(other, user_id="u_other"), max_connections=10)
+
+    await hub.disconnect_user("u_target", code=WSCloseCode.UNAUTHENTICATED, reason="gone")
+
+    assert not hub.is_online("u_target")  # broken close still deregistered
+    assert healthy.closed_with == (WSCloseCode.UNAUTHENTICATED, "gone")
+    assert hub.is_online("u_other")
+    assert other.closed_with is None
+
+    # No sockets at all → no-op, no error.
+    await hub.disconnect_user("u_ghost", code=WSCloseCode.UNAUTHENTICATED, reason="gone")
+
+
+async def test_hub_disconnect_session_exact_match_only() -> None:
+    """Hub unit: the per-session close hits EXACTLY the matching token hash.
+
+    Same user, three sockets: session A, session B, and a bot-style connection
+    with ``session_token_hash=None``. Disconnecting session A closes/removes only
+    A — B and the None-hash socket stay registered (a ``None`` stored hash can
+    never match, so a bot socket is unreachable via the session path by design).
+    """
+    sock_a, sock_b, sock_bot = _ClosableSocket(), _ClosableSocket(), _ClosableSocket()
+    hub.try_register(_conn(sock_a, user_id="u1", session_token_hash="hash-a"), max_connections=10)
+    hub.try_register(_conn(sock_b, user_id="u1", session_token_hash="hash-b"), max_connections=10)
+    hub.try_register(_conn(sock_bot, user_id="u1", session_token_hash=None), max_connections=10)
+
+    # Another user's socket with the SAME hash value is out of scope by user key.
+    sock_other = _ClosableSocket()
+    hub.try_register(
+        _conn(sock_other, user_id="u2", session_token_hash="hash-a"), max_connections=10
+    )
+
+    await hub.disconnect_session(
+        user_id="u1",
+        session_token_hash="hash-a",
+        code=WSCloseCode.UNAUTHENTICATED,
+        reason="session revoked",
+    )
+
+    assert sock_a.closed_with == (WSCloseCode.UNAUTHENTICATED, "session revoked")
+    assert sock_b.closed_with is None
+    assert sock_bot.closed_with is None
+    assert sock_other.closed_with is None
+    assert hub.is_online("u1")  # B + the bot-style socket survive
+    assert hub.is_online("u2")
+    assert hub.connection_count() == 3

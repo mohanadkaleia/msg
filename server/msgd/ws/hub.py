@@ -311,6 +311,91 @@ class Hub:
             return
         await self._send_all(recipients, frame)
 
+    # --- revocation close-signal (ENG-153) ------------------------------------
+
+    async def disconnect_user(self, user_id: str, *, code: int, reason: str = "") -> None:
+        """Force-close EVERY live socket of ``user_id`` (the ENG-153 close-signal).
+
+        The revocation-enforcement teardown the snapshot caveat deferred: admin
+        deactivation (``PATCH /v1/admin/members/{id}`` ``active:false``) calls this
+        AFTER its transaction commits, so an already-open socket stops receiving
+        fanout NOW instead of at its natural drop (and any reconnect race lands on
+        the committed ``deactivated_at`` → the uniform pre-accept ``4401``).
+
+        The user→sockets lookup mirrors :meth:`_publish_to_user` — a DIRECT
+        ``_by_user[user_id]`` COPY (:meth:`Registry.connections_for`), so no other
+        user's socket is ever selected and iteration is safe against concurrent
+        registry mutation. Each socket is DEREGISTERED FIRST (synchronously — once
+        out of the registry no further fanout can select it, even if its close
+        wedges), then closed best-effort with per-socket isolation. No connected
+        socket is a no-op. Single-process asyncio hub — no cross-process signaling.
+        """
+        await self._disconnect_all(
+            self._registry.connections_for(user_id), code=code, reason=reason
+        )
+
+    async def disconnect_session(
+        self, *, user_id: str, session_token_hash: str, code: int, reason: str = ""
+    ) -> None:
+        """Force-close exactly the sockets authenticated by ONE session (ENG-153).
+
+        The ``DELETE /v1/auth/sessions/{id}`` parity case: the revoked session's
+        socket(s) die, while the SAME user's other, still-valid sessions keep their
+        sockets and their fanout (no over-close). ``session_token_hash`` is the
+        session's sha256 token hash — the revoke endpoint's own path id, captured
+        onto :class:`Connection` at connect. The lookup is scoped to
+        ``connections_for(user_id)`` first (the revoke endpoint is owner-scoped, so
+        the caller always knows the user), then filtered by exact hash match; a
+        bot-token connection carries ``session_token_hash=None`` and can never
+        match. Same deregister-first + best-effort close as :meth:`disconnect_user`.
+        """
+        matching = {
+            conn
+            for conn in self._registry.connections_for(user_id)
+            if conn.session_token_hash is not None and conn.session_token_hash == session_token_hash
+        }
+        await self._disconnect_all(matching, code=code, reason=reason)
+
+    async def _disconnect_all(
+        self, connections: set[Connection], *, code: int, reason: str
+    ) -> None:
+        """Deregister then close ``connections`` — shared teardown primitive.
+
+        Order is the security crux: EVERY socket leaves the registry synchronously
+        (no ``await`` in the loop — under the single asyncio loop no fanout can
+        interleave) BEFORE any close I/O, so a wedged or already-closing socket can
+        delay only its own close frame, never its removal from fanout. The closes
+        then run concurrently with per-socket isolation, mirroring
+        :meth:`_send_all` — one bad socket cannot stall or fail the others, and the
+        caller (a committed admin/auth request) never sees an exception from here.
+        The router's own ``finally`` deregister is idempotent, and its 1→0
+        offline-presence relay still runs when the closed socket's serve loop ends.
+        """
+        if not connections:
+            return
+        for conn in connections:
+            self.deregister(conn)
+        await asyncio.gather(
+            *(self._close_one(conn, code=code, reason=reason) for conn in connections),
+            return_exceptions=True,
+        )
+
+    async def _close_one(self, connection: Connection, *, code: int, reason: str) -> None:
+        """Close one socket under the send timeout; swallow any failure.
+
+        A socket already closing/disconnected raises from ``close`` — irrelevant,
+        the registry removal already happened. Timeout-guarded like
+        :meth:`_send_one` so a wedged close handshake cannot stall the caller.
+        CancelledError is a BaseException and is intentionally NOT swallowed.
+        """
+        try:
+            await asyncio.wait_for(
+                connection.websocket.close(code=code, reason=reason),
+                timeout=_SEND_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: S110 — best-effort close; deregistration already done
+            pass
+
     async def _resolve_readers(self, *, workspace_id: str, stream_id: str) -> list[Connection]:
         """Return every connected socket whose user may currently read the stream.
 
