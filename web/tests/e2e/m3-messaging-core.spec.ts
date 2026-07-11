@@ -186,6 +186,26 @@ test('m3 messaging core: react · edit · delete · thread · mention · channel
     timeout: WS_TIMEOUT,
   })
 
+  // --- 9) Composer formatting smoke: a bulleted list ROUND-TRIPS --------------
+  // Toolbar toggles the list (pressed state on), Enter splits a new item instead
+  // of sending, and the SENT message renders a real <ul><li> (markdown source →
+  // MessageBody), not literal "- " text.
+  const itemA = `fmt-alpha-${stamp}`
+  const itemB = `fmt-beta-${stamp}`
+  await page1.getByTestId('composer-input').click()
+  await page1.getByTestId('composer-format-bulletList').click()
+  await expect(page1.getByTestId('composer-format-bulletList')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+  await page1.keyboard.type(itemA)
+  await page1.keyboard.press('Enter') // inside a list: new item, NOT send
+  await page1.keyboard.type(itemB)
+  await page1.getByTestId('composer-send').click()
+  const fmtRow = mainRow(page1, itemA)
+  await expect(fmtRow).toBeVisible({ timeout: WS_TIMEOUT })
+  await expect(fmtRow.getByTestId('message-text').locator('ul > li')).toHaveText([itemA, itemB])
+
   await ctx1.close()
   await ctx2.close()
 })

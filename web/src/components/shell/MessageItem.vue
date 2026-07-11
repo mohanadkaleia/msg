@@ -27,6 +27,7 @@ import UserAvatar from '../ui/UserAvatar.vue'
 import UserPopover from '../ui/UserPopover.vue'
 import AttachmentFile from './AttachmentFile.vue'
 import AttachmentImage from './AttachmentImage.vue'
+import MessageBody from './MessageBody'
 import ReactionPill from './ReactionPill.vue'
 import ThreadSummary from './ThreadSummary.vue'
 
@@ -318,22 +319,25 @@ function confirmDelete(): void {
           </div>
         </div>
 
-        <!-- Plain text ONLY — Vue interpolation escapes; never v-html (XSS). On a
+        <!-- Message body (MessageBody render component). `format: "markdown"`
+             text renders RICH — lists / inline code / code blocks / blockquotes /
+             bold / italic — parsed by lib/markdown.ts from the SAME markdown
+             source composer/serialize.ts writes; `format: "plain"` stays exact
+             pre-wrap plain text. NO v-html anywhere: every leaf is a text VNode,
+             so hostile markup in a message stays inert characters (XSS). On a
              GROUPED follow-up the header (with its "(edited)" marker) is hidden, so
              the marker renders inline here instead — always visible, exactly one in
              the DOM (the header + inline variants are mutually exclusive on showHeader). -->
         <!-- Direction (ENG-175): `dir` is detected per message (first-strong,
-             lib/textDirection). `text-start` (text-align: start) lets the dir
-             attribute drive alignment — RTL text right-aligns, LTR text keeps
-             left — without hardcoding either side. -->
-        <p
+             lib/textDirection) from the RAW source. `text-start` + logical
+             padding/borders in .rich-text let the dir attribute drive alignment
+             and list/quote mirroring — RTL right-aligns, LTR keeps left. -->
+        <MessageBody
           v-else
           :dir="textDir"
-          class="whitespace-pre-wrap break-words text-start text-sm text-primary"
-          data-testid="message-text"
-        >
-          {{ props.message.text }}
-        </p>
+          :text="props.message.text"
+          :format="props.message.format"
+        />
         <span
           v-if="!props.editing && !props.showHeader && isEdited"
           class="text-xs text-muted"
