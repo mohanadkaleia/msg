@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SearchOverlay from '../../../src/components/shell/SearchOverlay.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
 import { newMessageId } from '../../../src/core'
+import { useAuthStore } from '../../../src/stores/auth'
 import { useWorkspaceStore } from '../../../src/stores/workspace'
 import type { SearchHit } from '../../../src/worker'
 import { FakeWorker } from './fakeWorker'
@@ -178,6 +179,44 @@ describe('SearchOverlay (ENG-127)', () => {
     const label = wrapper.get('[data-testid="search-result"]').text()
     expect(label).toContain('Sara Chen')
     expect(label).not.toContain('# Sara Chen')
+  })
+
+  // ENG-171: real DM streams are server-named null — the label must resolve to
+  // the OTHER participant's directory name via `dm_user_ids` (like the sidebar),
+  // never the raw `s_…` stream id it printed before.
+  it('resolves a name-less DM hit label from its participants, not the raw id (ENG-171)', async () => {
+    fake.addStream({ stream_id: 's_dm2', kind: 'dm', dm_user_ids: ['u_me', 'u_sara'] })
+    // Author is Bob so the 'Sara Chen' assertion can only come from the DM label.
+    fake.queueSearch({
+      hits: [hit({ stream_id: 's_dm2', author_user_id: 'u_bob' })],
+      next_cursor: null,
+    })
+    const wrapper = await mountOverlay()
+    useAuthStore().myUserId = 'u_me'
+    await flushPromises()
+
+    await type(wrapper, 'hello')
+    const label = wrapper.get('[data-testid="search-result"]').text()
+    expect(label).toContain('Sara Chen')
+    expect(label).toContain('Bob')
+    expect(label).not.toContain('s_dm2')
+  })
+
+  // ENG-171: a hit author resolves through the shared directory lookup
+  // (`displayNameOf`) — never the raw `u_…` id — with an honest raw-id
+  // fallback for an author not (yet) in the directory.
+  it('resolves the author via the directory, raw-id fallback when absent (ENG-171)', async () => {
+    fake.queueSearch({
+      hits: [hit({ author_user_id: 'u_bob' }), hit({ author_user_id: 'u_ghost' })],
+      next_cursor: null,
+    })
+    const wrapper = await mountOverlay()
+
+    await type(wrapper, 'hello')
+    const rows = wrapper.findAll('[data-testid="search-result"]')
+    expect(rows[0]!.text()).toContain('Bob')
+    expect(rows[0]!.text()).not.toContain('u_bob')
+    expect(rows[1]!.text()).toContain('u_ghost')
   })
 
   it('keeps the SERVER order of hits (never re-sorts by rank tab-side)', async () => {

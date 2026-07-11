@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import ThreadPane from '../../../src/components/shell/ThreadPane.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
 import { useThreadStore } from '../../../src/stores/thread'
+import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
 
 describe('ThreadPane (ENG-103)', () => {
@@ -49,6 +50,49 @@ describe('ThreadPane (ENG-103)', () => {
 
     await wrapper.get('[data-testid="thread-close"]').trigger('click')
     expect(store.isOpen).toBe(false)
+  })
+
+  // ENG-171: thread rows must resolve author names through the workspace
+  // directory — the SAME maps the shell threads into the main MessageList —
+  // instead of printing raw `u_…` ids. An author with no directory record
+  // still renders (raw-id fallback), and resolves once the record syncs.
+  it('resolves root/reply author display names from the directory (ENG-171)', async () => {
+    fake.setDirectory(
+      [
+        { user_id: 'u_root', display_name: 'admin' },
+        { user_id: 'u_a', display_name: 'mohanad' },
+      ],
+      [],
+    )
+    fake.addStream({ stream_id: 's1' })
+    const root = fake.addMessage('s1', {
+      created_seq: 1,
+      text: 'root msg',
+      author_user_id: 'u_root',
+    })
+    fake.addReply('s1', root.message_id, { created_seq: 2, text: 'reply A', author_user_id: 'u_a' })
+    // Not (yet) in the directory → graceful raw-id fallback, never a crash.
+    fake.addReply('s1', root.message_id, {
+      created_seq: 3,
+      text: 'reply B',
+      author_user_id: 'u_ghost',
+    })
+
+    await useWorkspaceStore().load()
+    const store = useThreadStore()
+    store.setMyUserId('u_me')
+    await store.openThread(root.message_id, 's1')
+    await flushPromises()
+
+    const wrapper = mount(ThreadPane, { global: { plugins: [pinia] } })
+
+    expect(wrapper.get('[data-testid="thread-root"] [data-testid="message-author"]').text()).toBe(
+      'admin',
+    )
+    const authors = wrapper.findAll('[data-testid="thread-reply"] [data-testid="message-author"]')
+    expect(authors.map((a) => a.text())).toEqual(['mohanad', 'u_ghost'])
+    // The resolved rows never leak the raw ids anywhere in their header line.
+    expect(wrapper.get('[data-testid="thread-root"]').text()).not.toContain('u_root')
   })
 
   it('renders a reply and a participant name with XSS payloads as inert text', async () => {

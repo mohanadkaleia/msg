@@ -11,7 +11,7 @@
 //
 // XSS: reply text, author names and participant names all render via `{{ }}` /
 // safe bindings inside MessageItem/MessageComposer — no raw-HTML or script sink.
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { useThreadStore } from '../../stores/thread'
@@ -22,7 +22,24 @@ import MessageItem from './MessageItem.vue'
 const thread = useThreadStore()
 const workspace = useWorkspaceStore()
 const { displayRoot, displayReplies, participants, hasMore, streamId } = storeToRefs(thread)
-const { mentionItems } = storeToRefs(workspace)
+const { mentionItems, directory } = storeToRefs(workspace)
+
+/**
+ * Directory-backed `user_id → display_name` / `→ avatar_sha256` maps (ENG-171) —
+ * the SAME resolution the shell threads into the main MessageList, so thread
+ * rows render author names + avatars instead of raw `u_…` ids. A user missing
+ * from the directory falls back to the raw id inside MessageItem (never crashes).
+ */
+const names = computed<ReadonlyMap<string, string>>(
+  () => new Map(directory.value.users.map((u) => [u.user_id, u.display_name])),
+)
+const avatars = computed<ReadonlyMap<string, string>>(() => {
+  const map = new Map<string, string>()
+  for (const u of directory.value.users) {
+    if (u.avatar_sha256 !== undefined) map.set(u.user_id, u.avatar_sha256)
+  }
+  return map
+})
 
 /** The reply currently in inline edit (null = none) — pane-local, like the main list. */
 const editingMessageId = ref<string | null>(null)
@@ -102,6 +119,8 @@ function onDelete(messageId: string): void {
       <div v-if="displayRoot" class="border-b border-subtle" data-testid="thread-root">
         <MessageItem
           :message="displayRoot"
+          :names="names"
+          :avatars="avatars"
           @react="onReact"
           @edit-start="onEditStart"
           @edit-submit="onEditSubmit"
@@ -125,6 +144,8 @@ function onDelete(messageId: string): void {
       <div v-for="reply in displayReplies" :key="reply.message_id" data-testid="thread-reply">
         <MessageItem
           :message="reply"
+          :names="names"
+          :avatars="avatars"
           :editing="reply.message_id === editingMessageId"
           @react="onReact"
           @edit-start="onEditStart"
