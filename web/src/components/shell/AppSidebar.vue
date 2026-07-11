@@ -83,9 +83,18 @@ const props = defineProps<{
   /** ENG-152: the folded workspace icon sha (undefined = no icon → glyph). */
   workspaceIconSha?: string | undefined
   canAdmin: boolean
+  /** ENG-174: shell-owned collapse state — v-show'd here (not in AppShell)
+   * because this component has a fragment root (aside + teleported dialogs);
+   * the dialogs stay mountable while the column is hidden. */
+  collapsed?: boolean
 }>()
 
-const emit = defineEmits<{ openSearch: []; selectView: [view: ActiveView] }>()
+const emit = defineEmits<{
+  openSearch: []
+  selectView: [view: ActiveView]
+  /** ENG-174: the header collapse control — the shell owns the state. */
+  toggleCollapse: []
+}>()
 
 const workspace = useWorkspaceStore()
 const auth = useAuthStore()
@@ -184,13 +193,15 @@ function dmAvatarSha(stream: SidebarStream): string | undefined {
 
 <template>
   <aside
+    v-show="!collapsed"
     role="navigation"
     aria-label="Channels and direct messages"
-    class="flex h-full w-64 flex-col border-r border-subtle bg-surface"
+    class="flex h-full w-64 shrink-0 flex-col border-r border-subtle bg-surface"
   >
     <!-- Header: the app-brand mark (small, muted, clearly secondary — the
-         workspace pill below is the primary identity) + a collapse affordance
-         (SCAFFOLD, no-op). -->
+         workspace pill below is the primary identity) + the WORKING collapse
+         control (ENG-174: shell-owned state, ⌘\ shortcut, persisted; the
+         TopBar's expand affordance + the same shortcut re-open it). -->
     <div class="flex items-center justify-between px-3 py-3">
       <span class="truncate text-[11px] font-semibold uppercase tracking-wider text-muted">{{
         BRAND
@@ -198,9 +209,11 @@ function dmAvatarSha(stream: SidebarStream): string | undefined {
       <button
         type="button"
         class="grid h-7 w-7 place-items-center rounded text-muted transition-colors hover:bg-surface-hover hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        aria-label="Collapse sidebar (coming soon)"
-        title="Collapse sidebar (coming soon)"
+        aria-label="Collapse sidebar"
+        title="Collapse sidebar (⌘\)"
+        aria-keyshortcuts="Meta+Backslash Control+Backslash"
         data-testid="collapse-sidebar"
+        @click="emit('toggleCollapse')"
       >
         <Icon name="chevrons-left-right" :size="16" />
       </button>

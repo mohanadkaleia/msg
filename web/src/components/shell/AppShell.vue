@@ -76,6 +76,8 @@ const {
   composerPlaceholder,
   quickItems,
   paletteCommands,
+  sidebarCollapsed,
+  toggleSidebar,
   setActiveView,
   toggleDetails,
   closeDetails,
@@ -154,19 +156,28 @@ const gridCols = computed(() => {
       @logout="onLogout"
     />
 
+    <!-- ENG-174: collapsible (v-show'd inside — fragment root) sidebar; state is
+         shell-owned (persisted + auto-collapsed on narrow windows), toggled by
+         the sidebar's header control, the TopBar expand affordance, and ⌘\. -->
     <AppSidebar
       :active-view="activeView"
       :workspace-name="workspaceName"
       :workspace-initials="workspaceInitials"
       :workspace-icon-sha="workspaceIconSha"
       :can-admin="canAdmin"
+      :collapsed="sidebarCollapsed"
       @open-search="searchOpen = true"
       @select-view="setActiveView"
+      @toggle-collapse="toggleSidebar"
     />
 
     <!-- Right: a top-bar row spanning the main + drawer region, then the columns. -->
     <div class="flex min-w-0 flex-1 flex-col">
-      <TopBar @search="searchOpen = true" />
+      <TopBar
+        :sidebar-collapsed="sidebarCollapsed"
+        @search="searchOpen = true"
+        @expand-sidebar="toggleSidebar"
+      />
 
       <div class="grid min-h-0 flex-1" :class="gridCols">
         <!-- Main column. The Inbox brings its own header + tabs, so the shared
