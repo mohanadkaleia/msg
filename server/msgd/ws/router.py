@@ -31,12 +31,16 @@ Flow (§7):
    Whichever ends first tears the other down; a single ``finally`` deregisters.
 
 Identity-snapshot caveat (security round 1, hardening note 2): the connection
-captures ``user_id``/``role``/``workspace_id``/``device_id`` at connect. **Stream
-membership is live per-send** (the hub re-runs the read predicate on every event),
-so a member removed from a channel stops receiving its fanout on the next event.
-Session *revocation* and *workspace-role* changes are **not** re-checked mid-socket
-— tearing a live socket down on those needs a hub signal that is M2/M3 work. So the
-"instant revocation" property is scoped to stream membership, not session validity.
+captures ``user_id``/``role``/``workspace_id``/``device_id`` (+ the session's
+``token_hash``) at connect. **Stream membership is live per-send** (the hub re-runs
+the read predicate on every event), so a member removed from a channel stops
+receiving its fanout on the next event. Session *revocation* and account
+*deactivation* now tear the live socket down via the hub close-signal (ENG-153):
+``PATCH /v1/admin/members/{id}`` ``active:false`` calls ``hub.disconnect_user`` and
+``DELETE /v1/auth/sessions/{id}`` calls ``hub.disconnect_session`` — both after
+their commit, both closing ``4401`` (re-authenticate; the reconnect then fails the
+same uniform pre-accept way). Workspace-*role* changes remain un-re-checked
+mid-socket (deferred).
 """
 
 from __future__ import annotations
@@ -220,6 +224,10 @@ async def _authenticate(
         role=user.role,
         workspace_id=user.workspace_id,
         device_id=device.device_id,
+        # The session's own revoke handle (ENG-153): DELETE /v1/auth/sessions/{id}
+        # targets exactly this socket via hub.disconnect_session — never the
+        # user's other valid sessions' sockets.
+        session_token_hash=session.token_hash,
     )
 
 
@@ -262,6 +270,9 @@ async def _authenticate_bot(
         role=user.role,
         workspace_id=user.workspace_id,
         device_id=device.device_id,
+        # Bot tokens are not sessions — no session revoke handle. A bot socket is
+        # torn down by user-level deactivation (hub.disconnect_user, ENG-153).
+        session_token_hash=None,
     )
 
 
