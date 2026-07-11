@@ -2,30 +2,29 @@
 // ChannelHeader — the conversation panel's top bar (ENG-136 "Ranin" PR-2).
 //
 // Extracted from AppShell's inline `<header data-testid="channel-header">` so the
-// timeline chrome matches the reference mockup: a bold `# channel` (or DM) title
-// with a favorite STAR, a muted member/topic subline, and a cluster of right-
-// aligned icon actions (pin, details). The `channel-header` test-id is
-// preserved on the root `<header>` — the golden-path + m3-messaging-core E2E suites
-// assert the title text through it, and its `.text()` MUST stay the title alone
-// (the icon buttons carry no text; the member/topic subline is a SIBLING `<p>`, not
-// inside the header element).
+// timeline chrome matches the reference mockup: a bold `# channel` (or DM) title,
+// a muted member subline, and a right-aligned Details icon action. The
+// `channel-header` test-id is preserved on the root `<header>` — the golden-path +
+// m3-messaging-core E2E suites assert the title text through it, and its `.text()`
+// MUST stay the title alone (the icon button carries no text; the member subline
+// is a SIBLING `<p>`, not inside the header element).
 //
 // REAL vs SCAFFOLD: `title` is the live selected stream label (a DM's title is the
 // OTHER participant's display name — ENG-149 — with a REAL presence dot when
 // `presence` is provided; the dot is a text-free sibling of the h1, so the
-// header's `.text()` is still the title alone). Everything else is a LOCAL,
-// honest scaffold with no backend — the star/pin toggles are local ref state,
-// "N members" is a stand-in count (the workspace directory user count), and
-// "Add a topic" is a non-wired affordance. `toggle-details` is emitted for the
-// parent to wire. There is NO add-member button here (ENG-152 cleanup) — adding
-// members lives in the channel-settings dialog via the Details drawer.
+// header's `.text()` is still the title alone). "N members" is a stand-in count
+// (the workspace directory user count) until a real roster query lands.
+// `toggle-details` is emitted for the parent to wire. There is NO add-member
+// button here (ENG-152 cleanup) — adding members lives in the channel-settings
+// dialog via the Details drawer. The non-functional star (favorite), pin, and
+// "Add a topic" scaffolds were REMOVED (UI-feedback cleanup): there is no
+// favorites/pin/channel-topic backend (`pin.*` is explicitly out of scope
+// server-side), and dead controls must not ship.
 //
-// ENG-172: the member/topic subline is CHANNEL-ONLY. For a DM (`kind: 'dm'`) the
+// ENG-172: the member subline is CHANNEL-ONLY. For a DM (`kind: 'dm'`) the
 // subline instead shows the counterpart's status/presence line (`subtitle`,
-// computed by the shell) — never "N members" or "Add a topic", which are channel
-// concepts. With no resolvable subtitle the DM renders no subline at all.
-import { ref } from 'vue'
-
+// computed by the shell) — never "N members", which is a channel concept. With
+// no resolvable subtitle the DM renders no subline at all.
 import Icon from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
 import PresenceDot from '../ui/PresenceDot.vue'
@@ -69,9 +68,6 @@ defineEmits<{
   /** Toggle the channel Details drawer (wired in AppShell — ENG-136/ENG-129). */
   'toggle-details': []
 }>()
-
-/** SCAFFOLD local favorite toggle — no backend. */
-const favorite = ref(false)
 </script>
 
 <template>
@@ -83,19 +79,8 @@ const favorite = ref(false)
       <!-- REAL DM presence (ENG-149) — a text-free dot, so header .text() stays the title. -->
       <PresenceDot v-if="props.presence !== undefined" :status="props.presence" class="shrink-0" />
       <h1 class="truncate text-[15px] font-semibold text-primary">{{ props.title }}</h1>
-      <IconButton
-        size="sm"
-        :label="favorite ? 'Unfavorite' : 'Favorite'"
-        :class="favorite ? 'text-accent' : ''"
-        @click="favorite = !favorite"
-      >
-        <Icon name="star" :size="16" />
-      </IconButton>
     </div>
     <div class="flex items-center gap-1">
-      <IconButton size="sm" label="Pinned messages">
-        <Icon name="pin" :size="18" />
-      </IconButton>
       <IconButton
         size="sm"
         label="Details"
@@ -106,17 +91,14 @@ const favorite = ref(false)
       </IconButton>
     </div>
   </header>
-  <!-- ENG-172: channel subline (member count + topic scaffold) vs the DM's
-       status/presence subline — a DM never shows channel concepts here. -->
+  <!-- ENG-172: channel subline (member count) vs the DM's status/presence
+       subline — a DM never shows channel concepts here. -->
   <p
     v-if="props.kind !== 'dm'"
     class="px-4 pb-2 pt-1 text-xs text-muted"
     data-testid="channel-header-meta"
   >
-    {{ props.memberCount }} {{ props.memberCount === 1 ? 'member' : 'members' }} ·
-    <button type="button" class="underline-offset-2 hover:text-secondary hover:underline">
-      Add a topic
-    </button>
+    {{ props.memberCount }} {{ props.memberCount === 1 ? 'member' : 'members' }}
   </p>
   <p
     v-else-if="props.subtitle"
