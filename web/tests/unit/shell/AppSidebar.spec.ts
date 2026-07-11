@@ -437,6 +437,47 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     expect(wrapper.emitted('openSwitcher')).toBeUndefined()
   })
 
+  it('the collapse control is functional — emits toggleCollapse, no "coming soon" (ENG-174)', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const wrapper = await mountSidebar()
+
+    const control = wrapper.get('[data-testid="collapse-sidebar"]')
+    expect(control.attributes('aria-label')).toBe('Collapse sidebar')
+    expect(control.attributes('title')).not.toContain('coming soon')
+    expect(wrapper.text()).not.toContain('coming soon')
+
+    await control.trigger('click')
+    expect(wrapper.emitted('toggleCollapse')).toHaveLength(1)
+  })
+
+  it('hides the sidebar column when collapsed (v-show — rows stay mounted)', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const store = useWorkspaceStore()
+    await store.load()
+    const wrapper = mount(AppSidebar, {
+      attachTo: document.body,
+      props: {
+        activeView: 'conversation',
+        workspaceName: 'msg',
+        workspaceInitials: 'MS',
+        canAdmin: false,
+        collapsed: true,
+      },
+    })
+    await flushPromises()
+
+    const aside = wrapper.get('aside[role="navigation"]').element as HTMLElement
+    expect(aside.style.display).toBe('none')
+    // v-show, not v-if: the stream rows are still in the DOM (no re-mount cost).
+    expect(wrapper.find('[data-testid="sidebar-channel"]').exists()).toBe(true)
+
+    // Expanding restores the column without re-mounting.
+    await wrapper.setProps({ collapsed: false })
+    expect(aside.style.display).not.toBe('none')
+  })
+
   it('renders the footer user card', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)

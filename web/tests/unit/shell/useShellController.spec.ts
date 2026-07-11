@@ -23,6 +23,20 @@ type Controller = ReturnType<typeof useShellController>
 
 const Blank = { template: '<div />' }
 
+// This env's window.localStorage is a bare object with no methods; the sidebar
+// collapse (ENG-174) persists through it, so install a working in-memory
+// Storage where a test asserts persistence (same pattern as useTheme.spec).
+function installLocalStorage(): void {
+  const store = new Map<string, string>()
+  const mock: Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'clear'> = {
+    getItem: (k) => store.get(k) ?? null,
+    setItem: (k, v) => void store.set(k, String(v)),
+    removeItem: (k) => void store.delete(k),
+    clear: () => store.clear(),
+  }
+  Object.defineProperty(window, 'localStorage', { value: mock, configurable: true, writable: true })
+}
+
 function makeRouter(): Router {
   return createRouter({
     history: createMemoryHistory(),
@@ -151,6 +165,55 @@ describe('useShellController (ENG-136 PR-B)', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', ctrlKey: true }))
     expect(ctrl.searchOpen.value).toBe(true)
     expect(ctrl.paletteOpen.value).toBe(false)
+  })
+
+  // -- ENG-174 sidebar collapse -----------------------------------------------
+
+  it('toggles the sidebar on Cmd+\\ / Ctrl+\\ and persists the choice (ENG-174)', async () => {
+    installLocalStorage()
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    // Default expanded — the E2E flows click sidebar rows without toggling.
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', metaKey: true }))
+    expect(ctrl.sidebarCollapsed.value).toBe(true)
+    expect(window.localStorage.getItem('msg:sidebar')).toBe('collapsed')
+
+    // Ctrl variant toggles back; the palette/search overlays are untouched.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', ctrlKey: true }))
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+    expect(window.localStorage.getItem('msg:sidebar')).toBe('expanded')
+    expect(ctrl.paletteOpen.value).toBe(false)
+    expect(ctrl.searchOpen.value).toBe(false)
+
+    // A bare '\' (no modifier) is NOT the shortcut.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\' }))
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+  })
+
+  it('toggleSidebar flips the state directly (the control/affordance seam)', async () => {
+    installLocalStorage()
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.toggleSidebar()
+    expect(ctrl.sidebarCollapsed.value).toBe(true)
+    ctrl.toggleSidebar()
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+  })
+
+  it('restores a persisted collapsed sidebar on mount (ENG-174)', async () => {
+    installLocalStorage()
+    window.localStorage.setItem('msg:sidebar', 'collapsed')
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    expect(ctrl.sidebarCollapsed.value).toBe(true)
   })
 
   // -- ENG-136 palette commands ----------------------------------------------

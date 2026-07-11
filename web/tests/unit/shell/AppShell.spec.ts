@@ -383,6 +383,47 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(dialog.text()).toContain('alpha')
   })
 
+  it('collapse control hides the sidebar; the TopBar affordance expands it (ENG-174)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const wrapper = await mountShell(fake, router)
+
+    // The control is REAL now — no "(coming soon)" copy anywhere on it.
+    const control = wrapper.get('[data-testid="collapse-sidebar"]')
+    expect(control.attributes('aria-label')).toBe('Collapse sidebar')
+    expect(control.attributes('title')).not.toContain('coming soon')
+
+    // Default: sidebar visible, no expand affordance in the top bar.
+    const sidebar = wrapper.get('aside[role="navigation"]').element as HTMLElement
+    expect(sidebar.style.display).not.toBe('none')
+    expect(wrapper.find('[data-testid="expand-sidebar"]').exists()).toBe(false)
+
+    // Click → the sidebar column hides (v-show — rows stay mounted) and the
+    // rail + main column remain; the top bar now offers the expand affordance.
+    await control.trigger('click')
+    expect(sidebar.style.display).toBe('none')
+    expect(wrapper.find('nav[aria-label="Workspaces"]').exists()).toBe(true)
+    expect(wrapper.find('main[role="main"]').exists()).toBe(true)
+
+    // Expand from the top bar: the sidebar returns, the affordance goes away.
+    await wrapper.get('[data-testid="expand-sidebar"]').trigger('click')
+    expect(sidebar.style.display).not.toBe('none')
+    expect(wrapper.find('[data-testid="expand-sidebar"]').exists()).toBe(false)
+  })
+
+  it('Cmd+\\ toggles the sidebar from anywhere (ENG-174)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const wrapper = await mountShell(fake, router)
+    const sidebar = wrapper.get('aside[role="navigation"]').element as HTMLElement
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', metaKey: true }))
+    await wrapper.vm.$nextTick()
+    expect(sidebar.style.display).toBe('none')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', ctrlKey: true }))
+    await wrapper.vm.$nextTick()
+    expect(sidebar.style.display).not.toBe('none')
+  })
+
   it('hosts exactly one sync indicator (unique selector for the golden path)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     const wrapper = await mountShell(fake, router)

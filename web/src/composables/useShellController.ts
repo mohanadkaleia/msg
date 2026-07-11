@@ -19,6 +19,7 @@ import { useRouter } from 'vue-router'
 
 import type { CommandItem, QuickItem } from '../components/shell/CommandPalette.vue'
 import { resolveWorkerClient } from './useWorkerClient'
+import { useSidebarCollapse } from './useSidebarCollapse'
 import { useTheme } from './useTheme'
 import { buildCommands } from '../lib/commands'
 import { dmDisplayName, dmOtherUserId } from '../lib/dm'
@@ -95,6 +96,13 @@ export function useShellController() {
   const editingMessageId = ref<string | null>(null)
   /** Which main panel is active: the conversation timeline vs a scaffold section. */
   const activeView: Ref<ActiveView> = ref('conversation')
+
+  /**
+   * Left-sidebar collapse (ENG-174): persisted manual toggle + responsive
+   * auto-collapse below the narrow breakpoint. Toggled by the sidebar-header
+   * control, the TopBar expand affordance, and ⌘\ / Ctrl+\ below.
+   */
+  const { collapsed: sidebarCollapsed, toggle: toggleSidebar } = useSidebarCollapse()
 
   /** Whether the channel Details drawer is requested open (ENG-136). */
   const detailsOpen = ref(false)
@@ -380,7 +388,8 @@ export function useShellController() {
    * palette (actions + navigation); ⌘//Ctrl+/ opens the unified search modal.
    * Each closes the other — both are full-screen z-50 overlays, so leaving the
    * other open would stack them (the later-mounted search would hide the
-   * palette).
+   * palette). ⌘\/Ctrl+\ toggles the left sidebar (ENG-174 — no collision with
+   * the palette/search bindings).
    */
   function onGlobalKeydown(event: KeyboardEvent): void {
     if (!(event.metaKey || event.ctrlKey)) return
@@ -392,6 +401,9 @@ export function useShellController() {
       event.preventDefault()
       paletteOpen.value = false
       searchOpen.value = true
+    } else if (event.key === '\\') {
+      event.preventDefault()
+      toggleSidebar()
     }
   }
 
@@ -563,6 +575,9 @@ export function useShellController() {
     workspaceName,
     workspaceInitials,
     workspaceIconSha,
+    // sidebar collapse (ENG-174)
+    sidebarCollapsed,
+    toggleSidebar,
     // store-derived refs
     myUserId,
     selectedStream,

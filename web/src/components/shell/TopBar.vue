@@ -23,7 +23,12 @@ import { useSyncStore } from '../../stores/sync'
 import Icon from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
 
-const emit = defineEmits<{ search: [] }>()
+// ENG-174: while the left sidebar is collapsed, the bar leads with an expand
+// affordance (the collapse control lives IN the sidebar, so a collapsed sidebar
+// needs a visible way back — besides the ⌘\ shortcut).
+defineProps<{ sidebarCollapsed?: boolean }>()
+
+const emit = defineEmits<{ search: []; expandSidebar: [] }>()
 
 const sync = useSyncStore()
 const { tone, label } = storeToRefs(sync)
@@ -38,6 +43,18 @@ const syncText = computed(() => {
 
 <template>
   <div class="flex items-center gap-3 border-b border-subtle px-4 py-2">
+    <!-- ENG-174: expand affordance while the sidebar is collapsed. -->
+    <IconButton
+      v-if="sidebarCollapsed"
+      label="Expand sidebar"
+      title="Expand sidebar (⌘\)"
+      data-testid="expand-sidebar"
+      class="shrink-0"
+      @click="emit('expandSidebar')"
+    >
+      <Icon name="chevrons-left-right" :size="16" />
+    </IconButton>
+
     <!-- Centered search — opens the unified search modal (ENG-127/ENG-152). -->
     <div class="mx-auto w-full max-w-xl">
       <button
