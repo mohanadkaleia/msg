@@ -23,6 +23,7 @@ import { useSidebarCollapse } from './useSidebarCollapse'
 import { useTheme } from './useTheme'
 import { buildCommands } from '../lib/commands'
 import { dmDisplayName, dmOtherUserId } from '../lib/dm'
+import { activeStatus } from '../lib/status'
 import { useAuthStore } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
 import { useNotificationsStore } from '../stores/notifications'
@@ -241,6 +242,34 @@ export function useShellController() {
   })
 
   /**
+   * Whether the conversation header describes a DM (ENG-172) — flips its subline
+   * from the channel member/topic scaffold to the counterpart's status line.
+   * 'channel' for every non-conversation view (Admin/Files/Apps keep the
+   * channel-shaped header they already had).
+   */
+  const headerKind = computed<'channel' | 'dm'>(() =>
+    activeView.value === 'conversation' && selectedStream.value?.kind === 'dm' ? 'dm' : 'channel',
+  )
+
+  /**
+   * The DM header subline (ENG-172): the counterpart's ACTIVE custom status
+   * (lazy-expiry applied at render time — ENG-164) followed by their live
+   * presence label. `undefined` for channels and for a DM whose counterpart is
+   * unresolvable (no cached genesis / group DM) — the header then shows no subline.
+   */
+  const headerSubtitle = computed<string | undefined>(() => {
+    if (headerKind.value !== 'dm') return undefined
+    const s = selectedStream.value
+    const other = s ? dmOtherUserId(s.dm_user_ids, myUserId.value) : undefined
+    if (other === undefined) return undefined
+    const presenceLabel =
+      (presenceStatuses.value.get(other) ?? 'offline') === 'online' ? 'Active now' : 'Offline'
+    const status = activeStatus(workspace.userOf(other))
+    const statusText = status ? [status.emoji, status.text].filter(Boolean).join(' ') : ''
+    return statusText ? `${statusText} · ${presenceLabel}` : presenceLabel
+  })
+
+  /**
    * SCAFFOLD member count for the channel header (ENG-136) — a stand-in using the
    * workspace directory user count. A per-channel roster query is a later follow-up;
    * the header labels this honestly as an approximation.
@@ -381,6 +410,18 @@ export function useShellController() {
       const next = channels.value[0] ?? dms.value[0]
       workspace.selectedStreamId = next ? next.stream_id : null
     }
+  }
+
+  /**
+   * "Close conversation" on a DM's Details panel (ENG-172): close the drawer and
+   * navigate away from the DM — select the first channel (else nothing). There is
+   * no hide/archive semantics for a DM yet, so the row stays in the sidebar; this
+   * is honestly just "stop looking at this conversation".
+   */
+  function onDmClosed(): void {
+    detailsOpen.value = false
+    const next = channels.value[0]
+    workspace.selectedStreamId = next ? next.stream_id : null
   }
 
   /**
@@ -599,6 +640,8 @@ export function useShellController() {
     // computed view state
     headerLabel,
     headerPresence,
+    headerKind,
+    headerSubtitle,
     mainTitle,
     names,
     avatars,
@@ -613,6 +656,7 @@ export function useShellController() {
     toggleDetails,
     closeDetails,
     onChannelLeft,
+    onDmClosed,
     onPaletteSelect,
     onPaletteCommand,
     onOpenStream,

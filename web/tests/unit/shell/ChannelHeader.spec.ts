@@ -58,6 +58,42 @@ describe('ChannelHeader', () => {
     expect(header.get('[data-testid="presence-dot"]').attributes('data-status')).toBe('online')
   })
 
+  it('DM (ENG-172): the subline is the status/presence subtitle — never members/topic', () => {
+    const wrapper = mount(ChannelHeader, {
+      props: {
+        title: 'Dana',
+        kind: 'dm' as const,
+        subtitle: '🌴 On vacation · Active now',
+        presence: 'online' as const,
+        memberCount: 34, // must be ignored for a DM
+      },
+    })
+    const meta = wrapper.get('[data-testid="channel-header-meta"]')
+    expect(meta.text()).toBe('🌴 On vacation · Active now')
+    expect(wrapper.text()).not.toContain('members')
+    expect(wrapper.text()).not.toContain('Add a topic')
+    // The header element still carries the title alone (E2E contract).
+    expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('Dana')
+  })
+
+  it('DM (ENG-172): with no resolvable subtitle it renders NO subline at all', () => {
+    const wrapper = mount(ChannelHeader, {
+      props: { title: 'Dana', kind: 'dm' as const, memberCount: 34 },
+    })
+    expect(wrapper.find('[data-testid="channel-header-meta"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('members')
+    expect(wrapper.text()).not.toContain('Add a topic')
+  })
+
+  it('channel (ENG-172): kind="channel" keeps the member/topic subline unchanged', () => {
+    const wrapper = mount(ChannelHeader, {
+      props: { title: '# eng', kind: 'channel' as const, memberCount: 4 },
+    })
+    const meta = wrapper.get('[data-testid="channel-header-meta"]')
+    expect(meta.text()).toContain('4 members')
+    expect(meta.text()).toContain('Add a topic')
+  })
+
   it('renders an offline DM counterpart with a muted (offline) dot', () => {
     const wrapper = mount(ChannelHeader, { props: { title: 'Dana', presence: 'offline' as const } })
     const header = wrapper.get('[data-testid="channel-header"]')

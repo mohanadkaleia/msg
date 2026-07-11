@@ -26,6 +26,7 @@ import type {
   MutateParams,
   MutateResult,
   PrefLevel,
+  PresenceStatus,
   PushPayload,
   QueryParams,
   QueryResult,
@@ -539,6 +540,12 @@ export class FakeWorker {
   echoPref(streamId: string, level: PrefLevel): void {
     this.prefRows.set(streamId, level)
     this.publishPrefs()
+  }
+
+  /** Fan a FULL presence snapshot on `{kind:'presence'}` (ENG-126 push shape). */
+  publishPresence(entries: Array<{ user_id: string; status: PresenceStatus }>): void {
+    const payload: PushPayload<{ kind: 'presence' }> = { presence: entries }
+    for (const h of this.subs.get('presence') ?? []) h(payload)
   }
 
   publishStream(streamId: string): void {

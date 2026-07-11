@@ -491,6 +491,60 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.selectedStreamId.value).toBe('s_b')
   })
 
+  // -- ENG-172 DM-aware header + Close conversation ---------------------------
+
+  it('DM header (ENG-172): headerKind flips to dm with a status/presence subtitle', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_ana'] })
+    fake.setDirectory(
+      [
+        { user_id: 'u_me', display_name: 'Me' },
+        {
+          user_id: 'u_ana',
+          display_name: 'Ana',
+          status_emoji: '🌴',
+          status_text: 'On vacation',
+        },
+      ],
+      [],
+    )
+    setWorkerClient(fake.client)
+    const auth = useAuthStore()
+    auth.myUserId = 'u_me'
+    const { ctrl } = await mountController(router)
+
+    // Channel selected: channel-shaped header, no DM subtitle.
+    expect(ctrl.headerKind.value).toBe('channel')
+    expect(ctrl.headerSubtitle.value).toBeUndefined()
+
+    // DM selected: the title is the counterpart's name (ENG-149) and the subline
+    // is their status + presence — never "N members"/"Add a topic".
+    ctrl.onOpenStream('s_dm')
+    await flushPromises()
+    expect(ctrl.headerKind.value).toBe('dm')
+    expect(ctrl.mainTitle.value).toBe('Ana')
+    expect(ctrl.headerSubtitle.value).toBe('🌴 On vacation · Offline')
+  })
+
+  it('onDmClosed (ENG-172): closes the drawer and navigates away from the DM', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_ana'] })
+    setWorkerClient(fake.client)
+    const auth = useAuthStore()
+    auth.myUserId = 'u_me'
+    const { ctrl } = await mountController(router)
+
+    ctrl.onOpenStream('s_dm')
+    await flushPromises()
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('details')
+
+    ctrl.onDmClosed()
+    expect(ctrl.drawerMode.value).toBe('none')
+    // Fell back to the first channel — the DM view is closed.
+    expect(ctrl.selectedStreamId.value).toBe('s_a')
+  })
+
   // -- ENG-129 mark-read on channel view ------------------------------------
 
   it('marks the opened stream read up to max(head_seq, newest loaded seq)', async () => {

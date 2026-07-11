@@ -19,6 +19,11 @@
 // "Add a topic" is a non-wired affordance. `toggle-details` is emitted for the
 // parent to wire. There is NO add-member button here (ENG-152 cleanup) — adding
 // members lives in the channel-settings dialog via the Details drawer.
+//
+// ENG-172: the member/topic subline is CHANNEL-ONLY. For a DM (`kind: 'dm'`) the
+// subline instead shows the counterpart's status/presence line (`subtitle`,
+// computed by the shell) — never "N members" or "Add a topic", which are channel
+// concepts. With no resolvable subtitle the DM renders no subline at all.
 import { ref } from 'vue'
 
 import Icon from '../ui/Icon.vue'
@@ -44,8 +49,20 @@ const props = withDefaults(
      * that yields undefined for the no-dot case.
      */
     presence?: PresenceStatus | undefined
+    /**
+     * Whether this conversation is a DM (ENG-172): flips the subline from the
+     * channel member/topic scaffold to the DM `subtitle`. Defaults to 'channel'
+     * so every existing channel/section caller is unchanged.
+     */
+    kind?: 'channel' | 'dm'
+    /**
+     * DM-only subline (ENG-172): the counterpart's status + presence line,
+     * computed by the shell (e.g. "🌴 On vacation · Active now"). Ignored for
+     * channels; a DM with no resolvable counterpart renders no subline.
+     */
+    subtitle?: string | undefined
   }>(),
-  { memberCount: 0, presence: undefined },
+  { memberCount: 0, presence: undefined, kind: 'channel', subtitle: undefined },
 )
 
 defineEmits<{
@@ -89,10 +106,23 @@ const favorite = ref(false)
       </IconButton>
     </div>
   </header>
-  <p class="px-4 pb-2 pt-1 text-xs text-muted" data-testid="channel-header-meta">
+  <!-- ENG-172: channel subline (member count + topic scaffold) vs the DM's
+       status/presence subline — a DM never shows channel concepts here. -->
+  <p
+    v-if="props.kind !== 'dm'"
+    class="px-4 pb-2 pt-1 text-xs text-muted"
+    data-testid="channel-header-meta"
+  >
     {{ props.memberCount }} {{ props.memberCount === 1 ? 'member' : 'members' }} ·
     <button type="button" class="underline-offset-2 hover:text-secondary hover:underline">
       Add a topic
     </button>
+  </p>
+  <p
+    v-else-if="props.subtitle"
+    class="px-4 pb-2 pt-1 text-xs text-muted"
+    data-testid="channel-header-meta"
+  >
+    {{ props.subtitle }}
   </p>
 </template>
