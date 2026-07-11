@@ -86,6 +86,28 @@ describe('MessageList virtualization', () => {
     for (const gutter of gutters) expect(gutter.classes()).toContain('w-10')
   })
 
+  it('spaces message groups apart while keeping grouped follow-ups tight', () => {
+    const t = new Date('2026-07-06T10:00:00').getTime()
+    const messages = [
+      msg(1, t, 'u_a'), // leading row of group 1
+      msg(2, t + 60_000, 'u_a'), // grouped follow-up
+      msg(3, t + 120_000, 'u_b'), // new author → leading row of group 2
+    ]
+    const wrapper = mount(MessageList, {
+      props: { messages, viewportHeight: 2000, rowHeight: 64, streamKey: 's1' },
+    })
+    const rows = wrapper.findAll('[data-testid="message-row"]')
+    expect(rows).toHaveLength(3)
+    // A group's leading row opens a clear gap; a grouped follow-up stays tight
+    // with just a small breath between lines.
+    expect(rows[0]!.classes()).toContain('mt-3')
+    expect(rows[1]!.classes()).toContain('mt-0.5')
+    expect(rows[1]!.classes()).not.toContain('mt-3')
+    expect(rows[2]!.classes()).toContain('mt-3')
+    // Every row carries a touch of internal vertical padding.
+    for (const row of rows) expect(row.classes()).toContain('py-1')
+  })
+
   it('threads the display-name map down to each row', () => {
     const t = new Date('2026-07-06T10:00:00').getTime()
     const names = new Map([['u_a', 'Alice']])

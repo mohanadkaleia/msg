@@ -225,9 +225,16 @@ function confirmDelete(): void {
 </script>
 
 <template>
+  <!-- VERTICAL RHYTHM (reading-comfort feedback): a group's LEADING row (showHeader)
+       opens a clear mt-3 gap from the previous group; a grouped follow-up keeps a
+       small mt-0.5 breath between lines. py-1 gives every row a touch of internal
+       padding. Margins (not padding) so the hover background stays snug to the row. -->
   <div
-    class="group relative flex gap-3 px-4 py-0.5 transition-colors hover:bg-surface"
-    :class="{ 'opacity-50': isPending, 'bg-accent-subtle': props.flash }"
+    class="group relative flex gap-3 px-4 py-1 transition-colors hover:bg-surface"
+    :class="[
+      props.showHeader ? 'mt-3' : 'mt-0.5',
+      { 'opacity-50': isPending, 'bg-accent-subtle': props.flash },
+    ]"
     data-testid="message-row"
     :data-state="props.message.state ?? 'settled'"
     :data-message-id="props.message.message_id"
