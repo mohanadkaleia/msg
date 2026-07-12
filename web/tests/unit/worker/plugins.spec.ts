@@ -249,9 +249,9 @@ describe('plugins.bots.revokeToken (DELETE .../tokens/{token_id})', () => {
     server.pluginBots = [bot()]
     const http = new FakeHttpClient(server)
 
-    expect(
-      await codeOf(revokePluginBotToken(http, { bot_user_id: 'b_1', token_id: 'nope' })),
-    ).toBe('not-found')
+    expect(await codeOf(revokePluginBotToken(http, { bot_user_id: 'b_1', token_id: 'nope' }))).toBe(
+      'not-found',
+    )
   })
 })
 
@@ -295,9 +295,9 @@ describe('plugins.bots.grantStream / revokeStream (PUT/DELETE .../streams/{id})'
     const server = new FakeSyncServer()
     const http = new FakeHttpClient(server)
 
-    expect(
-      await codeOf(grantPluginBotStream(http, { bot_user_id: 'b_x', stream_id: 's_1' })),
-    ).toBe('not-found')
+    expect(await codeOf(grantPluginBotStream(http, { bot_user_id: 'b_x', stream_id: 's_1' }))).toBe(
+      'not-found',
+    )
     expect(
       await codeOf(revokePluginBotStream(http, { bot_user_id: 'b_x', stream_id: 's_1' })),
     ).toBe('not-found')
@@ -423,26 +423,26 @@ describe('token boundary (R1)', () => {
     await grantPluginBotStream(http, { bot_user_id: 'b_1', stream_id: 's_ops' })
     await revokePluginBotStream(http, { bot_user_id: 'b_1', stream_id: 's_ops' })
     await listPluginHooks(http)
-    await createPluginHook(http, { stream_id: 's_general', name: 'Hook' })
+    const created = await createPluginHook(http, { stream_id: 's_general', name: 'Hook' })
     await revokePluginHook(http, { id: 'h'.repeat(64) })
 
     // NOTE: the mint/create RESPONSES deliberately carry the one-time raw
     // secret — what must stay clean is everything the TAB sends: params,
-    // paths, bodies. (`…/tokens/{sha256}` is a hash HANDLE, not a credential.)
+    // paths, bodies. The `…/tokens` and `…/tokens/{sha256}` REST route segments
+    // (and `{sha256}` hash HANDLE) are NOT credentials, so the sweep asserts the
+    // real leak indicators instead: no `bearer`/`authorization` field, and no
+    // RAW secret (the minted token / the capability URL's path token) ever rides
+    // outbound on any GET/PUT/POST/DELETE surface.
     const surfaces = [
       ...http.getCalls,
       ...http.putCalls.map((c) => c.path + JSON.stringify(c.body ?? null)),
       ...http.postCalls.map((c) => c.path + JSON.stringify(c.body)),
+      ...http.delCalls,
     ]
     for (const s of surfaces) {
-      expect(s).not.toMatch(/token|bearer|authorization/i)
-    }
-    // DELETE paths: the `/tokens/` path SEGMENT is part of the server route;
-    // assert no RAW secret ever rides a path (the only tokens we ever saw).
-    for (const s of http.delCalls) {
-      expect(s).not.toContain(minted.token)
-      expect(s).not.toContain('raw-hook-token')
       expect(s).not.toMatch(/bearer|authorization/i)
+      expect(s).not.toContain(minted.token)
+      expect(s).not.toContain(created.url)
     }
   })
 })

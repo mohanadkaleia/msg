@@ -34,7 +34,9 @@ function installLocalStorage(): void {
   })
 }
 
-async function mountSidebar(): Promise<ReturnType<typeof mount>> {
+async function mountSidebar(
+  overrides: Record<string, unknown> = {},
+): Promise<ReturnType<typeof mount>> {
   const store = useWorkspaceStore()
   await store.load()
   const wrapper = mount(AppSidebar, {
@@ -46,6 +48,7 @@ async function mountSidebar(): Promise<ReturnType<typeof mount>> {
       workspaceName: 'msg',
       workspaceInitials: 'MS',
       canAdmin: false,
+      ...overrides,
     },
   })
   await flushPromises()
@@ -234,7 +237,9 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
   it('flattens the nav: top-level Inbox/DMs/Channels, no "Messages" header (restructure)', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
-    const wrapper = await mountSidebar()
+    // Apps is owner/admin-gated (ENG-176), so mount as an admin to assert its
+    // position within the Workspace group alongside Files/Search.
+    const wrapper = await mountSidebar({ canAdmin: true })
 
     // The "Messages" category header is GONE — its former children are
     // top-level nodes now.
@@ -413,7 +418,9 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
   it('renders the nav rows with their preserved test-ids (and NO Feeds section)', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
-    const wrapper = await mountSidebar()
+    // Apps is owner/admin-gated (ENG-176) — mount as an admin so its row renders
+    // alongside the always-present Inbox/Files/Search rows.
+    const wrapper = await mountSidebar({ canAdmin: true })
 
     for (const id of ['nav-inbox', 'nav-apps', 'nav-files', 'nav-search']) {
       expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(true)
@@ -424,6 +431,22 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     // A real channel row carries a leading hash icon (lucide-hash svg).
     const channel = wrapper.get('[data-testid="sidebar-channel"]')
     expect(channel.find('svg.lucide-hash').exists()).toBe(true)
+  })
+
+  it('gates the Apps nav item on canAdmin (ENG-176 — the plugin surface is owner/admin only)', async () => {
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
+    setWorkerClient(fake.client)
+
+    // Member/guest: no Apps entry point (the whole plugin surface is server-side
+    // owner/admin-gated, so the entry point never appears).
+    const member = await mountSidebar() // canAdmin: false
+    expect(member.find('[data-testid="nav-apps"]').exists()).toBe(false)
+
+    // Owner/admin: the Apps row is present and routes via selectView('apps').
+    const admin = await mountSidebar({ canAdmin: true })
+    expect(admin.find('[data-testid="nav-apps"]').exists()).toBe(true)
+    await admin.get('[data-testid="nav-apps"]').trigger('click')
+    expect(admin.emitted('selectView')).toEqual([['apps']])
   })
 
   it('shows a REAL total-unread badge on Inbox summed across channels + DMs', async () => {

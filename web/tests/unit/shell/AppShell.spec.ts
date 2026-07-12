@@ -3,8 +3,8 @@
 // and every test-id are identical (only the wrapping element changed). This proves the
 // grid COMPOSITION: the rail/sidebar/main/drawer landmarks render, a real conversation
 // mounts channel-header + MessageList + MessageComposer, the Inbox section mounts the
-// REAL InboxView (ENG-136 — no longer a placeholder), a scaffold section flips main to
-// an EmptyState, the thread drawer mounts when a thread is open and unmounts
+// REAL InboxView (ENG-136 — no longer a placeholder), the Apps section flips main to the
+// REAL AppsView (ENG-176 — owner/admin only), the thread drawer mounts when a thread is open and unmounts
 // synchronously on close, and the sync indicator is unique. The heavy leaves
 // (MessageList/MessageComposer/ThreadPane) are stubbed — their own testids are covered by
 // their specs; here we only assert AppShell wires each region into the right track.
@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import AppShell from '../../../src/components/shell/AppShell.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
+import { useAuthStore } from '../../../src/stores/auth'
 import { useThreadStore } from '../../../src/stores/thread'
 import { FakeWorker } from './fakeWorker'
 
@@ -289,18 +290,25 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# alpha')
   })
 
-  it('flips the main panel to an EmptyState for a scaffold section', async () => {
+  it('flips the main panel to the REAL Apps surface (ENG-176 — owner/admin only)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    // The Apps nav item is owner/admin-gated; land as an owner so it renders.
+    const auth = useAuthStore()
+    auth.role = 'owner'
+    auth.myUserId = 'u_owner'
     const wrapper = await mountShell(fake, router)
 
     await wrapper.get('[data-testid="nav-apps"]').trigger('click')
+    await flushPromises()
 
-    // The conversation leaves are gone; the scaffold EmptyState is shown in main.
+    // The conversation leaves are gone; the REAL AppsView (bots panel) is shown
+    // — no scaffold, no "coming soon".
     expect(wrapper.find('[data-testid="message-list"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="composer-input"]').exists()).toBe(false)
     const main = wrapper.get('main[role="main"]')
-    expect(main.text()).toContain('Apps')
-    expect(main.text()).toContain('coming soon')
+    expect(main.find('[data-testid="apps-view"]').exists()).toBe(true)
+    expect(main.find('[data-testid="apps-bots"]').exists()).toBe(true)
+    expect(main.text()).not.toContain('coming soon')
   })
 
   it('opens the thread drawer when a thread is open and unmounts it synchronously on close', async () => {

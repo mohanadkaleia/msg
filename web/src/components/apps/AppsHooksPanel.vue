@@ -190,8 +190,7 @@ onMounted(() => void load())
           </Button>
         </div>
         <p class="pt-1.5 text-[12px] text-warning" data-testid="hook-url-note">
-          Copy it now — this URL won't be shown again. Anyone who has it can post into the
-          channel.
+          Copy it now — this URL won't be shown again. Anyone who has it can post into the channel.
         </p>
         <div class="flex justify-end pt-2">
           <Button variant="ghost" size="sm" data-testid="hook-url-done" @click="closeCreate">
@@ -342,7 +341,11 @@ onMounted(() => void load())
         </li>
       </ul>
 
-      <p v-if="actionError" class="px-1 py-2 text-[12px] text-danger" data-testid="apps-hooks-error">
+      <p
+        v-if="actionError"
+        class="px-1 py-2 text-[12px] text-danger"
+        data-testid="apps-hooks-error"
+      >
         {{ actionError }}
       </p>
     </template>
