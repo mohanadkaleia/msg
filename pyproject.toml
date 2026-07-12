@@ -2,18 +2,19 @@
 name = "msg-workspace"
 version = "0"
 requires-python = ">=3.12"
-dependencies = ["msgd", "msgctl", "github-notifier"]
+dependencies = ["msgd", "msgctl", "github-notifier", "msg-sdk"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["server", "cli", "plugins/github_notifier"]
+members = ["server", "cli", "plugins/github_notifier", "plugins/msg_sdk"]
 
 [tool.uv.sources]
 msgd = { workspace = true }
 msgctl = { workspace = true }
 github-notifier = { workspace = true }
+msg-sdk = { workspace = true }
 
 [dependency-groups]
 # httpx drives the in-process ASGI test client; testcontainers runs the
@@ -28,6 +29,10 @@ dev = [
     "httpx-ws",
     "testcontainers[postgres]",
     "pytest-asyncio",
+    # msg_sdk's live event stream (and its e2e test) use the `websockets`
+    # package; pinned here as a dev dep so the SDK's [ws] extra resolves for tests
+    # without adding it to the base install.
+    "websockets>=13",
 ]
 
 [tool.ruff]
@@ -40,7 +45,14 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["server/msgd", "server/tests", "cli/msgctl", "cli/tests", "plugins/github_notifier"]
+files = [
+    "server/msgd",
+    "server/tests",
+    "cli/msgctl",
+    "cli/tests",
+    "plugins/github_notifier",
+    "plugins/msg_sdk",
+]
 # server/tests/ and cli/tests/ each hold a top-level `conftest.py`; mypy would
 # map both to the module name `conftest` and abort with "duplicate module".
 # They cannot be disambiguated by package: making a `tests/` dir a package would
@@ -48,10 +60,19 @@ files = ["server/msgd", "server/tests", "cli/msgctl", "cli/tests", "plugins/gith
 # `explicit_package_bases` double-maps the editable `msgd` distribution. All
 # real harness logic lives in server/tests/harness.py (unique module name,
 # fully type-checked); only the thin re-export shim conftest.py is excluded.
-exclude = ["^server/tests/conftest\\.py$"]
+# Multiple test dirs each carry a top-level `conftest.py`; mypy maps them all to
+# the module name `conftest` and aborts with "duplicate module". These shims hold
+# no real logic (a re-export; a sys.path insert), so exclude them — the harness
+# logic they wrap lives in uniquely-named modules that ARE checked.
+exclude = ["^server/tests/conftest\\.py$", "^plugins/msg_sdk/tests/conftest\\.py$"]
 
 [tool.pytest.ini_options]
-testpaths = ["server/tests", "cli/tests", "plugins/github_notifier/tests"]
+testpaths = [
+    "server/tests",
+    "cli/tests",
+    "plugins/github_notifier/tests",
+    "plugins/msg_sdk/tests",
+]
 addopts = "-q"
 asyncio_mode = "auto"
 markers = [

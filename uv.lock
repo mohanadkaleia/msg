@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "github-notifier",
+    "msg-sdk",
     "msg-workspace",
     "msgctl",
     "msgd",
@@ -729,11 +730,26 @@ wheels = [
 ]
 
 [[package]]
+name = "msg-sdk"
+version = "0.1.0"
+source = { editable = "plugins/msg_sdk" }
+
+[package.optional-dependencies]
+ws = [
+    { name = "websockets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "websockets", marker = "extra == 'ws'", specifier = ">=13" }]
+provides-extras = ["ws"]
+
+[[package]]
 name = "msg-workspace"
 version = "0"
 source = { virtual = "." }
 dependencies = [
     { name = "github-notifier" },
+    { name = "msg-sdk" },
     { name = "msgctl" },
     { name = "msgd" },
 ]
@@ -748,11 +764,13 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "testcontainers" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "github-notifier", editable = "plugins/github_notifier" },
+    { name = "msg-sdk", editable = "plugins/msg_sdk" },
     { name = "msgctl", editable = "cli" },
     { name = "msgd", editable = "server" },
 ]
@@ -767,6 +785,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff", specifier = ">=0.6" },
     { name = "testcontainers", extras = ["postgres"] },
+    { name = "websockets", specifier = ">=13" },
 ]
 
 [[package]]
