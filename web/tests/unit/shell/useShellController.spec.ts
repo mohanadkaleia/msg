@@ -97,8 +97,8 @@ describe('useShellController (ENG-136 PR-B)', () => {
     // No workspace.info seeded → the genesis event has not synced: fallback.
     setWorkerClient(fake.client)
     const first = await mountController(router)
-    expect(first.ctrl.workspaceName.value).toBe('msg')
-    expect(first.ctrl.workspaceInitials.value).toBe('MS')
+    expect(first.ctrl.workspaceName.value).toBe('Workspace')
+    expect(first.ctrl.workspaceInitials.value).toBe('WO')
 
     // The REAL name (workspace.created + any workspace.updated renames) wins.
     setActivePinia(createPinia())

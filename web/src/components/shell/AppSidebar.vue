@@ -84,7 +84,7 @@ import ProfileDialog from '../profile/ProfileDialog.vue'
 import type { ActiveView, AdminTab } from '../../composables/useShellController'
 
 /** The product brand shown in the header (NOT the workspace name — see file note). */
-const BRAND = 'Ranin'
+const BRAND = 'Serin'
 
 const props = defineProps<{
   activeView: ActiveView

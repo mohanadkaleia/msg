@@ -55,9 +55,9 @@ describe('SpaceRail (ENG-136 PR-B)', () => {
     const nav = wrapper.get('nav')
     expect(nav.attributes('role')).toBe('navigation')
     expect(nav.attributes('aria-label')).toBe('Workspaces')
-    // Neutral initials — NOT "Ranin".
+    // Neutral initials — NOT "Serin".
     expect(wrapper.text()).toContain('MS')
-    expect(wrapper.text()).not.toContain('Ranin')
+    expect(wrapper.text()).not.toContain('Serin')
   })
 
   it('hosts the single global sync indicator, tone-driven from the sync store', async () => {
@@ -115,9 +115,9 @@ describe('SpaceRail (ENG-136 PR-B)', () => {
 
   it('renders the brand logo and the active workspace square', () => {
     const wrapper = mountRail()
-    // The "R" brand mark is a labeled image.
-    const logo = wrapper.get('[role="img"][aria-label="Ranin"]')
-    expect(logo.text()).toBe('R')
+    // The "S" brand mark is a labeled image.
+    const logo = wrapper.get('[role="img"][aria-label="Serin"]')
+    expect(logo.text()).toBe('S')
     // The one real workspace is the active square (aria-current) with its initials.
     const square = wrapper.get('button[aria-current="true"]')
     expect(square.text()).toBe('MS')

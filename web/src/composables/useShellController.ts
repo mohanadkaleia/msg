@@ -55,7 +55,7 @@ export type DrawerMode = 'none' | 'thread' | 'details' | 'user'
 
 /** Fallback shown until the real workspace name syncs (the genesis
  * `workspace.created` fold — ENG-152); neutral, NOT "Ranin". */
-const WORKSPACE_NAME_FALLBACK = 'msg'
+const WORKSPACE_NAME_FALLBACK = 'Workspace'
 
 export function useShellController() {
   const router = useRouter()

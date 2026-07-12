@@ -213,15 +213,15 @@ describe('AppSidebar — ENG-136 feed-first structure', () => {
     document.body.innerHTML = ''
   })
 
-  it('shows the "Ranin" brand wordmark and the workspace selector pill', async () => {
+  it('shows the "Serin" brand wordmark and the workspace selector pill', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
 
     // Header wordmark is the BRAND, not the workspace name — demoted to a small
     // muted mark (ENG-152) so the workspace pill is the primary identity.
-    expect(wrapper.text()).toContain('Ranin')
-    expect(wrapper.find('span.text-muted.uppercase').text()).toBe('Ranin')
+    expect(wrapper.text()).toContain('Serin')
+    expect(wrapper.find('span.text-muted.uppercase').text()).toBe('Serin')
     // The workspace selector pill preserves the open-switcher affordance and
     // carries the "Local workspace" sub-label (ENG-152 hierarchy). Clicking it
     // opens the switcher's OWN workspace menu — NOT a palette event (ENG-152
