@@ -35,6 +35,7 @@ from msgd.api.routers import (
     read_state,
     search,
     sync,
+    whoami,
     workspace_icon,
 )
 from msgd.api.spa import SPAStaticFiles
@@ -129,6 +130,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # dependency — the path token is the credential; see msgd.plugins.hooks).
     app.include_router(plugin_hooks.router)
     app.include_router(me.router)  # self-profile: GET/PATCH /v1/me (structurally self-only)
+    # ENG-179: GET /v1/whoami — the caller's own identity (user/device/workspace
+    # ids + is_bot/role) so a bot can discover the device_id it must author with.
+    app.include_router(whoami.router)
     # ENG-152 profile pictures: POST/DELETE /v1/me/avatar (self-only, re-encode
     # pipeline) + GET /v1/users/{id}/avatar (workspace-readable, never by hash).
     app.include_router(avatars.router)
