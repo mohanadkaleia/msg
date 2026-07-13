@@ -324,6 +324,10 @@ export class WorkerCore {
       emitStatus: (status) => this.onSyncStatus(status),
       publishStream: (streamId) =>
         this.publish({ kind: 'stream', stream_id: streamId }, { stream_id: streamId }),
+      // ENG-134: same `{kind:'sync'}` fan the AUTHOR path uses (meta's
+      // `onStreamsChanged`) — lets the live receiver's new-stream discovery
+      // (`triggerNewChannel`) refresh the sidebar for a mid-session DM/channel.
+      publishStreamsChanged: () => this.publish({ kind: 'sync' }, this.sync.status()),
     })
     this.outbox = new Outbox({
       db,

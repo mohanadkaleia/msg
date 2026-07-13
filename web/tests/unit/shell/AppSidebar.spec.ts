@@ -73,7 +73,10 @@ describe('AppSidebar — ENG-104 channel/DM management', () => {
     setWorkerClient(fake.client)
     const wrapper = await mountSidebar()
 
-    await wrapper.get('[data-testid="open-create-channel"]').trigger('click')
+    // ENG-177: the Channels header `+` is gone — the sidebar's create-channel
+    // path is now the Inbox compose menu (New channel).
+    await wrapper.get('[data-testid="inbox-compose"]').trigger('click')
+    await wrapper.get('[data-testid="new-menu-channel"]').trigger('click')
     await flushPromises()
     // The dialog is a fixed overlay outside the component root — query the document.
     const dialog = document.querySelector('[data-testid="create-channel"]')!
@@ -104,37 +107,9 @@ describe('AppSidebar — ENG-104 channel/DM management', () => {
     expect(store.channels.some((c) => c.stream_id === store.selectedStreamId)).toBe(true)
   })
 
-  it('channel-browser lists un-joined public channels and joins on click', async () => {
-    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel', member: true })
-    fake.addStream({
-      stream_id: 's_open',
-      name: 'random',
-      kind: 'channel',
-      visibility: 'public',
-      member: false,
-    })
-    setWorkerClient(fake.client)
-    const wrapper = await mountSidebar()
-
-    // The un-joined public channel is NOT in the sidebar list yet.
-    const store = useWorkspaceStore()
-    expect(store.channels.some((c) => c.stream_id === 's_open')).toBe(false)
-    expect(store.browsableChannels.map((c) => c.stream_id)).toEqual(['s_open'])
-
-    await wrapper.get('[data-testid="open-channel-browser"]').trigger('click')
-    await flushPromises()
-    const browser = document.querySelector('[data-testid="channel-browser"]')!
-    const joinBtn = browser.querySelector<HTMLButtonElement>('[data-testid="join-channel"]')!
-    expect(joinBtn.getAttribute('data-stream-id')).toBe('s_open')
-    joinBtn.click()
-    await flushPromises()
-
-    // Joining a public channel is a local open + switch (§3.6 — no membership event).
-    expect(fake.metaSpy).not.toHaveBeenCalled()
-    expect(fake.fetch).not.toHaveBeenCalled()
-    expect(store.selectedStreamId).toBe('s_open')
-    expect(store.channels.some((c) => c.stream_id === 's_open')).toBe(true)
-  })
+  // (ENG-177) The channel BROWSER no longer opens from the sidebar — the ⌕
+  // button was removed. Its "list un-joined publics + join on click" behavior is
+  // now covered from the command palette in AppShell.spec.ts.
 
   it('new-dm authors dm.create for the picked member and switches to it', async () => {
     fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel' })

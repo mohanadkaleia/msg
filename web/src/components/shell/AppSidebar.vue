@@ -50,8 +50,9 @@
 // without toggling) whose children render INDENTED under the single thin
 // `border-subtle` connector rule. The WORKSPACE group (Files, Apps, Search,
 // Admin) is unchanged. Every item, route, and test-id is preserved
-// (`nav-inbox`, `sidebar-dm`, `sidebar-channel`, …); `nav-group-dms` /
-// `nav-group-channels` address the new header buttons. DM rows NO LONGER show
+// (`nav-inbox`, `sidebar-dm`, `sidebar-channel`, …). The Channels node has NO
+// header actions (ENG-177): creating/browsing channels lives in the command
+// palette + the Inbox compose menu; only the DMs node keeps a `+`. DM rows NO LONGER show
 // the counterpart presence dot (same feedback) — presence elsewhere (footer
 // card, message rows) is untouched.
 //
@@ -72,7 +73,6 @@ import NavSection from '../ui/NavSection.vue'
 import SidebarItem from '../ui/SidebarItem.vue'
 import UserAvatar from '../ui/UserAvatar.vue'
 import UserPopover from '../ui/UserPopover.vue'
-import ChannelBrowser from './ChannelBrowser.vue'
 import ChannelSettingsDialog from './ChannelSettingsDialog.vue'
 import ComposeButton from './ComposeButton.vue'
 import CreateChannelDialog from './CreateChannelDialog.vue'
@@ -126,7 +126,6 @@ const localFirstNote = computed(() => {
 
 /** Which modal is open (ENG-104). `settings` also carries the target channel. */
 const showCreateChannel = ref(false)
-const showChannelBrowser = ref(false)
 const showNewDm = ref(false)
 const settingsFor = ref<SidebarStream | null>(null)
 /** The current user's own profile dialog (view + edit display name). */
@@ -334,32 +333,11 @@ function dmAvatarSha(stream: SidebarStream): string | undefined {
       </NavGroup>
 
       <!-- REAL Channels (ENG-80 projection) — expandable top-level node. -->
+      <!-- No header actions: creating/browsing channels moved to the command
+           palette + the Inbox compose menu (ENG-177) — the ⌕/+ buttons were
+           removed as redundant. -->
       <NavGroup title="Channels" storage-key="channels" data-testid="nav-group-channels">
         <template #icon><Icon name="hash" :size="14" /></template>
-        <template #action>
-          <span class="flex items-center gap-0.5">
-            <button
-              type="button"
-              class="rounded px-1 text-sm leading-none text-muted transition-colors hover:text-primary"
-              aria-label="Browse channels"
-              title="Browse channels"
-              data-testid="open-channel-browser"
-              @click="showChannelBrowser = true"
-            >
-              ⌕
-            </button>
-            <button
-              type="button"
-              class="rounded px-1 text-sm leading-none text-muted transition-colors hover:text-primary"
-              aria-label="Create a channel"
-              title="Create a channel"
-              data-testid="open-create-channel"
-              @click="showCreateChannel = true"
-            >
-              +
-            </button>
-          </span>
-        </template>
         <div v-for="stream in channels" :key="stream.stream_id" class="group/row relative">
           <SidebarItem
             :active="isActive(stream)"
@@ -481,7 +459,6 @@ function dmAvatarSha(stream: SidebarStream): string | undefined {
   </aside>
 
   <CreateChannelDialog v-if="showCreateChannel" @close="showCreateChannel = false" />
-  <ChannelBrowser v-if="showChannelBrowser" @close="showChannelBrowser = false" />
   <NewDmDialog v-if="showNewDm" @close="showNewDm = false" />
   <ChannelSettingsDialog v-if="settingsFor" :stream="settingsFor" @close="settingsFor = null" />
   <ProfileDialog v-if="showProfile" @close="showProfile = false" />
