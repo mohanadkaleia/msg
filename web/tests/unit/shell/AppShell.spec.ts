@@ -17,6 +17,7 @@ import AppShell from '../../../src/components/shell/AppShell.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
 import { useAuthStore } from '../../../src/stores/auth'
 import { useThreadStore } from '../../../src/stores/thread'
+import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
 
 const Blank = { template: '<div />' }
@@ -198,10 +199,56 @@ describe('AppShell (ENG-136 PR-C)', () => {
     await wrapper.get('[data-testid="palette-command-create-channel"]').trigger('click')
     await flushPromises()
 
-    // Palette closed; the SAME dialog the sidebar's `open-create-channel` opens.
+    // Palette closed; the SAME dialog the Inbox compose menu's "New channel" opens.
     expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="create-channel"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="create-channel-name"]').exists()).toBe(true)
+  })
+
+  it('palette "Browse channels" command lists un-joined publics and joins on click (ENG-177)', async () => {
+    // ENG-177: the sidebar ⌕ button is gone; browsing now originates in the palette.
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel', member: true })
+    fake.addStream({
+      stream_id: 's_open',
+      name: 'random',
+      kind: 'channel',
+      visibility: 'public',
+      member: false,
+    })
+    setWorkerClient(fake.client)
+    const wrapper = mount(AppShell, {
+      attachTo: document.body,
+      global: {
+        plugins: [router],
+        stubs: {
+          MessageList: stubs.MessageList,
+          MessageComposer: stubs.MessageComposer,
+          ThreadPane: stubs.ThreadPane,
+        },
+      },
+    })
+    await flushPromises()
+
+    const store = useWorkspaceStore()
+    // The un-joined public channel is NOT in the sidebar list yet.
+    expect(store.channels.some((c) => c.stream_id === 's_open')).toBe(false)
+    expect(store.browsableChannels.map((c) => c.stream_id)).toEqual(['s_open'])
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="palette-command-browse-channels"]').trigger('click')
+    await flushPromises()
+
+    const browser = document.querySelector('[data-testid="channel-browser"]')!
+    const joinBtn = browser.querySelector<HTMLButtonElement>('[data-testid="join-channel"]')!
+    expect(joinBtn.getAttribute('data-stream-id')).toBe('s_open')
+    joinBtn.click()
+    await flushPromises()
+
+    // Joining a public channel is a local open + switch (§3.6 — no membership event).
+    expect(fake.metaSpy).not.toHaveBeenCalled()
+    expect(store.selectedStreamId).toBe('s_open')
+    expect(store.channels.some((c) => c.stream_id === 's_open')).toBe(true)
   })
 
   it('search jump closes the overlay and selects the hit stream (ENG-127)', async () => {

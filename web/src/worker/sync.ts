@@ -74,6 +74,16 @@ export interface SyncEngineDeps {
   /** Async "events changed for stream X" signal — WorkerCore fans `{kind:'stream'}`. */
   publishStream: (streamId: string) => void
   /**
+   * "The set of streams changed" signal — WorkerCore fans `{kind:'sync'}`, which
+   * is the ONLY push the sidebar store listens to for streams it does not yet know
+   * about (a per-stream `{kind:'stream'}` push cannot reach an unsubscribed brand-new
+   * stream). The AUTHOR path already fires this via meta's `onStreamsChanged`; the
+   * live receiver must fire it too when a mid-session stream (a new DM, or a channel
+   * you were just added to) first lands — else the sidebar stays stale until reload
+   * (ENG-134). Defaults to a no-op so ENG-79 standalone tests need not provide it.
+   */
+  publishStreamsChanged?: () => void
+  /**
    * ENG-126 signal-frame sink. Inbound `read_state`/`prefs`/`presence`/`typing`
    * frames are routed here INSTEAD of the event-sync path (no cursor, no
    * invariant-5/6, no `applyForward`). Optional so ENG-79 tests run without it;
@@ -157,6 +167,7 @@ export class SyncEngine {
   private readonly applyToProjection: ApplyEventsToProjection
   private readonly emitStatus: (status: SyncStatus) => void
   private readonly publishStream: (streamId: string) => void
+  private readonly publishStreamsChanged: () => void
   private readonly onSignalFrame: ((frame: WsFrame) => void) | undefined
   private readonly setTimer: (cb: () => void, ms: number) => TimerId
   private readonly clearTimer: (handle: TimerId) => void
@@ -174,6 +185,7 @@ export class SyncEngine {
     this.applyToProjection = deps.applyToProjection ?? noopApplyToProjection
     this.emitStatus = deps.emitStatus
     this.publishStream = deps.publishStream
+    this.publishStreamsChanged = deps.publishStreamsChanged ?? (() => {})
     this.onSignalFrame = deps.onSignalFrame
     this.setTimer =
       deps.setTimeout ?? ((cb, ms) => globalThis.setTimeout(cb, ms) as unknown as TimerId)
@@ -803,6 +815,14 @@ export class SyncEngine {
         await this.db.putStreams(res.value.streams.map(toStreamRow))
         // M6-3 registration-before-write, live-path twin of bootstrap's hook.
         if (this.mirror) await this.mirror.registerStreams(res.value.streams)
+        // ENG-134: the new stream row now exists locally — signal the sidebar to
+        // re-query BEFORE the catch-up pull below. The store's ONLY new-stream
+        // discovery signal is `{kind:'sync'}`; without this a mid-session DM (or a
+        // channel you were just added to) stays invisible until a page reload.
+        // Emitting first also lets the store subscribe to this stream's
+        // `{kind:'stream'}` push, so the catch-up's `publishStream` then updates
+        // its unread badge live.
+        this.publishStreamsChanged()
         const meta =
           res.value.streams.find((s) => s.stream_id === streamId) ??
           ({

@@ -84,7 +84,8 @@ const hasCustomStatus = computed(
         v-if="hasCustomStatus"
         class="block truncate text-xs text-muted"
         data-testid="user-card-status"
-        ><template v-if="statusEmoji">{{ statusEmoji }} </template>{{ statusText }}</span
+        ><span v-if="statusEmoji" class="mr-1">{{ statusEmoji }}</span
+        >{{ statusText }}</span
       >
       <span v-else class="block text-xs text-muted">{{ statusLabel }}</span>
     </span>
