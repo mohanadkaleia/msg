@@ -189,4 +189,66 @@ describe('MessageList virtualization', () => {
 
     expect(loadOlder).toHaveBeenCalledTimes(1)
   })
+
+  // ENG-88: jsdom has no layout, so the other tests exercise the estimate
+  // fallback (identical to the old fixed-height math). Here we STUB a
+  // ResizeObserver + getBoundingClientRect so rows measure 200px, then assert the
+  // MEASURED heights — not the 40px estimate — decide how many rows fill the
+  // viewport: at 200px only ~3 rows fit a 400px viewport, vs ~11 at the estimate.
+  it('windows by measured row heights, not the estimate (ENG-88)', async () => {
+    const day = new Date('2026-07-06T10:00:00').getTime()
+    const messages = Array.from({ length: 100 }, (_, i) => msg(i, day))
+    const props = { messages, viewportHeight: 400, rowHeight: 40, overscan: 2, streamKey: 's1' }
+
+    // Control: no layout/observer → the estimate fallback (what the old fixed
+    // 64px math did). ~11 rows fill a 400px viewport at the 40px estimate.
+    const control = mount(MessageList, { props })
+    await nextTick()
+    const estimateCount = control.findAll('[data-testid="message-row"]').length
+    control.unmount()
+    expect(estimateCount).toBeGreaterThan(8)
+
+    // Measured: every row reports 200px, so far fewer rows fill the same viewport.
+    const rafSpy = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0)
+        return 0
+      })
+    class ResizeObserverStub {
+      constructor(private cb: ResizeObserverCallback) {}
+      observe(el: Element): void {
+        this.cb([{ target: el } as ResizeObserverEntry], this)
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+    const tall = {
+      height: 200,
+      width: 0,
+      top: 0,
+      bottom: 200,
+      left: 0,
+      right: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect
+    const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(tall)
+
+    try {
+      const wrapper = mount(MessageList, { props })
+      for (let i = 0; i < 5; i++) await nextTick() // let measure → re-render settle
+
+      const measuredCount = wrapper.findAll('[data-testid="message-row"]').length
+      expect(measuredCount).toBeGreaterThan(0)
+      // The measured 200px height renders strictly FEWER rows than the estimate.
+      expect(measuredCount).toBeLessThan(estimateCount)
+    } finally {
+      rectSpy.mockRestore()
+      rafSpy.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
 })
