@@ -14,9 +14,11 @@ colliding on ``ws/`` files.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from msgd.core.envelope import Envelope
 
-__all__ = ["publish_event"]
+__all__ = ["publish_event", "publish_events"]
 
 
 async def publish_event(envelope: Envelope) -> None:
@@ -35,3 +37,20 @@ async def publish_event(envelope: Envelope) -> None:
     from msgd.ws.hub import hub
 
     await hub.publish(envelope)
+
+
+async def publish_events(envelopes: Iterable[Envelope]) -> None:
+    """Fan a run of committed server-authored meta events over WS, in log order.
+
+    The server-authored ``emit_event`` sites (bot provisioning + grants in the
+    plugins router, invite-accept ``user.joined`` in auth, deactivation /
+    role-change in admin) persist inside the request transaction but — unlike the
+    ``store_event`` message path — did NOT fan out, so a connected client only
+    learned of the change on its next bootstrap (a new member / bot / role stayed
+    invisible until reload). Callers collect the ``emit_event`` envelopes and pass
+    them here AFTER ``db.commit()`` (mirroring ``store_event``'s emit→commit→publish
+    order) so the hub's per-send readability resolve sees the committed rows.
+    Delivery is a hint (§3.3) — the hub timeout-guards + isolates each socket.
+    """
+    for envelope in envelopes:
+        await publish_event(envelope)

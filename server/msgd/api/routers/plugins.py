@@ -57,6 +57,7 @@ from msgd.auth.bot_tokens import KNOWN_SCOPES, create_bot_token
 from msgd.auth.context import AuthContext
 from msgd.auth.sessions import mint_or_reuse_device, utcnow
 from msgd.auth.tokens import mint_token
+from msgd.core.envelope import Envelope
 from msgd.core.ids import new_user_id
 from msgd.core.payloads import (
     build_bot_installed_body,
@@ -68,6 +69,7 @@ from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
 from msgd.db.models import BotToken, Device, Event, IncomingWebhook, Stream, StreamMember, User
 from msgd.events.emit import emit_event
+from msgd.events.fanout import publish_events
 from msgd.export.restore import UNUSABLE_PASSWORD_HASH
 
 router = APIRouter(prefix="/v1/plugins", tags=["plugins"])
@@ -262,7 +264,7 @@ async def create_bot(req: CreateBotRequest, ctx: PluginsAuth, db: DbSession) -> 
     meta_stream_id = await _meta_stream_id(db, ctx.workspace_id)
 
     # Steps 2–4 — the shared M5 provisioning path (also used by create_hook).
-    bot, _device = await _provision_bot_identity(
+    bot, _device, envelopes = await _provision_bot_identity(
         db,
         ctx=ctx,
         name=req.name,
@@ -272,6 +274,7 @@ async def create_bot(req: CreateBotRequest, ctx: PluginsAuth, db: DbSession) -> 
     )
 
     await db.commit()
+    await publish_events(envelopes)
     return await _bot_info(db, bot)
 
 
@@ -283,7 +286,7 @@ async def _provision_bot_identity(
     scopes: list[Scope],
     channels: list[Stream],
     meta_stream_id: str,
-) -> tuple[User, Device]:
+) -> tuple[User, Device, list[Envelope]]:
     """Steps 2–4 of bot provisioning (identity + meta events + grants), no commit.
 
     The ONE bot-creation path (ENG-159, reused verbatim by the ENG-161 hook
@@ -312,53 +315,61 @@ async def _provision_bot_identity(
     assert device is not None  # mint path (no device_id) never returns None
     await db.flush()
 
-    # Step 3 — the meta events.
+    # Step 3 — the meta events. Collect each envelope so the caller can fan them
+    # over WS after commit (else connected clients only learn the bot on reload).
     authored_at = now_rfc3339()
-    await emit_event(
-        db,
-        home_stream_id=meta_stream_id,
-        body=build_user_joined_body(
-            workspace_id=ctx.workspace_id,
-            stream_id=meta_stream_id,
-            author_user_id=bot_user_id,
-            author_device_id=device.device_id,
-            client_created_at=authored_at,
-            user_id=bot_user_id,
-            display_name=name,
-        ),
+    envelopes: list[Envelope] = []
+    envelopes.append(
+        await emit_event(
+            db,
+            home_stream_id=meta_stream_id,
+            body=build_user_joined_body(
+                workspace_id=ctx.workspace_id,
+                stream_id=meta_stream_id,
+                author_user_id=bot_user_id,
+                author_device_id=device.device_id,
+                client_created_at=authored_at,
+                user_id=bot_user_id,
+                display_name=name,
+            ),
+        )
     )
-    await emit_event(
-        db,
-        home_stream_id=meta_stream_id,
-        body=build_bot_installed_body(
-            workspace_id=ctx.workspace_id,
-            stream_id=meta_stream_id,
-            author_user_id=ctx.user_id,
-            author_device_id=ctx.device_id,
-            client_created_at=authored_at,
-            bot_user_id=bot_user_id,
-            name=name,
-            scopes=list(scopes),
-        ),
+    envelopes.append(
+        await emit_event(
+            db,
+            home_stream_id=meta_stream_id,
+            body=build_bot_installed_body(
+                workspace_id=ctx.workspace_id,
+                stream_id=meta_stream_id,
+                author_user_id=ctx.user_id,
+                author_device_id=ctx.device_id,
+                client_created_at=authored_at,
+                bot_user_id=bot_user_id,
+                name=name,
+                scopes=list(scopes),
+            ),
+        )
     )
 
     # Step 4 — event-sourced grants (§2.2 homing per channel visibility).
     for channel in channels:
-        await emit_event(
-            db,
-            home_stream_id=_membership_home(channel, meta_stream_id),
-            body=build_channel_member_added_body(
-                workspace_id=ctx.workspace_id,
-                stream_id=_membership_home(channel, meta_stream_id),
-                author_user_id=ctx.user_id,
-                author_device_id=ctx.device_id,
-                client_created_at=now_rfc3339(),
-                channel_stream_id=channel.stream_id,
-                user_id=bot_user_id,
-            ),
+        envelopes.append(
+            await emit_event(
+                db,
+                home_stream_id=_membership_home(channel, meta_stream_id),
+                body=build_channel_member_added_body(
+                    workspace_id=ctx.workspace_id,
+                    stream_id=_membership_home(channel, meta_stream_id),
+                    author_user_id=ctx.user_id,
+                    author_device_id=ctx.device_id,
+                    client_created_at=now_rfc3339(),
+                    channel_stream_id=channel.stream_id,
+                    user_id=bot_user_id,
+                ),
+            )
         )
 
-    return bot, device
+    return bot, device, envelopes
 
 
 @router.get("/bots", response_model=BotListResponse)
@@ -469,7 +480,7 @@ async def grant_bot_stream(
     channel = await _resolve_channel(db, ctx=ctx, stream_id=stream_id)
     meta_stream_id = await _meta_stream_id(db, ctx.workspace_id)
     home = _membership_home(channel, meta_stream_id)
-    await emit_event(
+    envelope = await emit_event(
         db,
         home_stream_id=home,
         body=build_channel_member_added_body(
@@ -483,6 +494,7 @@ async def grant_bot_stream(
         ),
     )
     await db.commit()
+    await publish_events([envelope])
 
 
 @router.delete("/bots/{bot_user_id}/streams/{stream_id}", status_code=204)
@@ -499,7 +511,7 @@ async def revoke_bot_stream(
     channel = await _resolve_channel(db, ctx=ctx, stream_id=stream_id)
     meta_stream_id = await _meta_stream_id(db, ctx.workspace_id)
     home = _membership_home(channel, meta_stream_id)
-    await emit_event(
+    envelope = await emit_event(
         db,
         home_stream_id=home,
         body=build_channel_member_removed_body(
@@ -513,6 +525,7 @@ async def revoke_bot_stream(
         ),
     )
     await db.commit()
+    await publish_events([envelope])
 
 
 # --- incoming webhooks (ENG-161, M5-2) -----------------------------------------
@@ -546,6 +559,10 @@ async def create_hook(
     channel = await _resolve_channel(db, ctx=ctx, stream_id=req.stream_id)
     meta_stream_id = await _meta_stream_id(db, ctx.workspace_id)
 
+    # Collect every emitted meta envelope to fan over WS after commit (else a
+    # connected client shows the hook's message author as a raw user id until it
+    # reloads, and a live channel grant does not move membership).
+    envelopes: list[Envelope] = []
     if req.bot_user_id is not None:
         bot = await _load_bot(db, ctx=ctx, bot_user_id=req.bot_user_id)
         if bot.deactivated_at is not None:
@@ -553,23 +570,25 @@ async def create_hook(
         member = await db.get(StreamMember, (channel.stream_id, bot.user_id))
         if member is None:
             home = _membership_home(channel, meta_stream_id)
-            await emit_event(
-                db,
-                home_stream_id=home,
-                body=build_channel_member_added_body(
-                    workspace_id=ctx.workspace_id,
-                    stream_id=home,
-                    author_user_id=ctx.user_id,
-                    author_device_id=ctx.device_id,
-                    client_created_at=now_rfc3339(),
-                    channel_stream_id=channel.stream_id,
-                    user_id=bot.user_id,
-                ),
+            envelopes.append(
+                await emit_event(
+                    db,
+                    home_stream_id=home,
+                    body=build_channel_member_added_body(
+                        workspace_id=ctx.workspace_id,
+                        stream_id=home,
+                        author_user_id=ctx.user_id,
+                        author_device_id=ctx.device_id,
+                        client_created_at=now_rfc3339(),
+                        channel_stream_id=channel.stream_id,
+                        user_id=bot.user_id,
+                    ),
+                )
             )
     else:
         # Auto-provision: a dedicated bot named for the hook, whose only verb
         # is writing events (a hook never reads anything).
-        bot, _device = await _provision_bot_identity(
+        bot, _device, envelopes = await _provision_bot_identity(
             db,
             ctx=ctx,
             name=req.name,
@@ -590,6 +609,7 @@ async def create_hook(
     )
     db.add(hook)
     await db.commit()
+    await publish_events(envelopes)
 
     # Base-URL derivation mirrors create_invite (incl. the ENG-154 caveat).
     host = request.headers.get("host") or (

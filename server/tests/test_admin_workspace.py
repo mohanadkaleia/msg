@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from authutil import (
     accept_invite,
     auth_header,
@@ -188,6 +189,34 @@ async def test_patch_emits_exactly_one_workspace_updated(
     body = event.body
     assert body["author_user_id"] == owner["user_id"]
     assert body["payload"] == {"name": "Acme Corp"}  # description ABSENT, not null
+
+
+async def test_patch_fans_workspace_updated_over_ws(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workspace rename PUBLISHES ``workspace.updated`` over WS.
+
+    Regression: the rename was committed but never fanned, so a connected
+    member's switcher/header kept the old name until reload. Patch the shared
+    fanout seam `publish_events` loops over.
+    """
+    import msgd.events.fanout as fanout_module
+
+    published: list[Any] = []
+
+    async def spy(envelope: Any) -> None:
+        published.append(envelope)
+
+    monkeypatch.setattr(fanout_module, "publish_event", spy)
+
+    owner = await do_setup(client)
+    resp = await client.patch(
+        "/v1/admin/workspace", json={"name": "Acme Corp"}, headers=auth_header(owner["token"])
+    )
+    assert resp.status_code == 200
+    updated = [e for e in published if e.body.type == "workspace.updated"]
+    assert len(updated) == 1
+    assert updated[0].body.payload == {"name": "Acme Corp"}
 
 
 async def test_patch_description_only_event_omits_the_name(
