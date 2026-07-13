@@ -170,9 +170,7 @@ async def test_create_hook_fans_bot_meta_events_over_ws(
     bot_id = hook["bot_user_id"]
 
     joined = [
-        e
-        for e in published
-        if e.body.type == "user.joined" and e.body.payload["user_id"] == bot_id
+        e for e in published if e.body.type == "user.joined" and e.body.payload["user_id"] == bot_id
     ]
     assert len(joined) == 1
     # The display name a client folds into its directory to resolve the author.
