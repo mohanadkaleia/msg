@@ -354,9 +354,9 @@ async def test_deactivate_bot_fans_bot_removed_over_ws(
     """
     import msgd.events.fanout as fanout_module
 
-    published: list[object] = []
+    published: list[Any] = []
 
-    async def spy(envelope: object) -> None:
+    async def spy(envelope: Any) -> None:
         published.append(envelope)
 
     monkeypatch.setattr(fanout_module, "publish_event", spy)

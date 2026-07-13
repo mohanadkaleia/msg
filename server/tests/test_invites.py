@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import re
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from authutil import (
@@ -63,9 +64,9 @@ async def test_accept_invite_fans_user_joined_over_ws(
     """
     import msgd.events.fanout as fanout_module
 
-    published: list[object] = []
+    published: list[Any] = []
 
-    async def spy(envelope: object) -> None:
+    async def spy(envelope: Any) -> None:
         published.append(envelope)
 
     monkeypatch.setattr(fanout_module, "publish_event", spy)
