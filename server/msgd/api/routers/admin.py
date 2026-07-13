@@ -39,11 +39,13 @@ from msgd.api.schemas.auth import CreateInviteRequest, InviteResponse
 from msgd.auth.context import AuthContext
 from msgd.auth.sessions import utcnow
 from msgd.auth.tokens import mint_token
+from msgd.core.envelope import Envelope
 from msgd.core.payloads import build_bot_removed_body, build_workspace_updated_body
 from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
 from msgd.db.models import BotToken, Invite, Session, Stream, User, Workspace
 from msgd.events.emit import emit_event
+from msgd.events.fanout import publish_events
 from msgd.ws.frames import WSCloseCode
 
 logger = logging.getLogger("msgd.admin")
@@ -260,6 +262,9 @@ async def update_member(
     # re-deactivate of an already-inactive user re-emits no bot.removed AND fires
     # no spurious WS close-signal below.
     deactivated_now = False
+    # Any server-authored meta event emitted here (a bot.removed) is fanned over
+    # WS after commit so connected admins see the removal live, not on reload.
+    meta_envelopes: list[Envelope] = []
     if req.active is not None:
         if req.active:
             target.deactivated_at = None
@@ -285,21 +290,24 @@ async def update_member(
                         )
                     )
                     assert meta_stream_id is not None  # setup always creates it
-                    await emit_event(
-                        db,
-                        home_stream_id=meta_stream_id,
-                        body=build_bot_removed_body(
-                            workspace_id=ctx.workspace_id,
-                            stream_id=meta_stream_id,
-                            author_user_id=ctx.user_id,
-                            author_device_id=ctx.device_id,
-                            client_created_at=now_rfc3339(),
-                            bot_user_id=target.user_id,
-                        ),
+                    meta_envelopes.append(
+                        await emit_event(
+                            db,
+                            home_stream_id=meta_stream_id,
+                            body=build_bot_removed_body(
+                                workspace_id=ctx.workspace_id,
+                                stream_id=meta_stream_id,
+                                author_user_id=ctx.user_id,
+                                author_device_id=ctx.device_id,
+                                client_created_at=now_rfc3339(),
+                                bot_user_id=target.user_id,
+                            ),
+                        )
                     )
 
     target_user_id = target.user_id
     await db.commit()
+    await publish_events(meta_envelopes)
 
     if deactivated_now:
         # ENG-153: force-close the deactivated user's already-open WS sockets —
@@ -399,7 +407,7 @@ async def update_workspace(
         )
     )
     assert meta_stream_id is not None
-    await emit_event(
+    envelope = await emit_event(
         db,
         home_stream_id=meta_stream_id,
         body=build_workspace_updated_body(
@@ -414,6 +422,9 @@ async def update_workspace(
     )
 
     await db.commit()
+    # Fan the rename/description change so every connected member's workspace
+    # header + directory fold updates live, not on reload.
+    await publish_events([envelope])
     return workspace_info_response(ws)
 
 

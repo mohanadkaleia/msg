@@ -7,6 +7,7 @@ import hashlib
 import re
 from datetime import timedelta
 
+import pytest
 from authutil import (
     accept_invite,
     auth_header,
@@ -48,6 +49,45 @@ async def test_accept_creates_user_and_autologin(client: AsyncClient) -> None:
     # The minted token authenticates.
     me = await client.get("/v1/auth/sessions", headers=auth_header(body["token"]))
     assert me.status_code == 200
+
+
+async def test_accept_invite_fans_user_joined_over_ws(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepting an invite PUBLISHES the newcomer's user.joined (+ #general grant).
+
+    Regression: these server-authored meta events were committed but never fanned,
+    so an already-connected member did not see the new teammate in their directory
+    / @mention roster until they reloaded. Patch the shared fanout seam that
+    `publish_events` loops over.
+    """
+    import msgd.events.fanout as fanout_module
+
+    published: list[object] = []
+
+    async def spy(envelope: object) -> None:
+        published.append(envelope)
+
+    monkeypatch.setattr(fanout_module, "publish_event", spy)
+
+    owner_token = (await do_setup(client))["token"]
+    invite = await create_invite(client, owner_token, role="member")
+    raw = join_token(invite.json()["url"])
+    accepted = await accept_invite(client, raw, email="joiner@example.com")
+    new_user_id = accepted.json()["user_id"]
+
+    joined = [
+        e
+        for e in published
+        if e.body.type == "user.joined" and e.body.payload["user_id"] == new_user_id
+    ]
+    assert len(joined) == 1
+    assert joined[0].body.payload["display_name"]
+    # The ENG-112 auto-join to #general is fanned too (membership moves live).
+    assert any(
+        e.body.type == "channel.member_added" and e.body.payload["user_id"] == new_user_id
+        for e in published
+    )
 
 
 async def test_member_cannot_create_invite(client: AsyncClient) -> None:

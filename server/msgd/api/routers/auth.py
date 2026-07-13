@@ -39,6 +39,7 @@ from msgd.auth.sessions import (
     utcnow,
 )
 from msgd.auth.tokens import hash_token
+from msgd.core.envelope import Envelope
 from msgd.core.ids import new_stream_id, new_user_id, new_workspace_id
 from msgd.core.payloads import (
     build_channel_created_body,
@@ -50,6 +51,7 @@ from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
 from msgd.db.models import Device, Invite, Stream, User, Workspace
 from msgd.events.emit import emit_event
+from msgd.events.fanout import publish_events
 from msgd.ws.frames import WSCloseCode
 
 logger = logging.getLogger("msgd.auth")
@@ -368,18 +370,25 @@ async def accept_invite(
         )
     )
     assert meta_stream_id is not None  # setup always creates the meta stream
-    await emit_event(
-        db,
-        home_stream_id=meta_stream_id,
-        body=build_user_joined_body(
-            workspace_id=invite.workspace_id,
-            stream_id=meta_stream_id,
-            author_user_id=new_user_ident,
-            author_device_id=device.device_id,
-            client_created_at=now_rfc3339(),
-            user_id=new_user_ident,
-            display_name=req.display_name,
-        ),
+    # Collect the server-authored meta events so they fan over WS after commit:
+    # a new member's `user.joined` (+ their #general grant) must reach already-
+    # connected members live, else the newcomer is absent from every open
+    # client's directory/@mention/roster until it reloads.
+    envelopes: list[Envelope] = []
+    envelopes.append(
+        await emit_event(
+            db,
+            home_stream_id=meta_stream_id,
+            body=build_user_joined_body(
+                workspace_id=invite.workspace_id,
+                stream_id=meta_stream_id,
+                author_user_id=new_user_ident,
+                author_device_id=device.device_id,
+                client_created_at=now_rfc3339(),
+                user_id=new_user_ident,
+                display_name=req.display_name,
+            ),
+        )
     )
 
     # ENG-112: auto-join the invitee to the workspace's default #general channel so
@@ -415,20 +424,26 @@ async def accept_invite(
         else None
     )
     if default_channel_stream_id is not None:
-        await emit_event(
-            db,
-            home_stream_id=meta_stream_id,
-            body=build_channel_member_added_body(
-                workspace_id=invite.workspace_id,
-                stream_id=meta_stream_id,
-                author_user_id=new_user_ident,
-                author_device_id=device.device_id,
-                client_created_at=now_rfc3339(),
-                channel_stream_id=default_channel_stream_id,
-                user_id=new_user_ident,
-            ),
+        envelopes.append(
+            await emit_event(
+                db,
+                home_stream_id=meta_stream_id,
+                body=build_channel_member_added_body(
+                    workspace_id=invite.workspace_id,
+                    stream_id=meta_stream_id,
+                    author_user_id=new_user_ident,
+                    author_device_id=device.device_id,
+                    client_created_at=now_rfc3339(),
+                    channel_stream_id=default_channel_stream_id,
+                    user_id=new_user_ident,
+                ),
+            )
         )
 
     user = await db.get(User, new_user_ident)
     assert user is not None
-    return await _login_response(db, user=user, device=device, settings=settings)
+    # `_login_response` commits; fan the meta events AFTER so the hub's per-send
+    # readability resolve sees the newcomer's committed membership.
+    response = await _login_response(db, user=user, device=device, settings=settings)
+    await publish_events(envelopes)
+    return response

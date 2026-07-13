@@ -25,6 +25,7 @@ import io
 import logging
 from typing import Any
 
+import pytest
 from authutil import (
     accept_invite,
     auth_header,
@@ -140,6 +141,50 @@ async def _archive_channel(
 
 
 # --- happy path -------------------------------------------------------------------
+
+
+async def test_create_hook_fans_bot_meta_events_over_ws(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Creating a hook PUBLISHES the auto-provisioned bot's meta events over WS.
+
+    Regression: the bot's ``user.joined`` (carrying its ``display_name``) +
+    ``bot.installed`` + the channel grant were committed but never fanned, so a
+    connected client only learned the bot on its next bootstrap — the webhook
+    message rendered live but its author showed as a raw user id until reload.
+    The post-commit publish must reach a connected client, so patch the shared
+    fanout seam (`publish_events` loops over this per-envelope call).
+    """
+    import msgd.events.fanout as fanout_module
+
+    published: list[Any] = []
+
+    async def spy(envelope: Any) -> None:
+        published.append(envelope)
+
+    monkeypatch.setattr(fanout_module, "publish_event", spy)
+
+    owner = await do_setup(client)
+    channel = await bootstrap_channel(client, db_session, owner)
+    hook = await _hook(client, owner["token"], stream_id=channel, name="Deploy Bot")
+    bot_id = hook["bot_user_id"]
+
+    joined = [
+        e
+        for e in published
+        if e.body.type == "user.joined" and e.body.payload["user_id"] == bot_id
+    ]
+    assert len(joined) == 1
+    # The display name a client folds into its directory to resolve the author.
+    assert joined[0].body.payload["display_name"] == "Deploy Bot"
+    assert any(
+        e.body.type == "bot.installed" and e.body.payload["bot_user_id"] == bot_id
+        for e in published
+    )
+    assert any(
+        e.body.type == "channel.member_added" and e.body.payload["user_id"] == bot_id
+        for e in published
+    )
 
 
 async def test_text_delivery_stores_bot_authored_plain_message(
