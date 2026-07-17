@@ -221,6 +221,66 @@ jobs:
         working-directory: web
         run: pnpm build
 
+  # Rust desktop host (ENG-170, M6-5): fmt + clippy + the cargo test suite for
+  # the Tauri host commands (SqlDriver/EventLog/BlobCache/ManifestStore/
+  # SecretStore behind the M6 seams). A standalone crate (no root Cargo
+  # workspace), so this job is fully additive — the uv/pnpm jobs never see it.
+  # macOS is the shipping target; ubuntu proves the crate stays portable (and
+  # is where the keychain-less file-fallback path matters). No `tauri build`
+  # here: bundling needs the built SPA + signing and is the human-validated
+  # packaging step, not a CI unit signal.
+  rust:
+    name: desktop · fmt · clippy · cargo test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # The tauri crate links the platform webview/GTK stack on Linux — these
+      # are the documented Tauri v2 build prerequisites for ubuntu runners.
+      - name: Install Tauri system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev
+        working-directory: .
+
+      # Runner images ship rustup; pin to the current stable with the two
+      # components the gates need (fmt + clippy).
+      - name: Set up stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal -c rustfmt -c clippy
+          rustup default stable
+        working-directory: .
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
   # Playwright golden paths (TDD §12/§13): the ENG-83 smoke (login → send → reload
   # → history intact → a SECOND browser sees the message live via WS fanout) AND
   # the ENG-105 messaging-core golden path (react → edit → delete → thread reply →

@@ -193,6 +193,14 @@ export interface WorkerCoreOptions {
   /** Override the API base URL (default '' → relative same-origin paths). */
   baseUrl?: string
   /**
+   * M6-5 (ENG-170): override the WS endpoint. The desktop shell serves the
+   * SPA from `tauri://`, so the default location-derived same-origin
+   * `deriveWsUrl()` cannot work there — the Tauri boot passes the ws(s) URL
+   * derived from the configured server URL. Web transports pass nothing
+   * (same-origin behavior unchanged).
+   */
+  wsUrl?: string
+  /**
    * ENG-80's projection build, injected into the sync engine (§3). Default
    * (ENG-81 FOLD-IN): the REAL `applyEventsToProjection` bound to this core's db,
    * so `new WorkerCore(db, sink)` (all three transport entry points) lands live
@@ -304,6 +312,8 @@ export class WorkerCore {
       wsFactory: options.wsFactory ?? browserWsFactory,
       db,
       getToken: () => this.auth.getToken(),
+      // M6-5 (ENG-170): explicit WS endpoint for the tauri:// desktop shell.
+      ...(options.wsUrl ? { wsUrl: options.wsUrl } : {}),
       // M6-3 (ENG-167): full-mirror + on-disk NDJSON mirror, desktop-only knobs.
       fullMirror: this.fullMirror,
       ...(this.mirror ? { mirror: this.mirror } : {}),

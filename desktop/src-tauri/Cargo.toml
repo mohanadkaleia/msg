@@ -1,0 +1,47 @@
+# desktop/src-tauri — the Tauri v2 host for the msg desktop shell (ENG-170, M6-5).
+#
+# STANDALONE crate (no root Cargo workspace on purpose: the repo's uv/pnpm
+# tooling must never see it). The Rust here provides the host commands behind
+# the M6-1..4 seams — SqlDriver / EventLog / BlobCache / ManifestStore /
+# SecretStore — that the TS drivers in web/src/worker/tauri/ invoke.
+
+[package]
+name = "msg-desktop"
+version = "0.1.0"
+description = "msg desktop shell (Tauri v2)"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# plugin-http: the webview fetch replacement (bypasses tauri:// CORS for /v1).
+tauri-plugin-http = "2"
+# plugin-dialog: the onboarding workspace-folder picker.
+tauri-plugin-dialog = "2"
+# plugin-websocket: the documented FALLBACK WS transport (Rust-side socket)
+# should the webview refuse a raw `new WebSocket()` from the tauri:// origin.
+tauri-plugin-websocket = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# bundled → we compile our own modern SQLite (FTS5 included) rather than
+# trusting a system lib; modern_full → the modern API surface. This is the
+# guarantee behind SqliteDb's `messages_fts` virtual table (M6-2).
+rusqlite = { version = "0.32", features = ["bundled", "modern-full"] }
+# Content re-verification for blob_put (the store must stay verify-green).
+sha2 = "0.10"
+# The OS keychain behind the SecretStore seam (M6-4): the session token's
+# at-rest home, NEVER the workspace folder. Native backends only (no dbus dep
+# on Linux CI); a 0600 app-data file is the documented fallback.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Tauri convention: `tauri build` enables custom-protocol (embeds web/dist);
+# debug builds (`cargo test`, `tauri dev`) use devUrl and need no dist.
+custom-protocol = ["tauri/custom-protocol"]

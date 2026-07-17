@@ -21,6 +21,10 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-http": "^2.5.9",
+    "@tauri-apps/plugin-websocket": "^2.4.2",
     "@tiptap/core": "2.27.2",
     "@tiptap/extension-mention": "2.27.2",
     "@tiptap/pm": "2.27.2",

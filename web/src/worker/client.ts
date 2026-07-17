@@ -5,10 +5,11 @@
 // `makeWorkerClient` and `detectTransportKind` are exported so the transport
 // selection and the client surface are unit-testable without a browser.
 
-import { WorkerCore } from './core'
+import { WorkerCore, type WorkerCoreOptions } from './core'
 import { openDb } from './db'
 import { createLeaderTransport } from './leader'
 import { createRpcCaller } from './rpc'
+import { isTauri } from './tauri/detect'
 import {
   type AcceptInviteCredentials,
   type AdminInviteCreateParams,
@@ -78,14 +79,20 @@ export interface WorkerEnv {
   hasSharedWorker: boolean
   hasLocks: boolean
   hasBroadcastChannel: boolean
+  /** M6-5 (ENG-170): running inside the Tauri desktop shell. */
+  hasTauri?: boolean
 }
 
 /**
- * Choose the transport: SharedWorker if present; else a Web Locks leader if
- * both locks and BroadcastChannel exist; else a degenerate single-tab `solo`
- * (no cross-tab coherence — acceptable long tail, risk 7).
+ * Choose the transport: the Tauri desktop shell (M6-5) is a single-window app
+ * and always runs the in-page `solo` core (over the desktop trim — SqliteDb +
+ * full mirror + keychain SecretStore, wired by createWorkerClient); else
+ * SharedWorker if present; else a Web Locks leader if both locks and
+ * BroadcastChannel exist; else a degenerate single-tab `solo` (no cross-tab
+ * coherence — acceptable long tail, risk 7).
  */
 export function detectTransportKind(env: WorkerEnv): WorkerStatus['transport'] {
+  if (env.hasTauri) return 'solo'
   if (env.hasSharedWorker) return 'shared-worker'
   if (env.hasLocks && env.hasBroadcastChannel) return 'leader'
   return 'solo'
@@ -96,6 +103,7 @@ function currentEnv(): WorkerEnv {
     hasSharedWorker: typeof SharedWorker !== 'undefined',
     hasLocks: typeof navigator !== 'undefined' && 'locks' in navigator && navigator.locks != null,
     hasBroadcastChannel: typeof BroadcastChannel !== 'undefined',
+    hasTauri: isTauri(),
   }
 }
 
@@ -393,16 +401,30 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
 // Transports.
 // ---------------------------------------------------------------------------
 
+/** Optional solo-transport knobs (M6-5: the Tauri desktop passes both). */
+export interface SoloTransportOptions {
+  /** WorkerCore construction knobs (desktop trim: full mirror, seams, URLs). */
+  core?: WorkerCoreOptions
+  /** Observe the constructed core (connectivity-edge wiring) before init. */
+  onCore?: (core: WorkerCore) => void
+}
+
 /** Degenerate single-tab transport: WorkerCore in-page, no election, no channel. */
 export async function createSoloTransport(
   clientId: string,
   openDbFn: () => Promise<MsgDb>,
+  options: SoloTransportOptions = {},
 ): Promise<Transport> {
   const db = await openDbFn()
   let frameHandler: ((f: FromWorker) => void) | undefined
-  const core = new WorkerCore(db, (targetClientId, msg) => {
-    if (targetClientId === clientId) frameHandler?.(msg)
-  })
+  const core = new WorkerCore(
+    db,
+    (targetClientId, msg) => {
+      if (targetClientId === clientId) frameHandler?.(msg)
+    },
+    options.core ?? {},
+  )
+  options.onCore?.(core)
   await core.init()
   void core.handle(clientId, { t: 'hello', clientId })
   const status: WorkerStatus = { transport: 'solo', db: db.persistence, role: 'n/a' }
@@ -483,8 +505,35 @@ export async function createWorkerClient(
 ): Promise<WorkerClient> {
   const env = options.env ?? currentEnv()
   const clientId = options.clientId ?? crypto.randomUUID()
-  const openDbFn = options.openDb ?? (() => openDb())
+  let openDbFn = options.openDb ?? (() => openDb())
   const kind = detectTransportKind(env)
+
+  // M6-5 (ENG-170): the Tauri desktop trim. Lazily imported strictly behind
+  // the runtime check, so the web bundle's entry graph never pulls Tauri.
+  // A `null` boot means first run (no desktop config yet): fall through to
+  // the plain browser-storage solo core — the router shows the onboarding
+  // view, which persists the config and reloads the window.
+  let soloOptions: SoloTransportOptions = {}
+  if (kind === 'solo' && env.hasTauri === true && !options.openDb) {
+    const { createTauriBoot } = await import('./tauri/boot')
+    const boot = await createTauriBoot()
+    if (boot) {
+      openDbFn = boot.openDb
+      soloOptions = {
+        core: boot.coreOptions,
+        // Connectivity edges: the desktop host owns the core, so it wires the
+        // window's online/offline events to the sync engine (M6-4 semantics).
+        onCore: (core) => {
+          window.addEventListener('online', () => {
+            core.notifyOnline()
+          })
+          window.addEventListener('offline', () => {
+            core.notifyOffline()
+          })
+        },
+      }
+    }
+  }
 
   let transport: Transport
   switch (kind) {
@@ -501,7 +550,7 @@ export async function createWorkerClient(
       })
       break
     case 'solo':
-      transport = await createSoloTransport(clientId, openDbFn)
+      transport = await createSoloTransport(clientId, openDbFn, soloOptions)
       break
   }
 

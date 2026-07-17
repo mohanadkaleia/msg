@@ -801,7 +801,16 @@ export class SqliteDb implements MsgDb {
 export async function openSqliteDb(driverOrPath: SqlDriver | string): Promise<SqliteDb> {
   let driver: SqlDriver
   if (typeof driverOrPath === 'string') {
-    const { NodeSqlDriver } = await import('./node-driver')
+    // M6-5: this module is now reachable from the (lazy) Tauri boot chunk, so
+    // the Node-only branch must stay INVISIBLE to the bundler: a variable
+    // specifier (+ @vite-ignore) is non-analyzable, keeping better-sqlite3 (a
+    // native module) out of every emitted chunk. The string-path branch runs
+    // only under Node (vitest / headless CI), where the runtime dynamic
+    // import resolves normally.
+    const nodeDriverModule = './node-driver'
+    const { NodeSqlDriver } = (await import(
+      /* @vite-ignore */ nodeDriverModule
+    )) as typeof import('./node-driver')
     driver = new NodeSqlDriver(driverOrPath)
   } else {
     driver = driverOrPath
