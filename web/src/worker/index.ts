@@ -96,6 +96,22 @@ export {
   type AdminWorkspace,
   type AdminWorkspaceUpdateParams,
   type WorkspaceInfoResult,
+  // ENG-176 plugins (bots + incoming webhooks — the Apps UI reads these;
+  // worker-authed; the mint/create results carry the one-time secrets).
+  type PluginScope,
+  type PluginBot,
+  type PluginBotToken,
+  type PluginBotsResult,
+  type PluginBotCreateParams,
+  type PluginTokenMintParams,
+  type PluginTokenMintResult,
+  type PluginTokenRevokeParams,
+  type PluginStreamGrantParams,
+  type PluginActionResult,
+  type PluginHook,
+  type PluginHooksResult,
+  type PluginHookCreateParams,
+  type PluginHookCreateResult,
   // Self-profile (`/v1/me`) — the Profile UI reads these; worker-authed.
   type MeProfile,
   type MeUpdateParams,

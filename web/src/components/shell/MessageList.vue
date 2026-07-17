@@ -2,14 +2,31 @@
 // MessageList — the virtualized/windowed message scroller (ENG-82).
 //
 // VIRTUALIZATION (required, §14): only the visible window + a small overscan is
-// rendered, so a channel with tens of thousands of messages stays smooth. Items
-// (day dividers + messages) are laid out at a fixed estimated row height; top/
-// bottom spacer padding stands in for the off-screen rows. DAY DIVIDERS are
+// rendered, so a channel with tens of thousands of messages stays smooth. Top/
+// bottom spacer padding stands in for the off-screen rows.
+//
+// DYNAMIC ROW HEIGHT (ENG-88): rows are NOT a fixed height — a wrapped long
+// message, a failed-row retry/delete affordance, attachments, and ~28px day
+// dividers all differ. Each rendered row is MEASURED (a ResizeObserver catches
+// late layout: images loading, edits, reactions) into a `key → height` cache;
+// a cumulative-offset prefix-sum over the cache drives the window + spacer pads
+// via binary search. Unmeasured rows (never yet on screen) and environments
+// without layout/ResizeObserver (jsdom) fall back to the `rowHeight` estimate,
+// so the fixed-height behavior is exactly the estimate case. DAY DIVIDERS are
 // inserted at local-calendar-day boundaries (time recovered from the ULID id).
 // SCROLL-TOP BACKFILL: nearing the top calls `loadOlder()` (which runs the ENG-79
 // `sync.backfill` pull + prepend); scroll position is preserved by re-anchoring
-// scrollTop to the height the prepended page added.
-import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+// scrollTop to the REAL `scrollHeight` delta the prepended page added (never the
+// estimate), so backfill re-anchoring is unaffected by measurement.
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onBeforeUnmount,
+  ref,
+  watch,
+  type ComponentPublicInstance,
+} from 'vue'
 
 import type { DisplayMessage } from '../../stores/messages'
 import { dayKey, formatDayDivider } from '../../lib/time'
@@ -19,7 +36,7 @@ const props = withDefaults(
   defineProps<{
     messages: DisplayMessage[]
     hasMore?: boolean
-    /** Estimated row height (px) for the windowing math. */
+    /** Estimated row height (px) — the fallback for rows not yet measured. */
     rowHeight?: number
     /** Extra rows rendered above/below the viewport to hide fast-scroll gaps. */
     overscan?: number
@@ -90,6 +107,84 @@ let atBottom = true
 let prepending = false
 let loadingOlder = false
 
+// -- dynamic row heights (ENG-88) -------------------------------------------
+//
+// `heights` caches each row's REAL vertical footprint (border-box height + its
+// top margin — rows carry only top margins, so summing them never double-counts
+// a collapsed margin). It is a plain (non-reactive) Map; `heightVersion` is the
+// single reactive trigger, bumped once per animation frame after a measurement
+// changes, so the offset/window computeds recompute without per-row reactivity.
+const heights = new Map<string, number>()
+const heightVersion = ref(0)
+/** element → its row key, for the ResizeObserver callback (mount/unmount safe). */
+const elToKey = new WeakMap<Element, string>()
+/** row key → its live element, so unmount can `unobserve` the exact node. */
+const keyToEl = new Map<string, Element>()
+let ro: ResizeObserver | undefined
+let bumpQueued = false
+
+function resolveEl(r: Element | ComponentPublicInstance | null): Element | null {
+  if (r === null) return null
+  if (r instanceof Element) return r
+  const el: unknown = r.$el // a component ref → its (single) root element
+  return el instanceof Element ? el : null
+}
+
+/** A row's total vertical space: border-box height + its (top-only) margin. */
+function measureRow(el: Element): number {
+  const rect = el.getBoundingClientRect()
+  const mt = parseFloat(getComputedStyle(el).marginTop) || 0
+  return rect.height + mt
+}
+
+/** Record a measured height; schedule ONE coalesced recompute if it changed. */
+function applyMeasure(key: string, h: number): void {
+  if (h <= 0 || heights.get(key) === h) return // 0 = no layout (jsdom) → keep estimate
+  heights.set(key, h)
+  if (bumpQueued || typeof requestAnimationFrame === 'undefined') {
+    if (!bumpQueued) heightVersion.value++ // no rAF (SSR) → bump inline
+    return
+  }
+  bumpQueued = true
+  requestAnimationFrame(() => {
+    bumpQueued = false
+    heightVersion.value++
+    // Keep the tail pinned while heights settle from estimate → real (opening a
+    // channel measures its newest rows just after the initial scroll-to-bottom).
+    if (atBottom && !prepending && !loadingOlder) scrollToBottom()
+  })
+}
+
+/** v-for row ref: (un)observe + measure. Vue calls with the element on mount and
+ *  `null` (via the same key-bound closure) on unmount. */
+function setRow(r: Element | ComponentPublicInstance | null, key: string): void {
+  const el = resolveEl(r)
+  if (el) {
+    keyToEl.set(key, el)
+    elToKey.set(el, key)
+    ro?.observe(el)
+    applyMeasure(key, measureRow(el)) // immediate: covers first paint + no-RO envs
+    return
+  }
+  const old = keyToEl.get(key)
+  if (old) {
+    ro?.unobserve(old)
+    keyToEl.delete(key)
+  }
+}
+
+/** First index `i` with `arr[i] >= x` (arr is ascending). */
+function lowerBound(arr: readonly number[], x: number): number {
+  let lo = 0
+  let hi = arr.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (arr[mid]! < x) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
 /**
  * Interleave day dividers (calendar-day boundaries), the "New" unread divider, and
  * messages — computing `showHeader` per message so consecutive messages from the
@@ -127,19 +222,39 @@ const items = computed<RenderItem[]>(() => {
 
 const viewport = computed(() => props.viewportHeight ?? (measuredHeight.value || 600))
 
+/** Prefix-sum of row heights: `offsets[i]` = the top of item `i` (bottom of the
+ *  list at `offsets[total]`). Uses the measured height per key, else the estimate.
+ *  Reads `heightVersion` so a new measurement re-derives the layout. */
+const offsets = computed<number[]>(() => {
+  void heightVersion.value
+  const its = items.value
+  const arr = new Array<number>(its.length + 1)
+  arr[0] = 0
+  for (let i = 0; i < its.length; i++) {
+    const h = heights.get(its[i]!.key)
+    arr[i + 1] = arr[i]! + (h && h > 0 ? h : props.rowHeight)
+  }
+  return arr
+})
+const totalHeight = computed(() => offsets.value[offsets.value.length - 1] ?? 0)
+
 const windowRange = computed(() => {
   const total = items.value.length
-  const perView = Math.ceil(viewport.value / props.rowHeight)
-  const start = Math.max(0, Math.floor(scrollTop.value / props.rowHeight) - props.overscan)
-  const end = Math.min(total, start + perView + props.overscan * 2)
-  return { start, end }
+  if (total === 0) return { start: 0, end: 0 }
+  const offs = offsets.value
+  const top = scrollTop.value
+  // start = the row containing `top` (last offset ≤ top), pulled back by overscan.
+  const start = Math.max(0, lowerBound(offs, top + 1) - 1 - props.overscan)
+  // end = the first row starting at/after the viewport bottom, plus overscan.
+  const end = Math.min(total, lowerBound(offs, top + viewport.value) + props.overscan)
+  return { start, end: Math.max(start, end) }
 })
 
 const visibleItems = computed(() =>
   items.value.slice(windowRange.value.start, windowRange.value.end),
 )
-const topPad = computed(() => windowRange.value.start * props.rowHeight)
-const bottomPad = computed(() => (items.value.length - windowRange.value.end) * props.rowHeight)
+const topPad = computed(() => offsets.value[windowRange.value.start] ?? 0)
+const bottomPad = computed(() => totalHeight.value - (offsets.value[windowRange.value.end] ?? 0))
 
 function measure(): void {
   if (scroller.value) measuredHeight.value = scroller.value.clientHeight
@@ -199,7 +314,7 @@ function scrollToMessage(messageId: string): boolean {
   if (el) {
     // Land the row mid-viewport via the windowing math, then let the real DOM
     // node fine-tune (jsdom lacks scrollIntoView — guarded).
-    el.scrollTop = Math.max(0, index * props.rowHeight - viewport.value / 2)
+    el.scrollTop = Math.max(0, (offsets.value[index] ?? 0) - viewport.value / 2)
     scrollTop.value = el.scrollTop
     atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < props.rowHeight
   }
@@ -217,10 +332,13 @@ function scrollToMessage(messageId: string): boolean {
 
 defineExpose({ scrollToMessage })
 
-// Stream change → jump to the newest message.
+// Stream change → drop the measurement cache (a different channel's rows) and
+// jump to the newest message.
 watch(
   () => props.streamKey,
   () => {
+    heights.clear()
+    heightVersion.value++
     void nextTick(scrollToBottom)
   },
 )
@@ -239,12 +357,25 @@ watch(
 )
 
 onMounted(() => {
+  // Dynamic row heights (ENG-88): one observer for all rows — an entry fires on
+  // observe and whenever a row's box changes (image load, edit, reactions). Absent
+  // in jsdom → measurement is skipped and the estimate stands (tests unaffected).
+  if (typeof ResizeObserver !== 'undefined') {
+    ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const key = elToKey.get(entry.target)
+        if (key !== undefined) applyMeasure(key, measureRow(entry.target))
+      }
+    })
+  }
   measure()
   scrollToBottom()
   window.addEventListener('resize', measure)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', measure)
+  ro?.disconnect()
+  ro = undefined
   if (flashTimer !== undefined) clearTimeout(flashTimer)
 })
 </script>
@@ -260,7 +391,8 @@ onBeforeUnmount(() => {
       <template v-for="item in visibleItems" :key="item.key">
         <div
           v-if="item.type === 'divider'"
-          class="sticky top-0 z-10 my-2 flex items-center justify-center"
+          :ref="(r) => setRow(r as Element | ComponentPublicInstance | null, item.key)"
+          class="sticky top-0 z-10 mt-2 flex items-center justify-center"
           data-testid="day-divider"
         >
           <span
@@ -272,7 +404,12 @@ onBeforeUnmount(() => {
         <!-- INTERIM "New" unread divider (ENG-136): a rule with a right-aligned
              accent "New" label. Placement is approximate until a readState.get RPC
              lands (see the `unreadCount` prop note). -->
-        <div v-else-if="item.type === 'new'" class="relative my-2" data-testid="new-divider">
+        <div
+          v-else-if="item.type === 'new'"
+          :ref="(r) => setRow(r as Element | ComponentPublicInstance | null, item.key)"
+          class="relative mt-2"
+          data-testid="new-divider"
+        >
           <hr class="border-subtle" />
           <span
             class="absolute -top-2 right-4 bg-background px-2 text-[11px] font-medium text-accent"
@@ -282,6 +419,7 @@ onBeforeUnmount(() => {
         </div>
         <MessageItem
           v-else
+          :ref="(r) => setRow(r as Element | ComponentPublicInstance | null, item.key)"
           :message="item.message"
           :show-header="item.showHeader"
           :names="props.names"

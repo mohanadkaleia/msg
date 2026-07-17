@@ -119,7 +119,7 @@ describe('useNotificationsStore (ENG-129)', () => {
     MockNotification.permission = 'default'
     MockNotification.instances = []
     MockNotification.requestPermission.mockClear()
-    document.title = 'msg'
+    document.title = 'Serin'
     setVisibility('visible')
   })
 
@@ -298,21 +298,21 @@ describe('useNotificationsStore (ENG-129)', () => {
 
   it('tab title carries the total unread count and resets at zero', async () => {
     await boot()
-    expect(document.title).toBe('msg')
+    expect(document.title).toBe('Serin')
 
     fake.deliver('s_general', { created_seq: 2, author_user_id: 'u_rana', text: 'one' })
     await flushPromises()
-    expect(document.title).toBe('(1) msg')
+    expect(document.title).toBe('(1) Serin')
 
     fake.deliver('s_dm', { created_seq: 2, author_user_id: 'u_rana', text: 'two' })
     await flushPromises()
-    expect(document.title).toBe('(2) msg')
+    expect(document.title).toBe('(2) Serin')
 
     // Read-state cleared (badges re-derive to zero) → the plain title returns.
     fake.setBadge('s_general', { unread: 0 })
     fake.setBadge('s_dm', { unread: 0 })
     await flushPromises()
-    expect(document.title).toBe('msg')
+    expect(document.title).toBe('Serin')
   })
 
   it('dismissToast removes one card; stop() clears state and restores the title', async () => {
@@ -325,7 +325,7 @@ describe('useNotificationsStore (ENG-129)', () => {
     expect(store.toasts).toHaveLength(0)
 
     store.stop()
-    expect(document.title).toBe('msg')
+    expect(document.title).toBe('Serin')
     // After stop, deliveries no longer notify (watchers torn down).
     fake.deliver('s_general', { created_seq: 3, author_user_id: 'u_rana', text: 'late' })
     await flushPromises()

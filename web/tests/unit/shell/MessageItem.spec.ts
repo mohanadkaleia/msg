@@ -389,3 +389,50 @@ describe('MessageItem — readonly (preview context)', () => {
     expect(wrapper.find('[data-testid="thread-affordance"]').exists()).toBe(true)
   })
 })
+
+// -- ENG-175 per-message RTL direction ---------------------------------------
+
+describe('MessageItem — text direction (ENG-175)', () => {
+  it('renders an Arabic message with dir="rtl" (right-aligned via text-start)', () => {
+    const wrapper = mount(MessageItem, {
+      props: { message: makeMessage({ text: 'مرحبا بالعالم' }) },
+    })
+    const text = wrapper.get('[data-testid="message-text"]')
+    expect(text.attributes('dir')).toBe('rtl')
+    // Alignment follows the dir attribute (text-align: start), not a hardcoded side.
+    expect(text.classes()).toContain('text-start')
+    expect(text.text()).toBe('مرحبا بالعالم')
+  })
+
+  it('renders an English message with dir="ltr" (left-aligned)', () => {
+    const wrapper = mount(MessageItem, {
+      props: { message: makeMessage({ text: 'hello world' }) },
+    })
+    const text = wrapper.get('[data-testid="message-text"]')
+    expect(text.attributes('dir')).toBe('ltr')
+    expect(text.classes()).toContain('text-start')
+  })
+
+  it('detects per message, first-strong: Arabic-leading mixed → rtl, English-leading → ltr', () => {
+    const rtl = mount(MessageItem, {
+      props: { message: makeMessage({ text: 'مرحبا hello @Ann https://x.example' }) },
+    })
+    expect(rtl.get('[data-testid="message-text"]').attributes('dir')).toBe('rtl')
+    // Mixed content survives verbatim inside the RTL paragraph (no reformatting).
+    expect(rtl.get('[data-testid="message-text"]').text()).toBe(
+      'مرحبا hello @Ann https://x.example',
+    )
+
+    const ltr = mount(MessageItem, {
+      props: { message: makeMessage({ text: 'see مرحبا' }) },
+    })
+    expect(ltr.get('[data-testid="message-text"]').attributes('dir')).toBe('ltr')
+  })
+
+  it('defaults an empty/neutral message to dir="ltr"', () => {
+    const wrapper = mount(MessageItem, {
+      props: { message: makeMessage({ text: '123 🎉!?' }) },
+    })
+    expect(wrapper.get('[data-testid="message-text"]').attributes('dir')).toBe('ltr')
+  })
+})

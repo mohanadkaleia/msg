@@ -39,6 +39,7 @@ from msgd.auth.sessions import (
     utcnow,
 )
 from msgd.auth.tokens import hash_token
+from msgd.core.envelope import Envelope
 from msgd.core.ids import new_stream_id, new_user_id, new_workspace_id
 from msgd.core.payloads import (
     build_channel_created_body,
@@ -50,6 +51,8 @@ from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
 from msgd.db.models import Device, Invite, Stream, User, Workspace
 from msgd.events.emit import emit_event
+from msgd.events.fanout import publish_events
+from msgd.ws.frames import WSCloseCode
 
 logger = logging.getLogger("msgd.auth")
 
@@ -256,11 +259,35 @@ async def revoke_user_session(session_id: str, ctx: CurrentAuth, db: DbSession) 
     """Revoke one of the caller's sessions (instant — next request 401s).
 
     Scoped to the owner: revoking another user's session id matches no row → 404.
+
+    ENG-153 parity: AFTER the commit, force-close any open ``/v1/ws`` socket
+    authenticated by EXACTLY this session (``hub.disconnect_session`` — each
+    connection captured its session's ``token_hash`` at connect, which is this
+    endpoint's own path id), closing ``4401`` (re-authenticate; a reconnect with
+    the revoked token then fails the same uniform pre-accept way against the
+    committed delete). Per-session on purpose: the caller's OTHER valid sessions
+    keep their sockets and their fanout — revoking one device must not kick the
+    rest. Commit-then-close, best-effort with logging (the row delete is
+    authoritative; a hub failure never fails the committed 204).
     """
     deleted = await revoke_session(db, token_hash=session_id, user_id=ctx.user_id)
     if not deleted:
         raise problems.not_found("no such session")
     await db.commit()
+
+    try:
+        from msgd.ws.hub import hub
+
+        await hub.disconnect_session(
+            user_id=ctx.user_id,
+            session_token_hash=session_id,
+            code=WSCloseCode.UNAUTHENTICATED,
+            reason="session revoked",
+        )
+    except Exception:  # noqa: BLE001 — the revoke already committed; never 500 on the close
+        logger.exception(
+            "failed to force-close WS connections for revoked session of user %s", ctx.user_id
+        )
 
 
 @router.post(
@@ -343,18 +370,25 @@ async def accept_invite(
         )
     )
     assert meta_stream_id is not None  # setup always creates the meta stream
-    await emit_event(
-        db,
-        home_stream_id=meta_stream_id,
-        body=build_user_joined_body(
-            workspace_id=invite.workspace_id,
-            stream_id=meta_stream_id,
-            author_user_id=new_user_ident,
-            author_device_id=device.device_id,
-            client_created_at=now_rfc3339(),
-            user_id=new_user_ident,
-            display_name=req.display_name,
-        ),
+    # Collect the server-authored meta events so they fan over WS after commit:
+    # a new member's `user.joined` (+ their #general grant) must reach already-
+    # connected members live, else the newcomer is absent from every open
+    # client's directory/@mention/roster until it reloads.
+    envelopes: list[Envelope] = []
+    envelopes.append(
+        await emit_event(
+            db,
+            home_stream_id=meta_stream_id,
+            body=build_user_joined_body(
+                workspace_id=invite.workspace_id,
+                stream_id=meta_stream_id,
+                author_user_id=new_user_ident,
+                author_device_id=device.device_id,
+                client_created_at=now_rfc3339(),
+                user_id=new_user_ident,
+                display_name=req.display_name,
+            ),
+        )
     )
 
     # ENG-112: auto-join the invitee to the workspace's default #general channel so
@@ -390,20 +424,26 @@ async def accept_invite(
         else None
     )
     if default_channel_stream_id is not None:
-        await emit_event(
-            db,
-            home_stream_id=meta_stream_id,
-            body=build_channel_member_added_body(
-                workspace_id=invite.workspace_id,
-                stream_id=meta_stream_id,
-                author_user_id=new_user_ident,
-                author_device_id=device.device_id,
-                client_created_at=now_rfc3339(),
-                channel_stream_id=default_channel_stream_id,
-                user_id=new_user_ident,
-            ),
+        envelopes.append(
+            await emit_event(
+                db,
+                home_stream_id=meta_stream_id,
+                body=build_channel_member_added_body(
+                    workspace_id=invite.workspace_id,
+                    stream_id=meta_stream_id,
+                    author_user_id=new_user_ident,
+                    author_device_id=device.device_id,
+                    client_created_at=now_rfc3339(),
+                    channel_stream_id=default_channel_stream_id,
+                    user_id=new_user_ident,
+                ),
+            )
         )
 
     user = await db.get(User, new_user_ident)
     assert user is not None
-    return await _login_response(db, user=user, device=device, settings=settings)
+    # `_login_response` commits; fan the meta events AFTER so the hub's per-send
+    # readability resolve sees the newcomer's committed membership.
+    response = await _login_response(db, user=user, device=device, settings=settings)
+    await publish_events(envelopes)
+    return response

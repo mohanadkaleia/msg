@@ -31,7 +31,7 @@ import { useComposerAttachments } from '../../composables/useComposerAttachments
 import { resolveWorkerClient } from '../../composables/useWorkerClient'
 import { formatBytes } from '../../lib/bytes'
 import EmojiPicker from '../ui/EmojiPicker.vue'
-import ComposerToolbar from './ComposerToolbar.vue'
+import ComposerToolbar, { type FormatAction } from './ComposerToolbar.vue'
 import { buildSuggestion, type MentionItem } from './composer/mentions'
 import { sanitizePastedHtml } from './composer/sanitize'
 import { serializeDoc } from './composer/serialize'
@@ -114,8 +114,10 @@ const editor = useEditor({
       // is the only box. The `focus:`/`focus-visible:` variants out-specify the
       // global `:focus-visible` accent outline in style.css, which a plain
       // `outline-none` loses to (a contenteditable always matches :focus-visible).
+      // `rich-text` (style.css) styles the formatted nodes — lists, code,
+      // blockquote — IDENTICALLY to how MessageBody renders them once sent.
       class:
-        'max-h-[200px] min-h-[1.5rem] w-full overflow-y-auto text-sm text-primary outline-none focus:outline-none focus-visible:outline-none',
+        'rich-text max-h-[200px] min-h-[1.5rem] w-full overflow-y-auto text-sm text-primary outline-none focus:outline-none focus-visible:outline-none',
       'data-testid': 'composer-input',
     },
     // Enter-to-send / ArrowUp-edit — but ONLY when no mention popup is open (its
@@ -168,6 +170,14 @@ const canSend = computed(() => {
 function handleKeyDown(event: KeyboardEvent): boolean {
   if (suggestionActive.value) return false // popup owns arrows/Enter/Esc
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    // Inside a LIST or CODE BLOCK, Enter is EDITING, not send: tiptap's own
+    // keymap splits the list item / inserts a newline. Both have built-in
+    // exits back to a plain paragraph (Enter on an empty item lifts out of
+    // the list; triple-Enter leaves a code block), where Enter sends again.
+    const instance = editor.value
+    if (instance && (instance.isActive('listItem') || instance.isActive('codeBlock'))) {
+      return false
+    }
     event.preventDefault()
     submit()
     return true
@@ -207,10 +217,59 @@ function onEmojiSelect(emoji: string): void {
   emojiOpen.value = false
 }
 
-/** `Aa` toolbar button → toggle a bold mark (serializes to `**…**` markdown). */
-function onToolbarBold(): void {
-  editor.value?.chain().focus().toggleBold().run()
+/**
+ * Formatting cluster (toolbar → tiptap). One map, one emit: each toolbar action
+ * runs the matching StarterKit toggle command; every one of these serializes
+ * back to markdown source in composer/serialize.ts (bold → `**…**`, lists →
+ * `- …`/`1. …`, code → backticks/fences, blockquote → `> …`) and renders back
+ * out of that source in MessageBody — the SAME round-trip bold always used.
+ */
+function onToolbarFormat(action: FormatAction): void {
+  const chain = editor.value?.chain().focus()
+  if (!chain) return
+  switch (action) {
+    case 'bold':
+      chain.toggleBold().run()
+      break
+    case 'italic':
+      chain.toggleItalic().run()
+      break
+    case 'code':
+      chain.toggleCode().run()
+      break
+    case 'bulletList':
+      chain.toggleBulletList().run()
+      break
+    case 'orderedList':
+      chain.toggleOrderedList().run()
+      break
+    case 'blockquote':
+      chain.toggleBlockquote().run()
+      break
+    case 'codeBlock':
+      chain.toggleCodeBlock().run()
+      break
+  }
 }
+
+/**
+ * Which formats the current selection sits inside — drives the toolbar's
+ * pressed state. Reactive: @tiptap/vue-3's Editor exposes a reactive `state`,
+ * so `isActive` re-evaluates on every transaction (typing, clicks, toggles).
+ */
+const activeFormats = computed<Partial<Record<FormatAction, boolean>>>(() => {
+  const instance = editor.value
+  if (!instance) return {}
+  return {
+    bold: instance.isActive('bold'),
+    italic: instance.isActive('italic'),
+    code: instance.isActive('code'),
+    bulletList: instance.isActive('bulletList'),
+    orderedList: instance.isActive('orderedList'),
+    blockquote: instance.isActive('blockquote'),
+    codeBlock: instance.isActive('codeBlock'),
+  }
+})
 
 /** File-picker change: add the chosen files, then reset so re-picking the same fires. */
 function onFilePicked(event: Event): void {
@@ -338,8 +397,9 @@ export type { MentionItem }
       <ComposerToolbar
         :can-send="canSend"
         :disabled="props.disabled"
+        :active="activeFormats"
         @attach="openFilePicker"
-        @bold="onToolbarBold"
+        @format="onToolbarFormat"
         @emoji="onToolbarEmoji"
         @send="submit"
       />

@@ -26,6 +26,17 @@ import type { WorkspaceMirror } from './mirror/workspace-mirror'
 import { clearAvatar, getMe, updateMe, uploadAvatar } from './me'
 import { MetaAuthor } from './meta'
 import { Outbox } from './outbox'
+import {
+  createPluginBot,
+  createPluginHook,
+  grantPluginBotStream,
+  listPluginBots,
+  listPluginHooks,
+  mintPluginBotToken,
+  revokePluginBotStream,
+  revokePluginBotToken,
+  revokePluginHook,
+} from './plugins'
 import { EphemeralState } from './presence'
 import { PrefsManager, isPrefLevel } from './prefs'
 import { ReadStateManager } from './readstate'
@@ -66,6 +77,12 @@ import {
   type MsgDb,
   type MutateParams,
   type MutateResultUnion,
+  type PluginActionResult,
+  type PluginBot,
+  type PluginBotsResult,
+  type PluginHookCreateResult,
+  type PluginHooksResult,
+  type PluginTokenMintResult,
   type PrefsListResult,
   type PrefsRow,
   type PresenceStatus,
@@ -123,6 +140,18 @@ export interface RpcResultMap {
   'admin.workspace.update': AdminWorkspace
   'admin.workspace.uploadIcon': AdminWorkspace
   'admin.workspace.clearIcon': AdminWorkspace
+  // ENG-176 — plugins HTTP pass-through (bots + incoming webhooks; live
+  // server truth, owner/admin-gated server-side, nothing persisted). The
+  // mint/create results carry the one-time raw token / capability URL.
+  'plugins.bots.list': PluginBotsResult
+  'plugins.bots.create': PluginBot
+  'plugins.bots.mintToken': PluginTokenMintResult
+  'plugins.bots.revokeToken': PluginActionResult
+  'plugins.bots.grantStream': PluginActionResult
+  'plugins.bots.revokeStream': PluginActionResult
+  'plugins.hooks.list': PluginHooksResult
+  'plugins.hooks.create': PluginHookCreateResult
+  'plugins.hooks.revoke': PluginActionResult
   // Self-profile HTTP pass-through (`/v1/me`) — structurally self-only.
   'me.get': MeProfile
   'me.update': MeProfile
@@ -305,6 +334,10 @@ export class WorkerCore {
       emitStatus: (status) => this.onSyncStatus(status),
       publishStream: (streamId) =>
         this.publish({ kind: 'stream', stream_id: streamId }, { stream_id: streamId }),
+      // ENG-134: same `{kind:'sync'}` fan the AUTHOR path uses (meta's
+      // `onStreamsChanged`) — lets the live receiver's new-stream discovery
+      // (`triggerNewChannel`) refresh the sidebar for a mid-session DM/channel.
+      publishStreamsChanged: () => this.publish({ kind: 'sync' }, this.sync.status()),
     })
     this.outbox = new Outbox({
       db,
@@ -374,6 +407,7 @@ export class WorkerCore {
     this.registerFiles()
     this.registerSignals()
     this.registerAdmin()
+    this.registerPlugins()
     this.registerMe()
   }
 
@@ -784,6 +818,28 @@ export class WorkerCore {
       uploadWorkspaceIcon(this.http, req.params.blob),
     )
     this.register('admin.workspace.clearIcon', () => clearWorkspaceIcon(this.http))
+  }
+
+  // -- ENG-176 plugins handlers ----------------------------------------------
+  // HTTP pass-through over the shared authed http client (plugins.ts), the
+  // admin discipline verbatim: live server truth, owner/admin-gated
+  // server-side, NOTHING persisted locally. The mint/create results carry the
+  // one-time raw token / capability URL straight through to the facade — this
+  // core never stores, caches, or logs either. A 403/404/422 surfaces as a
+  // coded RPC error.
+
+  private registerPlugins(): void {
+    this.register('plugins.bots.list', () => listPluginBots(this.http))
+    this.register('plugins.bots.create', (req) => createPluginBot(this.http, req.params))
+    this.register('plugins.bots.mintToken', (req) => mintPluginBotToken(this.http, req.params))
+    this.register('plugins.bots.revokeToken', (req) => revokePluginBotToken(this.http, req.params))
+    this.register('plugins.bots.grantStream', (req) => grantPluginBotStream(this.http, req.params))
+    this.register('plugins.bots.revokeStream', (req) =>
+      revokePluginBotStream(this.http, req.params),
+    )
+    this.register('plugins.hooks.list', () => listPluginHooks(this.http))
+    this.register('plugins.hooks.create', (req) => createPluginHook(this.http, req.params))
+    this.register('plugins.hooks.revoke', (req) => revokePluginHook(this.http, req.params))
   }
 
   // -- Self-profile handlers -------------------------------------------------

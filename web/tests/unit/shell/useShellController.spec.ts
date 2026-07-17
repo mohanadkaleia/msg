@@ -2,7 +2,7 @@
 // controller is the behavior-preserving extraction of ShellView's cross-store
 // wiring; both ShellView (PR-B) and AppShell (PR-C) consume it. This proves the
 // contract: stream selection loads messages + shows the conversation view, the
-// scaffold `activeView` flips the main panel, Cmd+K opens the palette, the palette
+// `activeView` flips the main panel between sections, Cmd+K opens the palette, the palette
 // selects + closes, threads open/close, and Admin is role-gated — all via stores,
 // never HTTP (the FakeWorker's fetch spy stays untouched).
 import { flushPromises, mount } from '@vue/test-utils'
@@ -22,6 +22,20 @@ import { FakeWorker } from './fakeWorker'
 type Controller = ReturnType<typeof useShellController>
 
 const Blank = { template: '<div />' }
+
+// This env's window.localStorage is a bare object with no methods; the sidebar
+// collapse (ENG-174) persists through it, so install a working in-memory
+// Storage where a test asserts persistence (same pattern as useTheme.spec).
+function installLocalStorage(): void {
+  const store = new Map<string, string>()
+  const mock: Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'clear'> = {
+    getItem: (k) => store.get(k) ?? null,
+    setItem: (k, v) => void store.set(k, String(v)),
+    removeItem: (k) => void store.delete(k),
+    clear: () => store.clear(),
+  }
+  Object.defineProperty(window, 'localStorage', { value: mock, configurable: true, writable: true })
+}
 
 function makeRouter(): Router {
   return createRouter({
@@ -83,8 +97,8 @@ describe('useShellController (ENG-136 PR-B)', () => {
     // No workspace.info seeded → the genesis event has not synced: fallback.
     setWorkerClient(fake.client)
     const first = await mountController(router)
-    expect(first.ctrl.workspaceName.value).toBe('msg')
-    expect(first.ctrl.workspaceInitials.value).toBe('MS')
+    expect(first.ctrl.workspaceName.value).toBe('Workspace')
+    expect(first.ctrl.workspaceInitials.value).toBe('WO')
 
     // The REAL name (workspace.created + any workspace.updated renames) wins.
     setActivePinia(createPinia())
@@ -100,14 +114,13 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(second.ctrl.workspaceInitials.value).toBe('ZE')
   })
 
-  it('flips the main panel to a scaffold view and back', async () => {
+  it('flips the main panel to the Apps section and back (REAL view — ENG-176)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     setWorkerClient(fake.client)
     const { ctrl } = await mountController(router)
 
     ctrl.setActiveView('apps')
     expect(ctrl.activeView.value).toBe('apps')
-    expect(ctrl.scaffold.value?.title).toBe('Apps')
     expect(ctrl.mainTitle.value).toBe('Apps')
 
     // Selecting a real stream returns to the conversation timeline.
@@ -115,7 +128,6 @@ describe('useShellController (ENG-136 PR-B)', () => {
     await flushPromises()
     expect(ctrl.activeView.value).toBe('conversation')
     expect(ctrl.paletteOpen.value).toBe(false)
-    expect(ctrl.scaffold.value).toBeNull()
   })
 
   it('toggles the palette on Cmd+K (ENG-152 nav cleanup)', async () => {
@@ -151,6 +163,55 @@ describe('useShellController (ENG-136 PR-B)', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', ctrlKey: true }))
     expect(ctrl.searchOpen.value).toBe(true)
     expect(ctrl.paletteOpen.value).toBe(false)
+  })
+
+  // -- ENG-174 sidebar collapse -----------------------------------------------
+
+  it('toggles the sidebar on Cmd+\\ / Ctrl+\\ and persists the choice (ENG-174)', async () => {
+    installLocalStorage()
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    // Default expanded — the E2E flows click sidebar rows without toggling.
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', metaKey: true }))
+    expect(ctrl.sidebarCollapsed.value).toBe(true)
+    expect(window.localStorage.getItem('msg:sidebar')).toBe('collapsed')
+
+    // Ctrl variant toggles back; the palette/search overlays are untouched.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', ctrlKey: true }))
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+    expect(window.localStorage.getItem('msg:sidebar')).toBe('expanded')
+    expect(ctrl.paletteOpen.value).toBe(false)
+    expect(ctrl.searchOpen.value).toBe(false)
+
+    // A bare '\' (no modifier) is NOT the shortcut.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\' }))
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+  })
+
+  it('toggleSidebar flips the state directly (the control/affordance seam)', async () => {
+    installLocalStorage()
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    ctrl.toggleSidebar()
+    expect(ctrl.sidebarCollapsed.value).toBe(true)
+    ctrl.toggleSidebar()
+    expect(ctrl.sidebarCollapsed.value).toBe(false)
+  })
+
+  it('restores a persisted collapsed sidebar on mount (ENG-174)', async () => {
+    installLocalStorage()
+    window.localStorage.setItem('msg:sidebar', 'collapsed')
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    expect(ctrl.sidebarCollapsed.value).toBe(true)
   })
 
   // -- ENG-136 palette commands ----------------------------------------------
@@ -258,8 +319,7 @@ describe('useShellController (ENG-136 PR-B)', () => {
     const { ctrl } = await mountController(router)
 
     ctrl.setActiveView('inbox')
-    // Inbox is a REAL view now (ENG-136) — no scaffold copy; its own header titles it.
-    expect(ctrl.scaffold.value).toBeNull()
+    // Inbox is a REAL view (ENG-136) — its own header titles it.
     expect(ctrl.mainTitle.value).toBe('Inbox')
 
     // Re-opening the ALREADY-selected stream must still leave the Inbox (the
@@ -271,7 +331,7 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.selectedStreamId.value).toBe('s_a')
   })
 
-  it('closes an open thread when navigating to a scaffold view (PR-B review #4)', async () => {
+  it('closes an open thread when navigating to a section view (PR-B review #4)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
     const root = fake.addMessage('s_a', { created_seq: 1, text: 'root' })
     setWorkerClient(fake.client)
@@ -281,7 +341,7 @@ describe('useShellController (ENG-136 PR-B)', () => {
     await flushPromises()
     expect(ctrl.threadOpen.value).toBe(true)
 
-    // Flipping to a scaffold placeholder closes the drawer so it doesn't dock beside it.
+    // Flipping to a section view closes the drawer so it does not dock beside it.
     ctrl.setActiveView('inbox')
     await flushPromises()
     expect(ctrl.threadOpen.value).toBe(false)
@@ -428,6 +488,60 @@ describe('useShellController (ENG-136 PR-B)', () => {
     expect(ctrl.selectedStreamId.value).toBe('s_b')
   })
 
+  // -- ENG-172 DM-aware header + Close conversation ---------------------------
+
+  it('DM header (ENG-172): headerKind flips to dm with a status/presence subtitle', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_ana'] })
+    fake.setDirectory(
+      [
+        { user_id: 'u_me', display_name: 'Me' },
+        {
+          user_id: 'u_ana',
+          display_name: 'Ana',
+          status_emoji: '🌴',
+          status_text: 'On vacation',
+        },
+      ],
+      [],
+    )
+    setWorkerClient(fake.client)
+    const auth = useAuthStore()
+    auth.myUserId = 'u_me'
+    const { ctrl } = await mountController(router)
+
+    // Channel selected: channel-shaped header, no DM subtitle.
+    expect(ctrl.headerKind.value).toBe('channel')
+    expect(ctrl.headerSubtitle.value).toBeUndefined()
+
+    // DM selected: the title is the counterpart's name (ENG-149) and the subline
+    // is their status + presence — never "N members"/"Add a topic".
+    ctrl.onOpenStream('s_dm')
+    await flushPromises()
+    expect(ctrl.headerKind.value).toBe('dm')
+    expect(ctrl.mainTitle.value).toBe('Ana')
+    expect(ctrl.headerSubtitle.value).toBe('🌴 On vacation · Offline')
+  })
+
+  it('onDmClosed (ENG-172): closes the drawer and navigates away from the DM', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    fake.addStream({ stream_id: 's_dm', kind: 'dm', dm_user_ids: ['u_me', 'u_ana'] })
+    setWorkerClient(fake.client)
+    const auth = useAuthStore()
+    auth.myUserId = 'u_me'
+    const { ctrl } = await mountController(router)
+
+    ctrl.onOpenStream('s_dm')
+    await flushPromises()
+    ctrl.toggleDetails()
+    expect(ctrl.drawerMode.value).toBe('details')
+
+    ctrl.onDmClosed()
+    expect(ctrl.drawerMode.value).toBe('none')
+    // Fell back to the first channel — the DM view is closed.
+    expect(ctrl.selectedStreamId.value).toBe('s_a')
+  })
+
   // -- ENG-129 mark-read on channel view ------------------------------------
 
   it('marks the opened stream read up to max(head_seq, newest loaded seq)', async () => {
@@ -493,5 +607,25 @@ describe('useShellController (ENG-136 PR-B)', () => {
     auth.role = 'admin'
     await flushPromises()
     expect(ctrl.canAdmin.value).toBe(true)
+  })
+
+  it('openAdmin deep-targets an AdminView tab; tabChange reports keep it honest', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    setWorkerClient(fake.client)
+    const { ctrl } = await mountController(router)
+
+    // The split sidebar "Workspace" item: admin view + workspace tab, together.
+    ctrl.openAdmin('workspace')
+    expect(ctrl.activeView.value).toBe('admin')
+    expect(ctrl.adminTab.value).toBe('workspace')
+
+    // The "Members & invites" item while ALREADY on admin re-targets the tab.
+    ctrl.openAdmin('members')
+    expect(ctrl.activeView.value).toBe('admin')
+    expect(ctrl.adminTab.value).toBe('members')
+
+    // An in-view tab click reported by AdminView keeps the sidebar state honest.
+    ctrl.onAdminTabChange('invites')
+    expect(ctrl.adminTab.value).toBe('invites')
   })
 })

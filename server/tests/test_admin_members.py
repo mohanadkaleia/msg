@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from authutil import (
     accept_invite,
     auth_header,
@@ -340,6 +341,38 @@ async def test_bot_role_locked_but_deactivate_allowed(
     assert r.status_code == 200 and r.json()["deactivated"] is True
     row = await db_session.get(User, bot_id)
     assert row is not None and row.deactivated_at is not None and row.role == "member"
+
+
+async def test_deactivate_bot_fans_bot_removed_over_ws(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deactivating a bot PUBLISHES its ``bot.removed`` meta event over WS.
+
+    Regression: the removal was committed but never fanned, so a connected admin
+    still saw the bot in their roster/directory until reload. Patch the shared
+    fanout seam `publish_events` loops over.
+    """
+    import msgd.events.fanout as fanout_module
+
+    published: list[Any] = []
+
+    async def spy(envelope: Any) -> None:
+        published.append(envelope)
+
+    monkeypatch.setattr(fanout_module, "publish_event", spy)
+
+    roles = await _seed_roles(client)
+    bot_id = await _seed_bot(db_session, workspace_id=roles["owner"]["workspace_id"])
+    owner_h = auth_header(roles["owner"]["token"])
+
+    r = await client.patch(f"/v1/admin/members/{bot_id}", json={"active": False}, headers=owner_h)
+    assert r.status_code == 200
+    removed = [
+        e
+        for e in published
+        if e.body.type == "bot.removed" and e.body.payload["bot_user_id"] == bot_id
+    ]
+    assert len(removed) == 1
 
 
 # --- 10. deactivate revokes access NOW --------------------------------------

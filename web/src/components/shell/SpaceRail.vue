@@ -69,13 +69,13 @@ function onLogout(): void {
     aria-label="Workspaces"
     class="flex h-full w-14 shrink-0 flex-col items-center gap-3 border-r border-subtle bg-surface py-3"
   >
-    <!-- Brand logo (the "Ranin" mark). -->
+    <!-- Brand logo (the "Serin" mark). -->
     <div
       class="grid h-9 w-9 select-none place-items-center rounded-md bg-accent font-semibold text-accent-fg"
-      aria-label="Ranin"
+      aria-label="Serin"
       role="img"
     >
-      R
+      S
     </div>
 
     <!-- Workspace stack: the ONE real workspace, active + indicator dot. -->

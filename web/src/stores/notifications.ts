@@ -52,7 +52,7 @@ const MAX_TOASTS = 4
 /** How far back one scan reads the head page (a catch-up burst caps here). */
 const SCAN_LIMIT = 30
 /** Fallback tab title when the document has none at start. */
-const FALLBACK_TITLE = 'msg'
+const FALLBACK_TITLE = 'Serin'
 
 /** The inputs of one notify decision — plain data so the matrix is pure. */
 export interface NotifyInput {
@@ -260,7 +260,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
     myUserId.value = userId
     permission.value = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
 
-    // Tab title: `(n) msg` while any unread exists, the plain base title at zero.
+    // Tab title: `(n) Serin` while any unread exists, the plain base title at zero.
     baseTitle = document.title.replace(/^\(\d+\)\s*/, '') || FALLBACK_TITLE
     stopTitleWatch = watch(
       totalUnread,

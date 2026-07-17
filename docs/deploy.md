@@ -1,6 +1,6 @@
-# Deploying msg
+# Deploying Serin
 
-Self-hosting msg is two containers — the FastAPI **app** and **Postgres** — wired
+Self-hosting Serin is two containers — the FastAPI **app** and **Postgres** — wired
 by [`docker-compose.yml`](../docker-compose.yml). No MinIO, no Redis, no message
 queue (TDD §11 / §4.1). TLS is terminated by your own reverse proxy.
 

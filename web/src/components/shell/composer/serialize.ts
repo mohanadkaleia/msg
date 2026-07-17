@@ -55,7 +55,17 @@ function serializeBlock(node: JSONContent, mentions: string[]): string {
     case 'codeBlock':
       return `\`\`\`\n${serializeInline(children, mentions)}\n\`\`\``
     case 'blockquote':
-      return children.map((b) => `> ${serializeBlock(b, mentions)}`).join('\n')
+      // Prefix EVERY line — a child block can be multi-line (a hard break, a
+      // nested list), and an unprefixed continuation line would fall out of the
+      // quote when the renderer (lib/markdown.ts) reads the source back.
+      return children
+        .map((b) =>
+          serializeBlock(b, mentions)
+            .split('\n')
+            .map((line) => `> ${line}`)
+            .join('\n'),
+        )
+        .join('\n')
     default:
       // Unknown block: fall through to its inline content (never emit markup).
       return serializeInline(children, mentions)

@@ -11,8 +11,8 @@
 // Behavior and every load-bearing E2E test-id are preserved: it composes SpaceRail
 // | AppSidebar | TopBar | main (channel-header + virtualized MessageList +
 // MessageComposer, OR the REAL InboxView triage page — ENG-136, the Feeds concept
-// folded into Inbox — OR a scaffold EmptyState) | RightDrawer (thread) + the
-// CommandPalette overlay, and delegates ALL cross-store wiring to
+// folded into Inbox — OR a section view: Admin/Files/Apps) | RightDrawer (thread)
+// + the CommandPalette overlay, and delegates ALL cross-store wiring to
 // `useShellController`. The Inbox brings its own header + filter tabs, so the
 // ChannelHeader is skipped for it. No message data ever comes from the HTTP API —
 // the shell reads exclusively through the worker client (via the stores).
@@ -33,10 +33,10 @@ import SearchOverlay from './SearchOverlay.vue'
 import SpaceRail from './SpaceRail.vue'
 import ToastContainer from './ToastContainer.vue'
 import AdminView from '../admin/AdminView.vue'
+import AppsView from '../apps/AppsView.vue'
 import FilesView from '../files/FilesView.vue'
 import TopBar from './TopBar.vue'
 import TypingIndicator from './TypingIndicator.vue'
-import EmptyState from '../ui/EmptyState.vue'
 import { useShellController } from '../../composables/useShellController'
 import { provideOpenUserDetails } from '../../composables/useUserDetails'
 import type { SidebarStream } from '../../stores/workspace'
@@ -51,6 +51,9 @@ const {
   searchOpen,
   editingMessageId,
   canAdmin,
+  adminTab,
+  openAdmin,
+  onAdminTabChange,
   workspaceName,
   workspaceInitials,
   workspaceIconSha,
@@ -68,18 +71,22 @@ const {
   closeUserDetails,
   mainTitle,
   headerPresence,
+  headerKind,
+  headerSubtitle,
   names,
   avatars,
   memberCount,
   unreadCount,
-  scaffold,
   composerPlaceholder,
   quickItems,
   paletteCommands,
+  sidebarCollapsed,
+  toggleSidebar,
   setActiveView,
   toggleDetails,
   closeDetails,
   onChannelLeft,
+  onDmClosed,
   onPaletteSelect,
   onPaletteCommand,
   onOpenStream,
@@ -154,19 +161,30 @@ const gridCols = computed(() => {
       @logout="onLogout"
     />
 
+    <!-- ENG-174: collapsible (v-show'd inside — fragment root) sidebar; state is
+         shell-owned (persisted + auto-collapsed on narrow windows), toggled by
+         the sidebar's header control, the TopBar expand affordance, and ⌘\. -->
     <AppSidebar
       :active-view="activeView"
       :workspace-name="workspaceName"
       :workspace-initials="workspaceInitials"
       :workspace-icon-sha="workspaceIconSha"
       :can-admin="canAdmin"
+      :admin-tab="adminTab"
+      :collapsed="sidebarCollapsed"
       @open-search="searchOpen = true"
       @select-view="setActiveView"
+      @open-admin="openAdmin"
+      @toggle-collapse="toggleSidebar"
     />
 
     <!-- Right: a top-bar row spanning the main + drawer region, then the columns. -->
     <div class="flex min-w-0 flex-1 flex-col">
-      <TopBar @search="searchOpen = true" />
+      <TopBar
+        :sidebar-collapsed="sidebarCollapsed"
+        @search="searchOpen = true"
+        @expand-sidebar="toggleSidebar"
+      />
 
       <div class="grid min-h-0 flex-1" :class="gridCols">
         <!-- Main column. The Inbox brings its own header + tabs, so the shared
@@ -176,6 +194,8 @@ const gridCols = computed(() => {
             v-if="activeView !== 'inbox'"
             :title="mainTitle"
             :presence="headerPresence"
+            :kind="headerKind"
+            :subtitle="headerSubtitle"
             :member-count="memberCount"
             @toggle-details="toggleDetails"
           />
@@ -222,18 +242,25 @@ const gridCols = computed(() => {
           <!-- REAL Inbox triage view (ENG-136): tabs over derived stream activity. -->
           <InboxView v-else-if="activeView === 'inbox'" @open-stream="onOpenStream" />
 
-          <!-- REAL Admin surface (ENG-151 PR-3): members + pending invites over
-               the `client.admin.*` worker RPCs; the view re-checks the role. -->
-          <AdminView v-else-if="activeView === 'admin'" />
+          <!-- REAL Admin surface (ENG-151 PR-3): members + pending invites +
+               workspace settings over the `client.admin.*` worker RPCs; the view
+               re-checks the role. Deep-targeted by the sidebar's SPLIT Admin
+               items (`initialTab`); user tab clicks report back (`tabChange`)
+               so the sidebar highlight stays honest. -->
+          <AdminView
+            v-else-if="activeView === 'admin'"
+            :initial-tab="adminTab"
+            @tab-change="onAdminTabChange"
+          />
 
           <!-- REAL Files surface (ENG-152): the workspace file listing over the
                local `files` projection via `client.files.list` — zero HTTP here. -->
           <FilesView v-else-if="activeView === 'files'" />
 
-          <!-- Scaffold placeholder (Apps). -->
-          <div v-else class="flex flex-1 items-center justify-center">
-            <EmptyState v-if="scaffold" :title="scaffold.title" :description="scaffold.body" />
-          </div>
+          <!-- REAL Apps surface (ENG-176): bots + incoming webhooks over the
+               `client.plugins.*` worker RPCs; the view re-checks the role
+               (owner/admin only) and never issues a plugin RPC otherwise. -->
+          <AppsView v-else />
         </main>
 
         <!-- Drawer column: the thread pane (ENG-103) OR the channel Details panel
@@ -247,6 +274,7 @@ const gridCols = computed(() => {
           @close="closeDetails"
           @open-members="onOpenMembers"
           @left="onChannelLeft"
+          @close-dm="onDmClosed"
           @close-user="closeUserDetails"
         />
       </div>
@@ -267,8 +295,8 @@ const gridCols = computed(() => {
          selects the hit's stream. -->
     <SearchOverlay :open="searchOpen" @close="searchOpen = false" @jump="onSearchJump" />
 
-    <!-- REAL compose target: a New DM dialog, opened from the sidebar's "+ New"
-         menu OR the palette's "Start a direct message" command. -->
+    <!-- REAL compose target: a New DM dialog, opened from the sidebar's Inbox
+         compose menu OR the palette's "Start a direct message" command. -->
     <NewDmDialog v-if="newDmOpen" @close="newDmOpen = false" />
 
     <!-- Palette command targets (ENG-136): the EXISTING create-channel dialog +

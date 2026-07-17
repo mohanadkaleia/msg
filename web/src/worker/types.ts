@@ -1382,6 +1382,154 @@ export interface AdminInviteRevokeResult {
 }
 
 // ---------------------------------------------------------------------------
+// Plugins (ENG-176 over the M5 backend) — HTTP pass-through RPCs over
+// `/v1/plugins/*` (owner/admin only, enforced server-side), exactly the
+// `admin.*` discipline: the worker attaches the bearer, NOTHING is persisted
+// locally, and shapes mirror `server/msgd/api/schemas/plugins.py`
+// field-for-field. This is a CREDENTIAL-ISSUANCE surface: the raw bot token
+// and the webhook capability URL each appear in exactly ONE result, exactly
+// once, at create/mint time — the facade shows them or they are gone.
+// ---------------------------------------------------------------------------
+
+/** The closed §10 verb-scope vocabulary (server `Scope` Literal — a forged
+ * value is a server 422, never a minted credential). */
+export type PluginScope = 'events:read' | 'events:write' | 'files:write'
+
+/**
+ * One bot token in a listing (server `BotTokenInfo`). `id` is the sha256
+ * `token_hash` — a REVOKE HANDLE, never a credential; the raw token appeared
+ * only in its {@link PluginTokenMintResult} and is never listed again.
+ */
+export interface PluginBotToken {
+  id: string
+  scopes: string[]
+  created_at: string
+  last_used_at: string | null
+  revoked: boolean
+}
+
+/**
+ * One bot in `GET /v1/plugins/bots` / the create echo (server `BotInfo`).
+ * `device_id` is the bot's single provisioned device (a bot client authors
+ * events as `(bot_user_id, device_id)`); `stream_ids` are its current channel
+ * grants; `tokens` lists hash handles only.
+ */
+export interface PluginBot {
+  bot_user_id: string
+  name: string
+  device_id: string
+  role: string
+  deactivated: boolean
+  stream_ids: string[]
+  tokens: PluginBotToken[]
+}
+
+/** `plugins.bots.list` result (server `BotListResponse`). */
+export interface PluginBotsResult {
+  bots: PluginBot[]
+}
+
+/**
+ * `plugins.bots.create` params — `POST /v1/plugins/bots` (server
+ * `CreateBotRequest`). NO credential is minted here: `scopes` are the INSTALL
+ * scopes (the default for later token mints) and `stream_ids` the channels
+ * granted at install. The 201 echoes the {@link PluginBot} — token-free.
+ */
+export interface PluginBotCreateParams {
+  name: string
+  scopes: PluginScope[]
+  stream_ids?: string[]
+}
+
+/**
+ * `plugins.bots.mintToken` params — `POST /v1/plugins/bots/{id}/tokens`
+ * (server `MintBotTokenRequest`). `scopes` omitted → the bot's install scopes.
+ */
+export interface PluginTokenMintParams {
+  bot_user_id: string
+  scopes?: PluginScope[]
+}
+
+/**
+ * `plugins.bots.mintToken` result (server `BotTokenMintResponse`). `token` is
+ * the RAW bot bearer credential — returned EXACTLY ONCE; the server stores
+ * only its sha256 (echoed as `id`, the future revoke handle), so the facade
+ * must show it now or never. NEVER persist or log it.
+ */
+export interface PluginTokenMintResult {
+  token: string
+  id: string
+  bot_user_id: string
+  scopes: PluginScope[]
+  created_at: string
+}
+
+/** `plugins.bots.revokeToken` params — `DELETE .../tokens/{token_id}`;
+ * `token_id` is the sha256 hash handle off a listing, never a raw token. */
+export interface PluginTokenRevokeParams {
+  bot_user_id: string
+  token_id: string
+}
+
+/** `plugins.bots.grantStream`/`revokeStream` params — `PUT`/`DELETE
+ * `/v1/plugins/bots/{bot_user_id}/streams/{stream_id}` (204, uniform 404). */
+export interface PluginStreamGrantParams {
+  bot_user_id: string
+  stream_id: string
+}
+
+/** A plugins 204 folded to a plain ack (revoke/grant arms). */
+export interface PluginActionResult {
+  ok: true
+}
+
+/**
+ * One incoming webhook in `GET /v1/plugins/hooks` (server `HookInfo`). `id` is
+ * the sha256 hash handle (the revoke handle) — the capability URL appeared
+ * only in its {@link PluginHookCreateResult} and is never listed again.
+ */
+export interface PluginHook {
+  id: string
+  stream_id: string
+  bot_user_id: string
+  name: string
+  created_by: string
+  created_at: string
+  disabled: boolean
+}
+
+/** `plugins.hooks.list` result (server `HookListResponse`). */
+export interface PluginHooksResult {
+  hooks: PluginHook[]
+}
+
+/**
+ * `plugins.hooks.create` params — `POST /v1/plugins/hooks` (server
+ * `CreateHookRequest`). `stream_id` pins the ONE channel deliveries post into;
+ * `bot_user_id` omitted → the server auto-provisions a dedicated bot named for
+ * the hook (install scope `events:write`).
+ */
+export interface PluginHookCreateParams {
+  stream_id: string
+  name: string
+  bot_user_id?: string
+}
+
+/**
+ * `plugins.hooks.create` result (server `HookCreateResponse`). `url` is the
+ * capability URL with the RAW path token embedded — returned EXACTLY ONCE;
+ * only its sha256 (`id`) is stored server-side. NEVER persist or log it.
+ */
+export interface PluginHookCreateResult {
+  url: string
+  id: string
+  stream_id: string
+  bot_user_id: string
+  name: string
+  created_at: string
+}
+
+// ---------------------------------------------------------------------------
 // Self-profile (`/v1/me`) — HTTP pass-through RPCs like `admin.*`: the worker
 // attaches the bearer and returns the server response verbatim; nothing is
 // persisted locally. Structurally SELF-ONLY: no params carry a user_id — the
@@ -1498,6 +1646,19 @@ export type RpcRequest =
   // ENG-152 workspace settings (name + description).
   | { method: 'admin.workspace.get'; params: Record<string, never> }
   | { method: 'admin.workspace.update'; params: AdminWorkspaceUpdateParams }
+  // ENG-176 plugins — HTTP pass-through over `/v1/plugins/*` (token
+  // worker-side; owner/admin enforced server-side; 403/404/422 surface as
+  // coded errors). `mintToken`/`hooks.create` return the raw credential/URL
+  // EXACTLY ONCE for one-time display; nothing is persisted or logged.
+  | { method: 'plugins.bots.list'; params: Record<string, never> }
+  | { method: 'plugins.bots.create'; params: PluginBotCreateParams }
+  | { method: 'plugins.bots.mintToken'; params: PluginTokenMintParams }
+  | { method: 'plugins.bots.revokeToken'; params: PluginTokenRevokeParams }
+  | { method: 'plugins.bots.grantStream'; params: PluginStreamGrantParams }
+  | { method: 'plugins.bots.revokeStream'; params: PluginStreamGrantParams }
+  | { method: 'plugins.hooks.list'; params: Record<string, never> }
+  | { method: 'plugins.hooks.create'; params: PluginHookCreateParams }
+  | { method: 'plugins.hooks.revoke'; params: { id: string } }
   // ENG-152 workspace icon: owner/admin upload/clear. The upload hands the
   // worker an opaque Blob (structured clone) which the worker POSTs raw to
   // `/v1/admin/workspace/icon` — token + `/v1/` path stay worker-side.
@@ -1700,6 +1861,32 @@ export interface WorkerClient {
       uploadIcon(blob: Blob): Promise<AdminWorkspace>
       /** ENG-152: remove the workspace icon (`icon_sha256 → null`). */
       clearIcon(): Promise<AdminWorkspace>
+    }
+  }
+
+  /**
+   * Plugins namespace (ENG-176 over the M5 backend). HTTP pass-through over
+   * the worker's authed client, mirroring `admin` — owner/admin gating and
+   * the uniform-404 semantics are SERVER truth surfaced as coded errors
+   * (`forbidden` / `not-found` / `validation-error` / `offline`). This is a
+   * CREDENTIAL-ISSUANCE surface: `bots.mintToken` returns the raw bot token
+   * and `hooks.create` the capability URL EXACTLY ONCE — the tab shows them
+   * for one-time copy and must never persist or log them; every listing
+   * carries sha256 hash HANDLES only. Nothing is projected/persisted locally.
+   */
+  plugins: {
+    bots: {
+      list(): Promise<PluginBotsResult>
+      create(params: PluginBotCreateParams): Promise<PluginBot>
+      mintToken(params: PluginTokenMintParams): Promise<PluginTokenMintResult>
+      revokeToken(params: PluginTokenRevokeParams): Promise<PluginActionResult>
+      grantStream(params: PluginStreamGrantParams): Promise<PluginActionResult>
+      revokeStream(params: PluginStreamGrantParams): Promise<PluginActionResult>
+    }
+    hooks: {
+      list(): Promise<PluginHooksResult>
+      create(params: PluginHookCreateParams): Promise<PluginHookCreateResult>
+      revoke(params: { id: string }): Promise<PluginActionResult>
     }
   }
 

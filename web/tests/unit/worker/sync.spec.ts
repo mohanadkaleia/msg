@@ -31,6 +31,7 @@ interface Harness {
   clock: FakeClock
   statuses: SyncStatus[]
   streamPushes: string[]
+  streamsChanged: string[]
   seamCalls: { streamId: string; seqs: number[] }[]
   signalFrames: WsFrame[]
   onlineRef: { value: boolean }
@@ -50,6 +51,7 @@ function makeHarness(overrides: HarnessOptions): Harness {
   const clock = new FakeClock()
   const statuses: SyncStatus[] = []
   const streamPushes: string[] = []
+  const streamsChanged: string[] = []
   const seamCalls: { streamId: string; seqs: number[] }[] = []
   const signalFrames: WsFrame[] = []
   const onlineRef = { value: true }
@@ -69,6 +71,7 @@ function makeHarness(overrides: HarnessOptions): Harness {
     applyToProjection: seam,
     emitStatus: (s) => statuses.push(s),
     publishStream: (sid) => streamPushes.push(sid),
+    publishStreamsChanged: () => streamsChanged.push('sync'),
     onSignalFrame: (f) => signalFrames.push(f),
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
@@ -85,6 +88,7 @@ function makeHarness(overrides: HarnessOptions): Harness {
     clock,
     statuses,
     streamPushes,
+    streamsChanged,
     seamCalls,
     signalFrames,
     onlineRef,
@@ -387,6 +391,11 @@ describe('delivery contract', () => {
     // /v1/sync was refreshed → s2's metadata landed in `streams` immediately.
     expect((await h.db.getStream('s2'))?.name).toBe('random')
     expect(await seqs(h.db, 's2')).toEqual([1, 2, 3, 4])
+    // ENG-134: the receiver fanned a `{kind:'sync'}` signal so the sidebar store
+    // re-queries streams.list and the brand-new stream (a DM, or a channel you were
+    // just added to) appears WITHOUT a page reload. Without this the row stays
+    // invisible until the next bootstrap/reconnect.
+    expect(h.streamsChanged.length).toBeGreaterThanOrEqual(1)
   })
 
   it('retries a failed live gap pull with backoff, then converges', async () => {

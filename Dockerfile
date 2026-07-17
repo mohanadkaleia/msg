@@ -42,11 +42,13 @@ COPY plugins/ plugins/
 # --no-editable installs msgd + msgctl as built wheels (not .pth shims), so the
 #   runtime venv is self-contained and independent of the source tree; the
 #   msgctl console script lands at /app/.venv/bin/msgctl.
-# --no-install-package github-notifier  resolves the plugin as a workspace member
-#   (keeping --locked honest) but keeps its wheel OUT of /app/.venv, so the
-#   runtime image stays plugin-free (D12 — the notifier runs as its own process).
+# --no-install-package github-notifier / serin-sdk  resolves each plugin as a
+#   workspace member (keeping --locked honest) but keeps its wheel OUT of
+#   /app/.venv, so the runtime image stays plugin-free (D12 — plugins run as
+#   their own processes; serin-sdk is a client library, not a server component).
 # --locked  fails if uv.lock is stale (reproducible builds).
-RUN uv sync --locked --no-dev --no-editable --no-install-package github-notifier
+RUN uv sync --locked --no-dev --no-editable \
+    --no-install-package github-notifier --no-install-package serin-sdk
 
 # ── web build ────────────────────────────────────────────────────────────────
 # Builds the Vue SPA (web/) to web/dist so the runtime image can serve it

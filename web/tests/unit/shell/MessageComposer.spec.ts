@@ -24,7 +24,9 @@ interface ComposerVm {
       setContent: (c: JSONContent, emit?: boolean) => void
       insertContent: (c: string) => void
       clearContent: () => void
+      setTextSelection: (range: number | { from: number; to: number }) => void
     }
+    isActive: (name: string) => boolean
     isEmpty: boolean
   }
   submit: () => void
@@ -145,6 +147,124 @@ describe('MessageComposer (TipTap, ENG-101)', () => {
     expect(cls).toContain('outline-none')
     expect(cls).toContain('focus:outline-none')
     expect(cls).toContain('focus-visible:outline-none')
+  })
+})
+
+// -- Composer formatting controls: the toolbar's formatting cluster drives the
+// matching tiptap toggle command, reflects the selection's active state, and
+// everything serializes to the SAME markdown source bold always used.
+describe('MessageComposer — toolbar formatting controls', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  const CONTROLS: { testid: string; node: string }[] = [
+    { testid: 'composer-format-bold', node: 'bold' },
+    { testid: 'composer-format-italic', node: 'italic' },
+    { testid: 'composer-format-code', node: 'code' },
+    { testid: 'composer-format-bulletList', node: 'bulletList' },
+    { testid: 'composer-format-orderedList', node: 'orderedList' },
+    { testid: 'composer-format-blockquote', node: 'blockquote' },
+    { testid: 'composer-format-codeBlock', node: 'codeBlock' },
+  ]
+
+  it.each(CONTROLS)('$testid toggles $node on and off', async ({ testid, node }) => {
+    const wrapper = await mountComposer()
+    const vm = vmOf(wrapper)
+    vm.editor.commands.setContent(doc([paragraph([{ type: 'text', text: 'target' }])]))
+    // A real text selection over "target" — a user-shaped selection (selectAll's
+    // AllSelection is doc-bounded and can't lift back out of a list/quote).
+    vm.editor.commands.setTextSelection({ from: 1, to: 7 })
+    await flushPromises()
+
+    await wrapper.get(`[data-testid="${testid}"]`).trigger('click')
+    expect(vm.editor.isActive(node)).toBe(true)
+
+    await wrapper.get(`[data-testid="${testid}"]`).trigger('click')
+    expect(vm.editor.isActive(node)).toBe(false)
+  })
+
+  /** @tiptap/vue-3 triggers editor-state reactivity on a double rAF — wait it out. */
+  const editorSettled = async (): Promise<void> => {
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    )
+    await flushPromises()
+  }
+
+  it('highlights the active control for the current selection (aria-pressed)', async () => {
+    const wrapper = await mountComposer()
+    const vm = vmOf(wrapper)
+    vm.editor.commands.setContent(doc([paragraph([{ type: 'text', text: 'target' }])]))
+    vm.editor.commands.setTextSelection({ from: 1, to: 7 })
+    await editorSettled()
+
+    const button = () => wrapper.get('[data-testid="composer-format-bulletList"]')
+    expect(button().attributes('aria-pressed')).toBe('false')
+
+    await button().trigger('click')
+    await editorSettled()
+    expect(button().attributes('aria-pressed')).toBe('true')
+    expect(button().attributes('class')).toContain('bg-accent-subtle')
+    // The sibling list control is NOT active.
+    expect(
+      wrapper.get('[data-testid="composer-format-orderedList"]').attributes('aria-pressed'),
+    ).toBe('false')
+  })
+
+  it('serializes a list / code block / blockquote message to markdown source', async () => {
+    const wrapper = await mountComposer()
+    const vm = vmOf(wrapper)
+    const li = (text: string): JSONContent => ({
+      type: 'listItem',
+      content: [paragraph([{ type: 'text', text }])],
+    })
+    vm.editor.commands.setContent(
+      doc([
+        { type: 'bulletList', content: [li('first'), li('second')] },
+        { type: 'codeBlock', content: [{ type: 'text', text: 'let x = 1' }] },
+        { type: 'blockquote', content: [paragraph([{ type: 'text', text: 'quote' }])] },
+      ]),
+    )
+    await flushPromises()
+    vm.submit()
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      '- first\n- second\n```\nlet x = 1\n```\n> quote',
+      [],
+      [],
+    ])
+  })
+
+  it('Enter inside a list or code block EDITS (new item/line) instead of sending', async () => {
+    const wrapper = await mountComposer()
+    const vm = vmOf(wrapper)
+
+    vm.editor.commands.setContent(
+      doc([
+        {
+          type: 'bulletList',
+          content: [{ type: 'listItem', content: [paragraph([{ type: 'text', text: 'one' }])] }],
+        },
+      ]),
+    )
+    await flushPromises()
+    // Cursor sits inside the list → Enter is deferred to tiptap (returns false).
+    expect(vm.handleKeyDown(keyEvent('Enter'))).toBe(false)
+    expect(wrapper.emitted('send')).toBeUndefined()
+
+    vm.editor.commands.setContent(
+      doc([{ type: 'codeBlock', content: [{ type: 'text', text: 'x' }] }]),
+    )
+    await flushPromises()
+    expect(vm.handleKeyDown(keyEvent('Enter'))).toBe(false)
+    expect(wrapper.emitted('send')).toBeUndefined()
+
+    // Back in a plain paragraph, Enter sends as always.
+    vm.editor.commands.setContent(doc([paragraph([{ type: 'text', text: 'plain' }])]))
+    await flushPromises()
+    expect(vm.handleKeyDown(keyEvent('Enter'))).toBe(true)
+    expect(wrapper.emitted('send')?.[0]?.[0]).toBe('plain')
   })
 })
 

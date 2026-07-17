@@ -15,6 +15,7 @@ authz matrix and the owner-immutability / ≥1-active-owner proof.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Annotated
 
@@ -38,11 +39,16 @@ from msgd.api.schemas.auth import CreateInviteRequest, InviteResponse
 from msgd.auth.context import AuthContext
 from msgd.auth.sessions import utcnow
 from msgd.auth.tokens import mint_token
+from msgd.core.envelope import Envelope
 from msgd.core.payloads import build_bot_removed_body, build_workspace_updated_body
 from msgd.core.time import now_rfc3339
 from msgd.db.engine import get_session
 from msgd.db.models import BotToken, Invite, Session, Stream, User, Workspace
 from msgd.events.emit import emit_event
+from msgd.events.fanout import publish_events
+from msgd.ws.frames import WSCloseCode
+
+logger = logging.getLogger("msgd.admin")
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -204,6 +210,16 @@ async def update_member(
        dies IMMEDIATELY, not at expiry; ``true`` clears ``deactivated_at``. Both
        are idempotent (deactivating an already-deactivated user is a 200 no-op;
        the redundant session DELETE simply removes zero rows).
+    4. AFTER the commit, the active→inactive TRANSITION additionally fires the
+       WS close-signal (ENG-153): ``hub.disconnect_user`` force-closes every
+       already-open ``/v1/ws`` socket of the target ``4401``, because an open
+       socket snapshots identity at connect and would otherwise keep receiving
+       live fanout until it dropped naturally. Commit-then-close ordering means
+       a racing reconnect lands on the committed ``deactivated_at`` → uniform
+       pre-accept 4401 (full revocation: closed socket + no reconnect).
+       Transition-guarded (idempotent re-deactivation fires no close); applies
+       to humans and bots alike; best-effort with logging (the DB revocation is
+       authoritative — a hub failure never 500s the committed PATCH).
 
     NOTE — OPERATIONAL STATE, NOT AN EVENT. Role and deactivation live on the
     ``users`` row, NOT in the append-only event log: a PATCH appends ZERO rows to
@@ -242,11 +258,19 @@ async def update_member(
 
     if req.role is not None:
         target.role = req.role
+    # True only on the active→inactive TRANSITION (the ENG-159/ENG-153 guard): a
+    # re-deactivate of an already-inactive user re-emits no bot.removed AND fires
+    # no spurious WS close-signal below.
+    deactivated_now = False
+    # Any server-authored meta event emitted here (a bot.removed) is fanned over
+    # WS after commit so connected admins see the removal live, not on reload.
+    meta_envelopes: list[Envelope] = []
     if req.active is not None:
         if req.active:
             target.deactivated_at = None
         else:
             was_active = target.deactivated_at is None
+            deactivated_now = was_active
             target.deactivated_at = utcnow()
             # Bulk-revoke: the deactivated user's open sessions die NOW.
             await db.execute(delete(Session).where(Session.user_id == target.user_id))
@@ -266,20 +290,48 @@ async def update_member(
                         )
                     )
                     assert meta_stream_id is not None  # setup always creates it
-                    await emit_event(
-                        db,
-                        home_stream_id=meta_stream_id,
-                        body=build_bot_removed_body(
-                            workspace_id=ctx.workspace_id,
-                            stream_id=meta_stream_id,
-                            author_user_id=ctx.user_id,
-                            author_device_id=ctx.device_id,
-                            client_created_at=now_rfc3339(),
-                            bot_user_id=target.user_id,
-                        ),
+                    meta_envelopes.append(
+                        await emit_event(
+                            db,
+                            home_stream_id=meta_stream_id,
+                            body=build_bot_removed_body(
+                                workspace_id=ctx.workspace_id,
+                                stream_id=meta_stream_id,
+                                author_user_id=ctx.user_id,
+                                author_device_id=ctx.device_id,
+                                client_created_at=now_rfc3339(),
+                                bot_user_id=target.user_id,
+                            ),
+                        )
                     )
 
+    target_user_id = target.user_id
     await db.commit()
+    await publish_events(meta_envelopes)
+
+    if deactivated_now:
+        # ENG-153: force-close the deactivated user's already-open WS sockets —
+        # human AND bot alike. Ordered AFTER the commit on purpose: a reconnect
+        # racing this close hits the now-committed ``deactivated_at`` (and empty
+        # ``sessions``) → the uniform pre-accept 4401. Guarded by the transition
+        # flag, so a no-op re-deactivate fires no spurious close. Best-effort like
+        # every hub call from a router (the DB revocation above is authoritative;
+        # the hub is in-process and swallows per-socket failures itself) — but a
+        # failure here would leave a live socket receiving fanout, so it is LOGGED,
+        # not silently dropped like the read-state/prefs echo hints.
+        try:
+            from msgd.ws.hub import hub
+
+            await hub.disconnect_user(
+                target_user_id,
+                code=WSCloseCode.UNAUTHENTICATED,
+                reason="account deactivated",
+            )
+        except Exception:  # noqa: BLE001 — the PATCH already committed; never 500 on the close
+            logger.exception(
+                "failed to force-close WS connections for deactivated user %s", target_user_id
+            )
+
     return _member_info(target)
 
 
@@ -355,7 +407,7 @@ async def update_workspace(
         )
     )
     assert meta_stream_id is not None
-    await emit_event(
+    envelope = await emit_event(
         db,
         home_stream_id=meta_stream_id,
         body=build_workspace_updated_body(
@@ -370,6 +422,9 @@ async def update_workspace(
     )
 
     await db.commit()
+    # Fan the rename/description change so every connected member's workspace
+    # header + directory fold updates live, not on reload.
+    await publish_events([envelope])
     return workspace_info_response(ws)
 
 

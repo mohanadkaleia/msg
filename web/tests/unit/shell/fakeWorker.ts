@@ -25,7 +25,15 @@ import type {
   MessageRow,
   MutateParams,
   MutateResult,
+  PluginBot,
+  PluginBotCreateParams,
+  PluginHook,
+  PluginHookCreateParams,
+  PluginStreamGrantParams,
+  PluginTokenMintParams,
+  PluginTokenRevokeParams,
   PrefLevel,
+  PresenceStatus,
   PushPayload,
   QueryParams,
   QueryResult,
@@ -122,6 +130,33 @@ export class FakeWorker {
   /** The one-time join URL the next `admin.invites.create` resolves with. */
   createdInviteUrl = 'https://msg.example/join/raw-invite-token-1'
 
+  // -- ENG-176 plugins (AppsView specs) --------------------------------------
+  // Seedable bots/hooks served by the `plugins.*` facade; mutations mutate the
+  // seeds like the server would, or reject with a queued coded error. The raw
+  // token / capability URL are returned ONCE by mint/create (the fields below
+  // are what the NEXT mint/create resolves with) — listings carry hash handles.
+  readonly pluginsBotsListSpy = vi.fn()
+  readonly pluginsBotCreateSpy = vi.fn<(params: PluginBotCreateParams) => void>()
+  readonly pluginsMintTokenSpy = vi.fn<(params: PluginTokenMintParams) => void>()
+  readonly pluginsRevokeTokenSpy = vi.fn<(params: PluginTokenRevokeParams) => void>()
+  readonly pluginsGrantStreamSpy = vi.fn<(params: PluginStreamGrantParams) => void>()
+  readonly pluginsRevokeStreamSpy = vi.fn<(params: PluginStreamGrantParams) => void>()
+  readonly pluginsHooksListSpy = vi.fn()
+  readonly pluginsHookCreateSpy = vi.fn<(params: PluginHookCreateParams) => void>()
+  readonly pluginsHookRevokeSpy = vi.fn<(params: { id: string }) => void>()
+  private pluginBots: PluginBot[] = []
+  private pluginHooks: PluginHook[] = []
+  private pluginsListError: RpcCodedError | null = null
+  private pluginsBotCreateError: RpcCodedError | null = null
+  private pluginsMintError: RpcCodedError | null = null
+  private pluginsActionError: RpcCodedError | null = null
+  private pluginsHookCreateError: RpcCodedError | null = null
+  private pluginSeq = 0
+  /** The one-time RAW token the next `plugins.bots.mintToken` resolves with. */
+  mintedBotToken = 'xoxb-raw-fake-token-1'
+  /** The one-time capability URL the next `plugins.hooks.create` resolves with. */
+  createdHookUrl = 'https://msg.example/hooks/raw-hook-token-1'
+
   // -- ENG-152 workspace settings + identity fold ---------------------------
   readonly adminWorkspaceGetSpy = vi.fn()
   readonly adminWorkspaceUpdateSpy = vi.fn<(params: AdminWorkspaceUpdateParams) => void>()
@@ -215,6 +250,48 @@ export class FakeWorker {
   /** Make the NEXT `admin.invites.revoke` reject with the coded error `code`. */
   failNextAdminRevoke(code: string): this {
     this.adminRevokeError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Seed the bots the `plugins.bots.list` facade serves (ENG-176). */
+  setPluginBots(bots: PluginBot[]): this {
+    this.pluginBots = bots.map((b) => ({ ...b, tokens: b.tokens.map((t) => ({ ...t })) }))
+    return this
+  }
+
+  /** Seed the hooks the `plugins.hooks.list` facade serves (ENG-176). */
+  setPluginHooks(hooks: PluginHook[]): this {
+    this.pluginHooks = hooks.map((h) => ({ ...h }))
+    return this
+  }
+
+  /** Make the NEXT `plugins.bots.list`/`plugins.hooks.list` reject with `code`. */
+  failNextPluginsList(code: string): this {
+    this.pluginsListError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT `plugins.bots.create` reject with the coded error `code`. */
+  failNextPluginsBotCreate(code: string): this {
+    this.pluginsBotCreateError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT `plugins.bots.mintToken` reject with the coded error `code`. */
+  failNextPluginsMint(code: string): this {
+    this.pluginsMintError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT revoke/grant plugins action reject with the coded error `code`. */
+  failNextPluginsAction(code: string): this {
+    this.pluginsActionError = new RpcCodedError(code, code)
+    return this
+  }
+
+  /** Make the NEXT `plugins.hooks.create` reject with the coded error `code`. */
+  failNextPluginsHookCreate(code: string): this {
+    this.pluginsHookCreateError = new RpcCodedError(code, code)
     return this
   }
 
@@ -539,6 +616,12 @@ export class FakeWorker {
   echoPref(streamId: string, level: PrefLevel): void {
     this.prefRows.set(streamId, level)
     this.publishPrefs()
+  }
+
+  /** Fan a FULL presence snapshot on `{kind:'presence'}` (ENG-126 push shape). */
+  publishPresence(entries: Array<{ user_id: string; status: PresenceStatus }>): void {
+    const payload: PushPayload<{ kind: 'presence' }> = { presence: entries }
+    for (const h of this.subs.get('presence') ?? []) h(payload)
   }
 
   publishStream(streamId: string): void {
@@ -1027,6 +1110,164 @@ export class FakeWorker {
               icon_sha256: null,
             }
             return Promise.resolve({ ...this.adminWorkspace })
+          },
+        },
+      },
+      // ENG-176 plugins: seedable bots/hooks; mint/create resolve the ONE-TIME
+      // raw token / capability URL (`mintedBotToken` / `createdHookUrl`) while
+      // the listings only ever gain hash handles — the real server discipline.
+      plugins: {
+        bots: {
+          list: () => {
+            this.pluginsBotsListSpy()
+            if (this.pluginsListError) {
+              const err = this.pluginsListError
+              this.pluginsListError = null
+              return Promise.reject(err)
+            }
+            return Promise.resolve({
+              bots: this.pluginBots.map((b) => ({ ...b, tokens: b.tokens.map((t) => ({ ...t })) })),
+            })
+          },
+          create: (params: PluginBotCreateParams) => {
+            this.pluginsBotCreateSpy(params)
+            if (this.pluginsBotCreateError) {
+              const err = this.pluginsBotCreateError
+              this.pluginsBotCreateError = null
+              return Promise.reject(err)
+            }
+            this.pluginSeq++
+            const bot: PluginBot = {
+              bot_user_id: `b_${this.pluginSeq}`,
+              name: params.name,
+              device_id: `d_bot_${this.pluginSeq}`,
+              role: 'guest',
+              deactivated: false,
+              stream_ids: [...(params.stream_ids ?? [])],
+              tokens: [],
+            }
+            this.pluginBots.push(bot)
+            return Promise.resolve({ ...bot })
+          },
+          mintToken: (params: PluginTokenMintParams) => {
+            this.pluginsMintTokenSpy(params)
+            if (this.pluginsMintError) {
+              const err = this.pluginsMintError
+              this.pluginsMintError = null
+              return Promise.reject(err)
+            }
+            const bot = this.pluginBots.find((b) => b.bot_user_id === params.bot_user_id)
+            if (!bot) return Promise.reject(new RpcCodedError('not-found', 'no such bot'))
+            this.pluginSeq++
+            const id = `sha-bot-token-${this.pluginSeq}`
+            const scopes = params.scopes ?? (['events:write'] as const)
+            const created_at = new Date().toISOString()
+            bot.tokens.push({
+              id,
+              scopes: [...scopes],
+              created_at,
+              last_used_at: null,
+              revoked: false,
+            })
+            return Promise.resolve({
+              token: this.mintedBotToken,
+              id,
+              bot_user_id: params.bot_user_id,
+              scopes: [...scopes],
+              created_at,
+            })
+          },
+          revokeToken: (params: PluginTokenRevokeParams) => {
+            this.pluginsRevokeTokenSpy(params)
+            if (this.pluginsActionError) {
+              const err = this.pluginsActionError
+              this.pluginsActionError = null
+              return Promise.reject(err)
+            }
+            const bot = this.pluginBots.find((b) => b.bot_user_id === params.bot_user_id)
+            const token = bot?.tokens.find((t) => t.id === params.token_id && !t.revoked)
+            if (!token) return Promise.reject(new RpcCodedError('not-found', 'no such token'))
+            token.revoked = true
+            return Promise.resolve({ ok: true as const })
+          },
+          grantStream: (params: PluginStreamGrantParams) => {
+            this.pluginsGrantStreamSpy(params)
+            if (this.pluginsActionError) {
+              const err = this.pluginsActionError
+              this.pluginsActionError = null
+              return Promise.reject(err)
+            }
+            const bot = this.pluginBots.find((b) => b.bot_user_id === params.bot_user_id)
+            if (!bot) return Promise.reject(new RpcCodedError('not-found', 'no such bot'))
+            if (!bot.stream_ids.includes(params.stream_id)) bot.stream_ids.push(params.stream_id)
+            return Promise.resolve({ ok: true as const })
+          },
+          revokeStream: (params: PluginStreamGrantParams) => {
+            this.pluginsRevokeStreamSpy(params)
+            if (this.pluginsActionError) {
+              const err = this.pluginsActionError
+              this.pluginsActionError = null
+              return Promise.reject(err)
+            }
+            const bot = this.pluginBots.find((b) => b.bot_user_id === params.bot_user_id)
+            if (!bot) return Promise.reject(new RpcCodedError('not-found', 'no such bot'))
+            bot.stream_ids = bot.stream_ids.filter((s) => s !== params.stream_id)
+            return Promise.resolve({ ok: true as const })
+          },
+        },
+        hooks: {
+          list: () => {
+            this.pluginsHooksListSpy()
+            if (this.pluginsListError) {
+              const err = this.pluginsListError
+              this.pluginsListError = null
+              return Promise.reject(err)
+            }
+            return Promise.resolve({ hooks: this.pluginHooks.map((h) => ({ ...h })) })
+          },
+          create: (params: PluginHookCreateParams) => {
+            this.pluginsHookCreateSpy(params)
+            if (this.pluginsHookCreateError) {
+              const err = this.pluginsHookCreateError
+              this.pluginsHookCreateError = null
+              return Promise.reject(err)
+            }
+            this.pluginSeq++
+            const id = `sha-hook-${this.pluginSeq}`
+            const bot_user_id = params.bot_user_id ?? `b_hook_${this.pluginSeq}`
+            const created_at = new Date().toISOString()
+            // The list gains a row keyed by a HASH — never the capability URL.
+            this.pluginHooks.push({
+              id,
+              stream_id: params.stream_id,
+              bot_user_id,
+              name: params.name,
+              created_by: this.myUserId,
+              created_at,
+              disabled: false,
+            })
+            return Promise.resolve({
+              url: this.createdHookUrl,
+              id,
+              stream_id: params.stream_id,
+              bot_user_id,
+              name: params.name,
+              created_at,
+            })
+          },
+          revoke: (params: { id: string }) => {
+            this.pluginsHookRevokeSpy(params)
+            if (this.pluginsActionError) {
+              const err = this.pluginsActionError
+              this.pluginsActionError = null
+              return Promise.reject(err)
+            }
+            const before = this.pluginHooks.length
+            this.pluginHooks = this.pluginHooks.filter((h) => h.id !== params.id)
+            if (this.pluginHooks.length === before) {
+              return Promise.reject(new RpcCodedError('not-found', 'no such hook'))
+            }
+            return Promise.resolve({ ok: true as const })
           },
         },
       },

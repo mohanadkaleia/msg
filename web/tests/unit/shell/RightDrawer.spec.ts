@@ -17,7 +17,7 @@ import type { SidebarStream } from '../../../src/stores/workspace'
 
 const ChannelDetailsDrawerStub = defineComponent({
   name: 'ChannelDetailsDrawer',
-  emits: ['close', 'open-members', 'left'],
+  emits: ['close', 'open-members', 'left', 'close-dm'],
   template: '<div data-testid="details-stub" />',
 })
 
@@ -126,14 +126,16 @@ describe('RightDrawer (ENG-136 drawer-mode host)', () => {
     expect(wrapper.emitted('close-user')).toHaveLength(1)
   })
 
-  it('forwards the details panel close / open-members / left events', () => {
+  it('forwards the details panel close / open-members / left / close-dm events', () => {
     const wrapper = mountDrawer({ mode: 'details', stream })
     const details = wrapper.getComponent(ChannelDetailsDrawerStub)
     details.vm.$emit('close')
     details.vm.$emit('open-members')
     details.vm.$emit('left')
+    details.vm.$emit('close-dm')
     expect(wrapper.emitted('close')).toHaveLength(1)
     expect(wrapper.emitted('open-members')).toHaveLength(1)
     expect(wrapper.emitted('left')).toHaveLength(1)
+    expect(wrapper.emitted('close-dm')).toHaveLength(1)
   })
 })

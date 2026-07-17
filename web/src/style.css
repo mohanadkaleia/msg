@@ -79,3 +79,61 @@ body {
   outline: 2px solid rgb(var(--c-accent));
   outline-offset: 2px;
 }
+
+/*
+ * Rich message formatting — shared by BOTH sides of the composer round-trip:
+ * the live TipTap editor (`.rich-text` on the ProseMirror node) and rendered
+ * messages (`.rich-text` on MessageBody's root). One ruleset keeps what you
+ * type and what everyone reads visually identical. Token-driven (--c-*) and
+ * logical-property based (inline-start), so RTL messages (ENG-175, dir="rtl")
+ * mirror correctly. Tailwind's preflight zeroes list/quote styles globally —
+ * these rules restore them ONLY inside rich text.
+ */
+.rich-text p {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.rich-text ul,
+.rich-text ol {
+  padding-inline-start: 1.375rem;
+}
+.rich-text ul {
+  list-style: disc;
+}
+.rich-text ol {
+  list-style: decimal;
+}
+.rich-text li::marker {
+  color: rgb(var(--c-text-muted));
+}
+.rich-text code {
+  border-radius: 0.25rem;
+  border: 1px solid rgb(var(--c-border-subtle));
+  background-color: rgb(var(--c-surface-hover) / 0.6);
+  padding: 0.0625rem 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85em;
+}
+.rich-text pre {
+  overflow-x: auto;
+  border-radius: 0.375rem;
+  border: 1px solid rgb(var(--c-border-subtle));
+  background-color: rgb(var(--c-surface-hover) / 0.6);
+  padding: 0.5rem 0.75rem;
+}
+.rich-text pre code {
+  border: none;
+  border-radius: 0;
+  background-color: transparent;
+  padding: 0;
+  white-space: pre;
+}
+.rich-text blockquote {
+  border-inline-start: 3px solid rgb(var(--c-border-strong));
+  padding-inline-start: 0.75rem;
+  color: rgb(var(--c-text-secondary));
+}
+/* Breathing room between sibling blocks (messages are dense; keep it tight). */
+.rich-text :is(p, ul, ol, pre, blockquote) + :is(p, ul, ol, pre, blockquote) {
+  margin-top: 0.25rem;
+}

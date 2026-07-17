@@ -1,43 +1,44 @@
-// tests/unit/shell/NewButton.spec.ts — ENG-152 "+ New" create action, restyled
-// COMPACT in the sidebar restructure (a small ghost control, not a full-width
-// accent hero). It toggles a small menu of the REAL create flows (New message /
-// New channel — the parent wires them to the EXISTING dialogs); each item
-// emits + closes; Escape and outside clicks close. "Invite people" is
-// deliberately absent — no web invite-creation seam exists.
+// tests/unit/shell/ComposeButton.spec.ts — the sidebar create control,
+// relocated (user feedback) from the standalone "+ New" ghost button to a
+// SMALL compose icon next to the Inbox row. It toggles the same small menu of
+// the REAL create flows (New message / New channel — the parent wires them to
+// the EXISTING dialogs); each item emits + closes; Escape and outside clicks
+// close. The menu test-ids (`new-menu`, `new-menu-dm`, `new-menu-channel`)
+// are PRESERVED from the old NewButton. "Invite people" is deliberately
+// absent — no web invite-creation seam exists.
 import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import NewButton from '../../../src/components/shell/NewButton.vue'
+import ComposeButton from '../../../src/components/shell/ComposeButton.vue'
 
 function mountButton(): ReturnType<typeof mount> {
-  return mount(NewButton, { attachTo: document.body })
+  return mount(ComposeButton, { attachTo: document.body })
 }
 
-describe('NewButton (ENG-152)', () => {
+describe('ComposeButton (Inbox compose control)', () => {
   afterEach(() => {
     document.body.innerHTML = ''
   })
 
-  it('renders a compact secondary button and no menu until opened', () => {
+  it('renders a small labeled icon-only trigger and no menu until opened', () => {
     const wrapper = mountButton()
-    const button = wrapper.get('[data-testid="new-button"]')
-    expect(button.text()).toContain('New')
-    // Compact + restrained (restructure): the ghost variant with a subtle
-    // border — NOT the old full-width accent hero.
-    expect(button.classes()).not.toContain('bg-accent')
-    expect(button.classes()).not.toContain('w-full')
-    expect(button.classes()).toContain('bg-transparent')
-    expect(button.classes()).toContain('border-subtle')
+    const button = wrapper.get('[data-testid="inbox-compose"]')
+    // Icon-only (a compose glyph, no "New" text) with a REQUIRED accessible name.
+    expect(button.text()).toBe('')
+    expect(button.find('svg.lucide-square-pen-icon, svg.lucide-square-pen').exists()).toBe(true)
+    expect(button.attributes('aria-label')).toBe('New message or channel')
     expect(button.attributes('aria-haspopup')).toBe('menu')
+    // The old standalone "+ New" trigger is gone.
+    expect(wrapper.find('[data-testid="new-button"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="new-menu"]').exists()).toBe(false)
   })
 
   it('opens the menu listing the REAL create actions (no invite stub)', async () => {
     const wrapper = mountButton()
-    await wrapper.get('[data-testid="new-button"]').trigger('click')
+    await wrapper.get('[data-testid="inbox-compose"]').trigger('click')
 
     const menu = wrapper.get('[data-testid="new-menu"]')
-    expect(wrapper.get('[data-testid="new-button"]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-testid="inbox-compose"]').attributes('aria-expanded')).toBe('true')
     expect(menu.get('[data-testid="new-menu-dm"]').text()).toContain('New message')
     expect(menu.get('[data-testid="new-menu-channel"]').text()).toContain('New channel')
     // No invite item — there is no web invite-creation flow to wire.
@@ -46,7 +47,7 @@ describe('NewButton (ENG-152)', () => {
 
   it('"New channel" emits newChannel (the create-channel path) and closes', async () => {
     const wrapper = mountButton()
-    await wrapper.get('[data-testid="new-button"]').trigger('click')
+    await wrapper.get('[data-testid="inbox-compose"]').trigger('click')
     await wrapper.get('[data-testid="new-menu-channel"]').trigger('click')
 
     expect(wrapper.emitted('newChannel')).toHaveLength(1)
@@ -56,7 +57,7 @@ describe('NewButton (ENG-152)', () => {
 
   it('"New message" emits newDm (the new-DM path) and closes', async () => {
     const wrapper = mountButton()
-    await wrapper.get('[data-testid="new-button"]').trigger('click')
+    await wrapper.get('[data-testid="inbox-compose"]').trigger('click')
     await wrapper.get('[data-testid="new-menu-dm"]').trigger('click')
 
     expect(wrapper.emitted('newDm')).toHaveLength(1)
@@ -65,14 +66,14 @@ describe('NewButton (ENG-152)', () => {
 
   it('closes on Escape and on an outside click', async () => {
     const wrapper = mountButton()
-    await wrapper.get('[data-testid="new-button"]').trigger('click')
+    await wrapper.get('[data-testid="inbox-compose"]').trigger('click')
     expect(wrapper.find('[data-testid="new-menu"]').exists()).toBe(true)
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="new-menu"]').exists()).toBe(false)
 
-    await wrapper.get('[data-testid="new-button"]').trigger('click')
+    await wrapper.get('[data-testid="inbox-compose"]').trigger('click')
     expect(wrapper.find('[data-testid="new-menu"]').exists()).toBe(true)
     document.body.click()
     await wrapper.vm.$nextTick()

@@ -10,7 +10,7 @@
 // as crossed wiring ("Switch workspace" ≠ a command launcher). The pill now
 // opens a REAL workspace menu listing the workspaces this client knows about:
 // exactly one (the local-first workspace), shown as current — honest, no
-// invented workspaces. Popover mechanics mirror NewButton (toggle, Escape and
+// invented workspaces. Popover mechanics mirror ComposeButton (toggle, Escape and
 // outside click close). The `open-switcher` test-id stays on the pill.
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 

@@ -1,15 +1,22 @@
 <script setup lang="ts">
 // AdminView — ENG-151 PR-3: the Admin surface (members + pending invites +
-// workspace settings, ENG-152), reached from the sidebar's `nav-admin` item
-// (the shell's `activeView` flips to 'admin' — sections are shell panels here,
-// not router routes, matching Inbox/Apps/Files). All data flows through the
-// `client.admin.*` worker RPCs; this view never touches HTTP or the token.
+// workspace settings, ENG-152), reached from the sidebar's split Admin items
+// ("Members & invites" / "Workspace" — the shell's `activeView` flips to
+// 'admin'; sections are shell panels here, not router routes, matching
+// Inbox/Apps/Files). All data flows through the `client.admin.*` worker RPCs;
+// this view never touches HTTP or the token.
 //
-// Role gating, two layers deep: the sidebar already hides `nav-admin` for
+// Deep-targeting (sidebar Admin split): `initialTab` seeds the active tab and
+// is WATCHED — clicking the other sidebar Admin item while this view is
+// already open re-targets the tab. The tabs themselves keep working locally;
+// every user tab click is reported up via `tabChange` so the shell (and the
+// sidebar highlight) stays in sync.
+//
+// Role gating, two layers deep: the sidebar already hides the Admin items for
 // members/guests (`canAdmin`), and this view INDEPENDENTLY checks the auth
 // store's role — a non-privileged user who lands here anyway sees a no-access
 // empty state and NO admin RPC is ever issued (the server would 403 it too).
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import AdminInvitesPanel from './AdminInvitesPanel.vue'
@@ -18,14 +25,36 @@ import AdminWorkspacePanel from './AdminWorkspacePanel.vue'
 import EmptyState from '../ui/EmptyState.vue'
 import { useAuthStore } from '../../stores/auth'
 
-type AdminTab = 'members' | 'invites' | 'workspace'
+import type { AdminTab } from '../../composables/useShellController'
+
+const props = withDefaults(defineProps<{ initialTab?: AdminTab }>(), { initialTab: 'members' })
+
+const emit = defineEmits<{
+  /** A user tab click — the shell tracks it for the sidebar's active state. */
+  tabChange: [tab: AdminTab]
+}>()
 
 const { role, myUserId } = storeToRefs(useAuthStore())
 
 /** Mirror of the shell's `canAdmin` — checked HERE too (defense in depth). */
 const canAdmin = computed(() => role.value === 'owner' || role.value === 'admin')
 
-const activeTab = ref<AdminTab>('members')
+const activeTab = ref<AdminTab>(props.initialTab)
+
+// Re-target when the sidebar's split Admin items change the requested tab
+// while the view is already mounted.
+watch(
+  () => props.initialTab,
+  (tab) => {
+    activeTab.value = tab
+  },
+)
+
+/** Tab click: local switch + report up (keeps the sidebar highlight honest). */
+function selectTab(tab: AdminTab): void {
+  activeTab.value = tab
+  emit('tabChange', tab)
+}
 
 const TABS: ReadonlyArray<{ key: AdminTab; label: string }> = [
   { key: 'members', label: 'Members' },
@@ -65,7 +94,7 @@ const TABS: ReadonlyArray<{ key: AdminTab; label: string }> = [
               ? 'border-accent font-medium text-primary'
               : 'border-transparent text-secondary hover:text-primary'
           "
-          @click="activeTab = tab.key"
+          @click="selectTab(tab.key)"
         >
           {{ tab.label }}
         </button>

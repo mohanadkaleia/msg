@@ -22,9 +22,11 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { resolveWorkerClient } from '../../composables/useWorkerClient'
+import { dmDisplayName } from '../../lib/dm'
 import { highlightSegments, type HighlightSegment } from '../../lib/highlight'
 import { parseSearchInput, resolveStreamName, resolveUserName } from '../../lib/searchFilters'
 import { decodeUlidTime, formatActivityTime } from '../../lib/time'
+import { useAuthStore } from '../../stores/auth'
 import { useWorkspaceStore } from '../../stores/workspace'
 import type { SearchHit, SearchParams } from '../../worker'
 import Icon from '../ui/Icon.vue'
@@ -38,6 +40,7 @@ const DEBOUNCE_MS = 250
 const PAGE = 20
 
 const workspace = useWorkspaceStore()
+const auth = useAuthStore()
 const { streams, directory } = storeToRefs(workspace)
 
 const input = ref('')
@@ -99,7 +102,8 @@ const searchParams = computed<SearchParams | null>(() => {
 /** Query words, highlighted in each hit's snippet (best-effort literal match). */
 const terms = computed(() => parsed.value.q.split(/\s+/).filter((w) => w.length > 0))
 
-/** Directory `user_id → display_name` (raw id fallback in the view). */
+/** Directory `user_id → display_name` map — the DM label source (ENG-149/171);
+ * hit AUTHORS resolve through the store's shared `displayNameOf` (ENG-164). */
 const names = computed<ReadonlyMap<string, string>>(() => {
   const map = new Map<string, string>()
   for (const u of directory.value.users) map.set(u.user_id, u.display_name)
@@ -180,12 +184,24 @@ async function loadMore(): Promise<void> {
   }
 }
 
-/** Channel/DM label for a hit (`# name` for channels; raw id when unknown). */
+/**
+ * Channel/DM label for a hit: `# name` for channels; a DM resolves to the OTHER
+ * participant's directory name via `dm_user_ids` (ENG-171 — a DM stream is
+ * server-named null, so the raw `s_…` id leaked here before), matching the
+ * sidebar/header (lib/dm). Raw id fallback when nothing resolves (honest, never
+ * fabricated).
+ */
 function streamLabel(streamId: string): string {
   const stream = streams.value.find((s) => s.stream_id === streamId)
   if (!stream) return streamId
-  const name = stream.name ?? stream.stream_id
-  return stream.kind === 'dm' ? name : `# ${name}`
+  if (stream.kind === 'dm') {
+    return (
+      dmDisplayName(stream.dm_user_ids, auth.myUserId, names.value) ??
+      stream.name ??
+      stream.stream_id
+    )
+  }
+  return `# ${stream.name ?? stream.stream_id}`
 }
 
 /** Relative timestamp recovered from the hit's ULID id (blank when undecodable). */
@@ -297,8 +313,10 @@ onBeforeUnmount(() => {
                   <span class="shrink-0 text-xs font-medium text-accent">
                     {{ streamLabel(hit.stream_id) }}
                   </span>
+                  <!-- Author via the store's shared displayNameOf (ENG-164/171):
+                       directory name, raw-id fallback until the record syncs. -->
                   <span class="truncate text-sm font-semibold text-primary">
-                    {{ names.get(hit.author_user_id) ?? hit.author_user_id }}
+                    {{ workspace.displayNameOf(hit.author_user_id) }}
                   </span>
                   <span class="shrink-0 text-xs text-muted">{{ timeLabel(hit) }}</span>
                 </span>

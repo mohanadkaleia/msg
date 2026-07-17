@@ -77,7 +77,8 @@ const presenceLabel = computed(() => (online.value ? 'Active now' : 'Offline'))
         <h3 class="mt-3 text-base font-semibold text-primary">{{ user.display_name }}</h3>
         <p v-if="user.title" class="mt-0.5 text-sm text-secondary">{{ user.title }}</p>
         <p v-if="status" data-testid="user-details-status" class="mt-1 text-sm text-secondary">
-          <template v-if="status.emoji">{{ status.emoji }} </template>{{ status.text }}
+          <span v-if="status.emoji" class="mr-1">{{ status.emoji }}</span
+          >{{ status.text }}
         </p>
       </div>
 

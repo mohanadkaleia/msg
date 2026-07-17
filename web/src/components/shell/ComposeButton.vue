@@ -1,22 +1,23 @@
 <script setup lang="ts">
-// NewButton — ENG-152 PR-c, restyled COMPACT in the sidebar restructure: the
-// old full-width accent button read as a hero control, so it is now a small,
-// restrained ghost "+ New" button (secondary, bordered, auto width) at the top
-// of the sidebar (under the workspace pill) opening a small popover menu of
-// the REAL, already-wired create flows: "New message" (the existing
-// NewDmDialog) and "New channel" (the existing CreateChannelDialog). The menu
-// only EMITS — the parent owns the dialog flags, exactly like the palette's
-// command seams. No invented actions: "Invite people" is deliberately absent
+// ComposeButton — the sidebar's create control, relocated (user feedback) from
+// the standalone "+ New" ghost button (the former NewButton, ENG-152 PR-c) to a
+// SMALL compose icon sitting next to the Inbox nav row. Same menu, same REAL
+// create flows: "New message" (the existing NewDmDialog) and "New channel" (the
+// existing CreateChannelDialog). The menu only EMITS — the parent owns the
+// dialog flags, exactly like the palette's command seams. The `new-menu` /
+// `new-menu-dm` / `new-menu-channel` test-ids are PRESERVED; the trigger is now
+// `inbox-compose`. No invented actions: "Invite people" is deliberately absent
 // (no web invite-creation seam exists — see lib/commands.ts's same note for
 // the palette).
 //
 // Popover mechanics mirror the repo's bespoke pattern (EmojiPicker consumers):
 // the button toggles, Escape and an outside click close, and each item closes
-// after emitting.
+// after emitting. The menu is right-aligned (the trigger sits at the sidebar
+// row's right edge, so a left-aligned 12rem menu would overflow the column).
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import Button from '../ui/Button.vue'
 import Icon from '../ui/Icon.vue'
+import IconButton from '../ui/IconButton.vue'
 
 const emit = defineEmits<{
   /** Open the existing New DM dialog (the `open-new-dm` flow). */
@@ -58,26 +59,25 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="root" class="relative">
-    <!-- Compact secondary control (not w-full, not accent-filled). -->
-    <Button
-      variant="ghost"
+    <!-- Small compose glyph (square-pen) — the Inbox row's trailing control. -->
+    <IconButton
       size="sm"
-      class="border border-subtle"
-      data-testid="new-button"
+      label="New message or channel"
+      title="New message or channel"
+      data-testid="inbox-compose"
       aria-haspopup="menu"
       :aria-expanded="open"
       @click="open = !open"
     >
-      <Icon name="plus" :size="14" />
-      New
-    </Button>
+      <Icon name="square-pen" :size="14" />
+    </IconButton>
 
     <div
       v-if="open"
       role="menu"
       aria-label="Create"
       data-testid="new-menu"
-      class="absolute left-0 top-full z-30 mt-1 w-48 rounded-md border border-subtle bg-surface-elevated p-1 shadow-md"
+      class="absolute right-0 top-full z-30 mt-1 w-48 rounded-md border border-subtle bg-surface-elevated p-1 shadow-md"
     >
       <button
         type="button"

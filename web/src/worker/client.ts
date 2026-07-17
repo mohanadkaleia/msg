@@ -35,6 +35,17 @@ import {
   type MsgDb,
   type MutateParams,
   type MutateResult,
+  type PluginActionResult,
+  type PluginBot,
+  type PluginBotCreateParams,
+  type PluginBotsResult,
+  type PluginHookCreateParams,
+  type PluginHookCreateResult,
+  type PluginHooksResult,
+  type PluginStreamGrantParams,
+  type PluginTokenMintParams,
+  type PluginTokenMintResult,
+  type PluginTokenRevokeParams,
   type PrefLevel,
   type PrefsListResult,
   type PrefsRow,
@@ -250,6 +261,60 @@ export function makeWorkerClient(clientId: string, transport: Transport): Worker
             method: 'admin.workspace.clearIcon',
             params: {},
           }) as Promise<AdminWorkspace>,
+      },
+    },
+    // Plugins (ENG-176): HTTP pass-through over the worker's authed client,
+    // the `admin` discipline verbatim — owner/admin gating + uniform-404
+    // semantics are server truth surfaced as coded errors. The tab sees plain
+    // data; `bots.mintToken`/`hooks.create` additionally carry the ONE-TIME
+    // raw token / capability URL for immediate display — the tab must show
+    // them now or never (they are not retrievable again) and never persist them.
+    plugins: {
+      bots: {
+        list: () =>
+          caller.request({
+            method: 'plugins.bots.list',
+            params: {},
+          }) as Promise<PluginBotsResult>,
+        create: (params: PluginBotCreateParams) =>
+          caller.request({ method: 'plugins.bots.create', params }) as Promise<PluginBot>,
+        mintToken: (params: PluginTokenMintParams) =>
+          caller.request({
+            method: 'plugins.bots.mintToken',
+            params,
+          }) as Promise<PluginTokenMintResult>,
+        revokeToken: (params: PluginTokenRevokeParams) =>
+          caller.request({
+            method: 'plugins.bots.revokeToken',
+            params,
+          }) as Promise<PluginActionResult>,
+        grantStream: (params: PluginStreamGrantParams) =>
+          caller.request({
+            method: 'plugins.bots.grantStream',
+            params,
+          }) as Promise<PluginActionResult>,
+        revokeStream: (params: PluginStreamGrantParams) =>
+          caller.request({
+            method: 'plugins.bots.revokeStream',
+            params,
+          }) as Promise<PluginActionResult>,
+      },
+      hooks: {
+        list: () =>
+          caller.request({
+            method: 'plugins.hooks.list',
+            params: {},
+          }) as Promise<PluginHooksResult>,
+        create: (params: PluginHookCreateParams) =>
+          caller.request({
+            method: 'plugins.hooks.create',
+            params,
+          }) as Promise<PluginHookCreateResult>,
+        revoke: (params: { id: string }) =>
+          caller.request({
+            method: 'plugins.hooks.revoke',
+            params,
+          }) as Promise<PluginActionResult>,
       },
     },
     // Self-profile (`/v1/me`): HTTP pass-through mirroring `admin` — the tab

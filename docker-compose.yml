@@ -5,7 +5,7 @@
 services:
   app:
     build: .
-    image: msg/server
+    image: serin/server
     ports:
       # Loopback-only bind, deliberately: Docker port-publishing bypasses host
       # firewalls (the ufw-bypass behavior), so "8080:8080" would expose the

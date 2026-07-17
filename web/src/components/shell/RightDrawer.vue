@@ -41,6 +41,8 @@ defineEmits<{
   'open-members': []
   /** The user left the channel — the shell closes + reselects. */
   left: []
+  /** DM "Close conversation" (ENG-172) — the shell closes + navigates away. */
+  'close-dm': []
   /** User-details ✕ — the shell clears the overlay, restoring the prior state. */
   'close-user': []
 }>()
@@ -67,6 +69,7 @@ defineEmits<{
       @close="$emit('close')"
       @open-members="$emit('open-members')"
       @left="$emit('left')"
+      @close-dm="$emit('close-dm')"
     />
   </div>
 

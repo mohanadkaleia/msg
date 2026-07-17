@@ -156,7 +156,9 @@ test('m3 messaging core: react · edit · delete · thread · mention · channel
 
   // --- 7) Create a channel → the store switches to it (header shows the name) -
   const chanName = `proj-${stamp}`
-  await page1.getByTestId('open-create-channel').click()
+  // ENG-177: the Channels header `+` was removed — create via the Inbox compose menu.
+  await page1.getByTestId('inbox-compose').click()
+  await page1.getByTestId('new-menu-channel').click()
   await expect(page1.getByTestId('create-channel')).toBeVisible()
   await page1.getByTestId('create-channel-name').fill(chanName)
   await page1.getByTestId('create-channel-submit').click()
@@ -185,6 +187,43 @@ test('m3 messaging core: react · edit · delete · thread · mention · channel
   await expect(page1.getByTestId('channel-header')).toContainText('Second', {
     timeout: WS_TIMEOUT,
   })
+
+  // --- 9) Composer formatting smoke: a bulleted list ROUND-TRIPS --------------
+  // Toolbar toggles the list (pressed state on), Enter splits a new item instead
+  // of sending, and the SENT message renders a real <ul><li> (markdown source →
+  // MessageBody), not literal "- " text.
+  const itemA = `fmt-alpha-${stamp}`
+  const itemB = `fmt-beta-${stamp}`
+  await page1.getByTestId('composer-input').click()
+  await page1.getByTestId('composer-format-bulletList').click()
+  await expect(page1.getByTestId('composer-format-bulletList')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+  await page1.keyboard.type(itemA)
+  await page1.keyboard.press('Enter') // inside a list: new item, NOT send
+  await page1.keyboard.type(itemB)
+  await page1.getByTestId('composer-send').click()
+  const fmtRow = mainRow(page1, itemA)
+  await expect(fmtRow).toBeVisible({ timeout: WS_TIMEOUT })
+  await expect(fmtRow.getByTestId('message-text').locator('ul > li')).toHaveText([itemA, itemB])
+
+  // --- 10) ENG-134: the new DM + its message reach the RECIPIENT (page2) LIVE --
+  // The second member never created or opened this DM. The WS fanout of the
+  // genesis `dm.created` + the first `message.created` must make it appear in
+  // their sidebar AND be open-able WITHOUT a page reload. Pre-fix, the worker
+  // stored the stream but never fanned a `{kind:'sync'}` signal on the live
+  // new-stream path, so the sidebar stayed stale until refresh (the reported bug).
+  await expect(page2.getByTestId('sidebar-dm')).toHaveCount(1, { timeout: WS_TIMEOUT })
+  const dmRow2 = page2.getByTestId('sidebar-dm').first()
+  // ENG-149: labeled by the OTHER participant — the owner ("Owner"), never the id.
+  await expect(dmRow2).toContainText('Owner', { timeout: WS_TIMEOUT })
+  await dmRow2.click()
+  // The DM's first message (the step-9 bulleted list) rendered live for the recipient.
+  await expect(mainRow(page2, itemA).getByTestId('message-text').locator('ul > li')).toHaveText(
+    [itemA, itemB],
+    { timeout: WS_TIMEOUT },
+  )
 
   await ctx1.close()
   await ctx2.close()

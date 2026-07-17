@@ -101,4 +101,42 @@ describe('AdminView (ENG-151 PR-3)', () => {
       'Acme',
     )
   })
+
+  it('deep-targets a tab via `initialTab` and re-targets when the prop changes', async () => {
+    // The sidebar's split "Workspace" Admin item lands DIRECTLY on the
+    // settings tab (not Members).
+    setWorkerClient(fake.client)
+    const auth = useAuthStore()
+    auth.role = 'owner'
+    auth.myUserId = 'u_owner'
+    const wrapper = mount(AdminView, {
+      attachTo: document.body,
+      props: { initialTab: 'workspace' },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="admin-tab-workspace"]').attributes('aria-selected')).toBe(
+      'true',
+    )
+    expect(wrapper.find('[data-testid="admin-workspace"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="admin-members"]').exists()).toBe(false)
+
+    // Clicking the OTHER sidebar Admin item while the view is already open
+    // re-targets the tab (the shell passes the new `initialTab`).
+    await wrapper.setProps({ initialTab: 'members' })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="admin-tab-members"]').attributes('aria-selected')).toBe(
+      'true',
+    )
+    expect(wrapper.find('[data-testid="admin-members"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="admin-workspace"]').exists()).toBe(false)
+  })
+
+  it('reports user tab clicks up via tabChange (tabs keep working when open)', async () => {
+    const wrapper = await mountView('owner', 'u_owner')
+
+    await wrapper.get('[data-testid="admin-tab-workspace"]').trigger('click')
+    await wrapper.get('[data-testid="admin-tab-invites"]').trigger('click')
+    expect(wrapper.emitted('tabChange')).toEqual([['workspace'], ['invites']])
+  })
 })

@@ -3,8 +3,8 @@
 // and every test-id are identical (only the wrapping element changed). This proves the
 // grid COMPOSITION: the rail/sidebar/main/drawer landmarks render, a real conversation
 // mounts channel-header + MessageList + MessageComposer, the Inbox section mounts the
-// REAL InboxView (ENG-136 — no longer a placeholder), a scaffold section flips main to
-// an EmptyState, the thread drawer mounts when a thread is open and unmounts
+// REAL InboxView (ENG-136 — no longer a placeholder), the Apps section flips main to the
+// REAL AppsView (ENG-176 — owner/admin only), the thread drawer mounts when a thread is open and unmounts
 // synchronously on close, and the sync indicator is unique. The heavy leaves
 // (MessageList/MessageComposer/ThreadPane) are stubbed — their own testids are covered by
 // their specs; here we only assert AppShell wires each region into the right track.
@@ -15,7 +15,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import AppShell from '../../../src/components/shell/AppShell.vue'
 import { setWorkerClient } from '../../../src/composables/useWorkerClient'
+import { useAuthStore } from '../../../src/stores/auth'
 import { useThreadStore } from '../../../src/stores/thread'
+import { useWorkspaceStore } from '../../../src/stores/workspace'
 import { FakeWorker } from './fakeWorker'
 
 const Blank = { template: '<div />' }
@@ -197,10 +199,56 @@ describe('AppShell (ENG-136 PR-C)', () => {
     await wrapper.get('[data-testid="palette-command-create-channel"]').trigger('click')
     await flushPromises()
 
-    // Palette closed; the SAME dialog the sidebar's `open-create-channel` opens.
+    // Palette closed; the SAME dialog the Inbox compose menu's "New channel" opens.
     expect(wrapper.find('[data-testid="command-palette"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="create-channel"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="create-channel-name"]').exists()).toBe(true)
+  })
+
+  it('palette "Browse channels" command lists un-joined publics and joins on click (ENG-177)', async () => {
+    // ENG-177: the sidebar ⌕ button is gone; browsing now originates in the palette.
+    fake.addStream({ stream_id: 's_general', name: 'general', kind: 'channel', member: true })
+    fake.addStream({
+      stream_id: 's_open',
+      name: 'random',
+      kind: 'channel',
+      visibility: 'public',
+      member: false,
+    })
+    setWorkerClient(fake.client)
+    const wrapper = mount(AppShell, {
+      attachTo: document.body,
+      global: {
+        plugins: [router],
+        stubs: {
+          MessageList: stubs.MessageList,
+          MessageComposer: stubs.MessageComposer,
+          ThreadPane: stubs.ThreadPane,
+        },
+      },
+    })
+    await flushPromises()
+
+    const store = useWorkspaceStore()
+    // The un-joined public channel is NOT in the sidebar list yet.
+    expect(store.channels.some((c) => c.stream_id === 's_open')).toBe(false)
+    expect(store.browsableChannels.map((c) => c.stream_id)).toEqual(['s_open'])
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="palette-command-browse-channels"]').trigger('click')
+    await flushPromises()
+
+    const browser = document.querySelector('[data-testid="channel-browser"]')!
+    const joinBtn = browser.querySelector<HTMLButtonElement>('[data-testid="join-channel"]')!
+    expect(joinBtn.getAttribute('data-stream-id')).toBe('s_open')
+    joinBtn.click()
+    await flushPromises()
+
+    // Joining a public channel is a local open + switch (§3.6 — no membership event).
+    expect(fake.metaSpy).not.toHaveBeenCalled()
+    expect(store.selectedStreamId).toBe('s_open')
+    expect(store.channels.some((c) => c.stream_id === 's_open')).toBe(true)
   })
 
   it('search jump closes the overlay and selects the hit stream (ENG-127)', async () => {
@@ -289,18 +337,25 @@ describe('AppShell (ENG-136 PR-C)', () => {
     expect(wrapper.get('[data-testid="channel-header"]').text()).toBe('# alpha')
   })
 
-  it('flips the main panel to an EmptyState for a scaffold section', async () => {
+  it('flips the main panel to the REAL Apps surface (ENG-176 — owner/admin only)', async () => {
     fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    // The Apps nav item is owner/admin-gated; land as an owner so it renders.
+    const auth = useAuthStore()
+    auth.role = 'owner'
+    auth.myUserId = 'u_owner'
     const wrapper = await mountShell(fake, router)
 
     await wrapper.get('[data-testid="nav-apps"]').trigger('click')
+    await flushPromises()
 
-    // The conversation leaves are gone; the scaffold EmptyState is shown in main.
+    // The conversation leaves are gone; the REAL AppsView (bots panel) is shown
+    // — no scaffold, no "coming soon".
     expect(wrapper.find('[data-testid="message-list"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="composer-input"]').exists()).toBe(false)
     const main = wrapper.get('main[role="main"]')
-    expect(main.text()).toContain('Apps')
-    expect(main.text()).toContain('coming soon')
+    expect(main.find('[data-testid="apps-view"]').exists()).toBe(true)
+    expect(main.find('[data-testid="apps-bots"]').exists()).toBe(true)
+    expect(main.text()).not.toContain('coming soon')
   })
 
   it('opens the thread drawer when a thread is open and unmounts it synchronously on close', async () => {
@@ -381,6 +436,47 @@ describe('AppShell (ENG-136 PR-C)', () => {
     await flushPromises()
     const dialog = wrapper.get('[data-testid="channel-settings"]')
     expect(dialog.text()).toContain('alpha')
+  })
+
+  it('collapse control hides the sidebar; the TopBar affordance expands it (ENG-174)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const wrapper = await mountShell(fake, router)
+
+    // The control is REAL now — no "(coming soon)" copy anywhere on it.
+    const control = wrapper.get('[data-testid="collapse-sidebar"]')
+    expect(control.attributes('aria-label')).toBe('Collapse sidebar')
+    expect(control.attributes('title')).not.toContain('coming soon')
+
+    // Default: sidebar visible, no expand affordance in the top bar.
+    const sidebar = wrapper.get('aside[role="navigation"]').element as HTMLElement
+    expect(sidebar.style.display).not.toBe('none')
+    expect(wrapper.find('[data-testid="expand-sidebar"]').exists()).toBe(false)
+
+    // Click → the sidebar column hides (v-show — rows stay mounted) and the
+    // rail + main column remain; the top bar now offers the expand affordance.
+    await control.trigger('click')
+    expect(sidebar.style.display).toBe('none')
+    expect(wrapper.find('nav[aria-label="Workspaces"]').exists()).toBe(true)
+    expect(wrapper.find('main[role="main"]').exists()).toBe(true)
+
+    // Expand from the top bar: the sidebar returns, the affordance goes away.
+    await wrapper.get('[data-testid="expand-sidebar"]').trigger('click')
+    expect(sidebar.style.display).not.toBe('none')
+    expect(wrapper.find('[data-testid="expand-sidebar"]').exists()).toBe(false)
+  })
+
+  it('Cmd+\\ toggles the sidebar from anywhere (ENG-174)', async () => {
+    fake.addStream({ stream_id: 's_a', name: 'alpha', kind: 'channel' })
+    const wrapper = await mountShell(fake, router)
+    const sidebar = wrapper.get('aside[role="navigation"]').element as HTMLElement
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', metaKey: true }))
+    await wrapper.vm.$nextTick()
+    expect(sidebar.style.display).toBe('none')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', ctrlKey: true }))
+    await wrapper.vm.$nextTick()
+    expect(sidebar.style.display).not.toBe('none')
   })
 
   it('hosts exactly one sync indicator (unique selector for the golden path)', async () => {

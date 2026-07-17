@@ -13,6 +13,7 @@ members = [
     "msg-workspace",
     "msgctl",
     "msgd",
+    "serin-sdk",
 ]
 
 [[package]]
@@ -736,6 +737,7 @@ dependencies = [
     { name = "github-notifier" },
     { name = "msgctl" },
     { name = "msgd" },
+    { name = "serin-sdk" },
 ]
 
 [package.dev-dependencies]
@@ -748,6 +750,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "testcontainers" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -755,6 +758,7 @@ requires-dist = [
     { name = "github-notifier", editable = "plugins/github_notifier" },
     { name = "msgctl", editable = "cli" },
     { name = "msgd", editable = "server" },
+    { name = "serin-sdk", editable = "plugins/serin_sdk" },
 ]
 
 [package.metadata.requires-dev]
@@ -767,6 +771,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff", specifier = ">=0.6" },
     { name = "testcontainers", extras = ["postgres"] },
+    { name = "websockets", specifier = ">=13" },
 ]
 
 [[package]]
@@ -1250,6 +1255,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fa/f0/fe47c501f9dea92a26d788ff98bb5d92ed4cb4c88792c5c88af6b697dc8e/ruff-0.15.20-py3-none-win_amd64.whl", hash = "sha256:a525c81c70fb0380344dd1d8745d8cc1c890b7fc94a58d5a07bd8eb9557b8415", size = 11993274, upload-time = "2026-06-25T17:20:31.871Z" },
     { url = "https://files.pythonhosted.org/packages/d7/2b/9555445e1201d92b3195f45cdb153a0b68f24e0a4273f6e3d5ab46e212bb/ruff-0.15.20-py3-none-win_arm64.whl", hash = "sha256:2f5b2a6d614e8700388806a14996c40fab2c47b819ef57d790a34878858ed9ca", size = 11343498, upload-time = "2026-06-25T17:20:35.03Z" },
 ]
+
+[[package]]
+name = "serin-sdk"
+version = "0.1.0"
+source = { editable = "plugins/serin_sdk" }
+
+[package.optional-dependencies]
+ws = [
+    { name = "websockets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "websockets", marker = "extra == 'ws'", specifier = ">=13" }]
+provides-extras = ["ws"]
 
 [[package]]
 name = "sortedcontainers"

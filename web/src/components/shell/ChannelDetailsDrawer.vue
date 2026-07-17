@@ -14,18 +14,31 @@
 //   `channel.removeMember(streamId, myUserId)` mutation; `left` lets the shell
 //   close the drawer + reselect gracefully.
 // - About / Files / Pinned / Apps / Threads / Shortcuts are SCAFFOLD rows —
-//   visually faithful, honestly "—" counts, clicking is a no-op.
+//   visually faithful, descriptive empty-state copy (ENG-173 — never a bare "—"),
+//   clicking is a no-op.
+// - DM (ENG-172): a DM's Details panel is context-aware — it shows the OTHER
+//   participant's profile (avatar/name/title/status/presence, the same directory
+//   + presence data the hovercard uses), shared Files, the REAL Notifications
+//   selector (its "Mute" option IS the DM mute, via the same prefs surface), and
+//   a "Close conversation" action (`close-dm` — the shell deselects the DM).
+//   Channel-only concepts (About/Members/Apps/Threads/Shortcuts/Leave) never
+//   render for a DM.
 // All data flows through the worker client / stores — never the HTTP API.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import Icon, { type IconName } from '../ui/Icon.vue'
 import IconButton from '../ui/IconButton.vue'
+import PresenceDot from '../ui/PresenceDot.vue'
+import UserAvatar from '../ui/UserAvatar.vue'
 import { resolveWorkerClient } from '../../composables/useWorkerClient'
+import { dmOtherUserId } from '../../lib/dm'
+import { activeStatus } from '../../lib/status'
 import { useAuthStore } from '../../stores/auth'
 import { useNotificationsStore } from '../../stores/notifications'
+import { usePresenceStore } from '../../stores/presence'
 import { useWorkspaceStore, type SidebarStream } from '../../stores/workspace'
-import type { PrefLevel, Unsubscribe } from '../../worker'
+import type { DirectoryUser, PrefLevel, PresenceStatus, Unsubscribe } from '../../worker'
 
 const props = defineProps<{
   /** The selected stream the drawer describes (id, name, kind). */
@@ -39,13 +52,43 @@ const emit = defineEmits<{
   'open-members': []
   /** The leave mutation succeeded — the shell closes + reselects. */
   left: []
+  /** DM "Close conversation" (ENG-172) — the shell closes + navigates away. */
+  'close-dm': []
 }>()
 
 const auth = useAuthStore()
 const workspace = useWorkspaceStore()
 const notifications = useNotificationsStore()
+const presence = usePresenceStore()
 const { myUserId } = storeToRefs(auth)
 const { directory } = storeToRefs(workspace)
+const { statuses: presenceStatuses } = storeToRefs(presence)
+
+// -- DM context (ENG-172) -----------------------------------------------------
+
+/** Whether the panel describes a DM — flips it to the participant-profile view. */
+const isDm = computed(() => props.stream.kind === 'dm')
+
+/** The DM counterpart's user id (ENG-149 resolution), if resolvable. */
+const dmUserId = computed<string | undefined>(() =>
+  isDm.value ? dmOtherUserId(props.stream.dm_user_ids, myUserId.value) : undefined,
+)
+
+/** The counterpart's directory record (name-only stub when not yet folded). */
+const dmUser = computed<DirectoryUser | undefined>(() => {
+  const id = dmUserId.value
+  if (id === undefined) return undefined
+  return workspace.userOf(id) ?? { user_id: id, display_name: workspace.displayNameOf(id) }
+})
+
+/** The counterpart's live presence (`offline` when unknown). */
+const dmPresence = computed<PresenceStatus>(() => {
+  const id = dmUserId.value
+  return id === undefined ? 'offline' : (presenceStatuses.value.get(id) ?? 'offline')
+})
+
+/** The counterpart's ACTIVE custom status (lazy expiry at render — ENG-164). */
+const dmStatus = computed(() => activeStatus(dmUser.value))
 
 // -- Notifications (REAL, ENG-129) ------------------------------------------
 
@@ -152,19 +195,30 @@ interface DetailRow {
   onClick?: () => void
 }
 
-/** SCAFFOLD rows above the Notifications row (static, honest "—" counts). */
-const topScaffoldRows: DetailRow[] = [
-  { icon: 'info', label: 'About', sub: 'Description, members, rules' },
-]
-const midScaffoldRows: DetailRow[] = [
-  { icon: 'file', label: 'Files', sub: '— files' },
-  { icon: 'pin', label: 'Pinned', sub: '— items' },
-  { icon: 'grid', label: 'Apps', sub: '— apps' },
-]
-const bottomScaffoldRows: DetailRow[] = [
-  { icon: 'message-square', label: 'Threads', sub: 'View all threads' },
-  { icon: 'keyboard', label: 'Shortcuts', sub: '— shortcuts' },
-]
+/** SCAFFOLD rows above the Notifications row. Empty sections carry descriptive
+ * empty-state copy (ENG-173) — never a bare "—" where words should be. A DM
+ * (ENG-172) keeps only the DM-relevant Files row; About/Pinned/Apps/Threads/
+ * Shortcuts are channel concepts. */
+const topScaffoldRows = computed<DetailRow[]>(() =>
+  isDm.value ? [] : [{ icon: 'info', label: 'About', sub: 'Description, members, rules' }],
+)
+const midScaffoldRows = computed<DetailRow[]>(() =>
+  isDm.value
+    ? [{ icon: 'file', label: 'Files', sub: 'No files yet' }]
+    : [
+        { icon: 'file', label: 'Files', sub: 'No files yet' },
+        { icon: 'pin', label: 'Pinned', sub: 'No pinned items' },
+        { icon: 'grid', label: 'Apps', sub: 'No apps installed' },
+      ],
+)
+const bottomScaffoldRows = computed<DetailRow[]>(() =>
+  isDm.value
+    ? []
+    : [
+        { icon: 'message-square', label: 'Threads', sub: 'View all threads' },
+        { icon: 'keyboard', label: 'Shortcuts', sub: 'No shortcuts' },
+      ],
+)
 </script>
 
 <template>
@@ -185,7 +239,49 @@ const bottomScaffoldRows: DetailRow[] = [
     </header>
 
     <div class="flex-1 overflow-y-auto py-2">
-      <!-- SCAFFOLD: About. -->
+      <!-- ENG-172 DM: the OTHER participant's profile (directory record + live
+           presence — the same data the hovercard/user-details panel renders).
+           Every field is user-controlled → text interpolation only. -->
+      <div
+        v-if="isDm && dmUser"
+        class="flex flex-col items-center border-b border-subtle px-4 pb-4 pt-2 text-center"
+        data-testid="dm-profile"
+      >
+        <span class="relative shrink-0">
+          <UserAvatar
+            aria-hidden="true"
+            class="grid h-16 w-16 place-items-center rounded-full bg-accent-subtle text-xl font-semibold text-accent"
+            :user-id="dmUser.user_id"
+            :name="dmUser.display_name"
+            :sha="dmUser.avatar_sha256"
+          />
+          <PresenceDot
+            :status="dmPresence"
+            class="absolute bottom-0.5 right-0.5 border-2 border-background"
+          />
+        </span>
+        <h3 class="mt-2 text-sm font-semibold text-primary" data-testid="dm-profile-name">
+          {{ dmUser.display_name }}
+        </h3>
+        <p v-if="dmUser.title" class="mt-0.5 text-xs text-secondary">{{ dmUser.title }}</p>
+        <p v-if="dmStatus" data-testid="dm-profile-status" class="mt-0.5 text-xs text-secondary">
+          <template v-if="dmStatus.emoji">{{ dmStatus.emoji }} </template>{{ dmStatus.text }}
+        </p>
+        <p
+          class="mt-1.5 flex items-center gap-1.5 text-xs text-muted"
+          data-testid="dm-profile-presence"
+          :data-status="dmPresence"
+        >
+          <span
+            aria-hidden="true"
+            class="h-1.5 w-1.5 shrink-0 rounded-full"
+            :class="dmPresence === 'online' ? 'bg-success' : 'bg-muted'"
+          />
+          {{ dmPresence === 'online' ? 'Active now' : 'Offline' }}
+        </p>
+      </div>
+
+      <!-- SCAFFOLD: About (channels only). -->
       <button
         v-for="row in topScaffoldRows"
         :key="row.label"
@@ -200,8 +296,10 @@ const bottomScaffoldRows: DetailRow[] = [
         <Icon name="chevron-right" :size="16" class="shrink-0 text-muted" />
       </button>
 
-      <!-- REAL: Members — opens the existing channel-settings dialog (ENG-104). -->
+      <!-- REAL: Members — opens the existing channel-settings dialog (ENG-104).
+           Channel-only (ENG-172): a 1:1 DM has no member roster to manage. -->
       <button
+        v-if="!isDm"
         type="button"
         class="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface"
         data-testid="channel-members"
@@ -232,7 +330,8 @@ const bottomScaffoldRows: DetailRow[] = [
         <Icon name="chevron-right" :size="16" class="shrink-0 text-muted" />
       </button>
 
-      <!-- REAL: Notifications (ENG-129) — per-channel prefs level selector. -->
+      <!-- REAL: Notifications (ENG-129) — per-stream prefs level selector. Kept
+           for DMs too (ENG-172): its "Mute" option is the DM mute action. -->
       <div class="relative">
         <button
           type="button"
@@ -296,9 +395,9 @@ const bottomScaffoldRows: DetailRow[] = [
         </p>
       </div>
 
-      <div class="my-2 border-t border-subtle" />
+      <div v-if="!isDm" class="my-2 border-t border-subtle" />
 
-      <!-- SCAFFOLD: Threads / Shortcuts. -->
+      <!-- SCAFFOLD: Threads / Shortcuts (channels only). -->
       <button
         v-for="row in bottomScaffoldRows"
         :key="row.label"
@@ -311,6 +410,21 @@ const bottomScaffoldRows: DetailRow[] = [
           <span class="block truncate text-xs text-muted">{{ row.sub }}</span>
         </span>
         <Icon name="chevron-right" :size="16" class="shrink-0 text-muted" />
+      </button>
+    </div>
+
+    <!-- ENG-172 DM action: Close conversation — wired to the shell (`close-dm`),
+         which closes this panel and navigates away from the DM. Mute lives in the
+         Notifications selector above (the REAL prefs surface). -->
+    <div v-if="isDm" class="border-t border-subtle py-2">
+      <button
+        type="button"
+        class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-secondary hover:bg-surface hover:text-primary"
+        data-testid="dm-close-conversation"
+        @click="emit('close-dm')"
+      >
+        <Icon name="x" :size="18" class="shrink-0" />
+        Close conversation
       </button>
     </div>
 

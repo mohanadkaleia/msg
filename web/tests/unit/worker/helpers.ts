@@ -17,6 +17,10 @@ import type {
   FromWorker,
   MeProfile,
   MessageSink,
+  PluginBot,
+  PluginHook,
+  PluginHookCreateResult,
+  PluginTokenMintResult,
   SearchResult,
   StoredEvent,
   SyncStreamMeta,
@@ -326,6 +330,20 @@ export class FakeSyncServer {
     description: null,
     icon_sha256: null,
   }
+
+  // -- ENG-176 plugins model (HTTP pass-through; mirrors routers/plugins.py) --
+  /** The bots served by `GET /v1/plugins/bots` (tests seed or create them). */
+  pluginBots: PluginBot[] = []
+  /** The hooks served by `GET /v1/plugins/hooks` (tests seed or create them). */
+  pluginHooks: PluginHook[] = []
+  /** When set, EVERY plugins call fails with this error (403 gate / 422 model). */
+  pluginsError: ApiError | undefined
+  /** The RAW bot token the NEXT token mint returns (exactly once, D2). */
+  nextBotToken = 'raw-bot-token-1'
+  /** The RAW path token the NEXT hook create embeds in its capability URL. */
+  nextHookToken = 'raw-hook-token-1'
+  /** Counter minting deterministic ids/hashes for bots/tokens/hooks. */
+  private pluginSeq = 0
 
   // -- self-profile model (`/v1/me`; HTTP pass-through like admin) ----------
   /** The caller's own profile served by `GET /v1/me` (tests seed it). */
@@ -884,6 +902,161 @@ export class FakeSyncServer {
     return { ok: true, value: undefined }
   }
 
+  // -- ENG-176 plugins responders (mirror routers/plugins.py semantics) -----
+
+  private readonly notFound = (): ApiResult<never> => ({
+    ok: false,
+    error: { status: 404, code: 'not-found', title: 'Not found' },
+  })
+
+  /** `GET /v1/plugins/bots` — grants + token HASH handles only, never a raw. */
+  respondPluginBots(): ApiResult<{ bots: PluginBot[] }> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    return { ok: true, value: { bots: this.pluginBots.map((b) => ({ ...b })) } }
+  }
+
+  /** `POST /v1/plugins/bots` — provision the identity (NO credential minted). */
+  respondPluginCreateBot(body: {
+    name: string
+    scopes: string[]
+    stream_ids?: string[]
+  }): ApiResult<PluginBot> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    this.pluginSeq++
+    const bot: PluginBot = {
+      bot_user_id: `b_${this.pluginSeq}`,
+      name: body.name,
+      device_id: `d_bot_${this.pluginSeq}`,
+      role: 'guest',
+      deactivated: false,
+      stream_ids: [...(body.stream_ids ?? [])],
+      tokens: [],
+    }
+    this.pluginBots.push(bot)
+    return { ok: true, value: { ...bot } }
+  }
+
+  /**
+   * `POST /v1/plugins/bots/{id}/tokens` — mint: the RAW token appears in this
+   * response ONLY; the listing gains a sha256-ish HASH handle. A deactivated
+   * bot is a 403 (`forbidden` — no fresh credentials for a disabled principal);
+   * an unknown bot the uniform 404.
+   */
+  respondPluginMintToken(
+    botUserId: string,
+    body: { scopes?: string[] },
+  ): ApiResult<PluginTokenMintResult> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    const bot = this.pluginBots.find((b) => b.bot_user_id === botUserId)
+    if (!bot) return this.notFound()
+    if (bot.deactivated) {
+      return { ok: false, error: { status: 403, code: 'forbidden', title: 'Forbidden' } }
+    }
+    this.pluginSeq++
+    const raw = this.nextBotToken
+    const id = `sha-bot-token-${this.pluginSeq}` // a stand-in for sha256(raw)
+    const scopes = [...(body.scopes ?? ['events:write'])].sort()
+    const created_at = new Date(1_700_000_000_000 + this.pluginSeq).toISOString()
+    bot.tokens.push({ id, scopes, created_at, last_used_at: null, revoked: false })
+    return {
+      ok: true,
+      value: {
+        token: raw,
+        id,
+        bot_user_id: botUserId,
+        scopes: scopes as PluginTokenMintResult['scopes'],
+        created_at,
+      },
+    }
+  }
+
+  /** `DELETE .../tokens/{token_id}` — tombstone revoke; uniform 404 otherwise. */
+  respondPluginRevokeToken(botUserId: string, tokenId: string): ApiResult<void> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    const bot = this.pluginBots.find((b) => b.bot_user_id === botUserId)
+    const token = bot?.tokens.find((t) => t.id === tokenId)
+    if (!token || token.revoked) return this.notFound()
+    token.revoked = true
+    return { ok: true, value: undefined }
+  }
+
+  /** `PUT .../streams/{stream_id}` — idempotent grant; unknown bot → uniform 404. */
+  respondPluginGrantStream(botUserId: string, streamId: string): ApiResult<void> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    const bot = this.pluginBots.find((b) => b.bot_user_id === botUserId)
+    if (!bot) return this.notFound()
+    if (!bot.stream_ids.includes(streamId)) bot.stream_ids.push(streamId)
+    return { ok: true, value: undefined }
+  }
+
+  /** `DELETE .../streams/{stream_id}` — idempotent revoke; unknown bot → 404. */
+  respondPluginRevokeStream(botUserId: string, streamId: string): ApiResult<void> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    const bot = this.pluginBots.find((b) => b.bot_user_id === botUserId)
+    if (!bot) return this.notFound()
+    bot.stream_ids = bot.stream_ids.filter((s) => s !== streamId)
+    return { ok: true, value: undefined }
+  }
+
+  /** `GET /v1/plugins/hooks` — hash handles only, the capability URL never again. */
+  respondPluginHooks(): ApiResult<{ hooks: PluginHook[] }> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    return { ok: true, value: { hooks: this.pluginHooks.map((h) => ({ ...h })) } }
+  }
+
+  /**
+   * `POST /v1/plugins/hooks` — register: the capability URL (raw path token
+   * embedded) appears in this response ONLY; the listing gains a hash handle.
+   * `bot_user_id` omitted → a dedicated bot is auto-provisioned.
+   */
+  respondPluginCreateHook(body: {
+    stream_id: string
+    name: string
+    bot_user_id?: string
+  }): ApiResult<PluginHookCreateResult> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    if (body.bot_user_id !== undefined) {
+      const bot = this.pluginBots.find((b) => b.bot_user_id === body.bot_user_id)
+      if (!bot) return this.notFound()
+      if (bot.deactivated) {
+        return { ok: false, error: { status: 403, code: 'forbidden', title: 'Forbidden' } }
+      }
+    }
+    this.pluginSeq++
+    const id = `sha-hook-${this.pluginSeq}` // a stand-in for sha256(raw)
+    const bot_user_id = body.bot_user_id ?? `b_hook_${this.pluginSeq}`
+    const created_at = new Date(1_700_000_000_000 + this.pluginSeq).toISOString()
+    this.pluginHooks.push({
+      id,
+      stream_id: body.stream_id,
+      bot_user_id,
+      name: body.name,
+      created_by: 'u_owner',
+      created_at,
+      disabled: false,
+    })
+    return {
+      ok: true,
+      value: {
+        url: `https://msg.example/v1/hooks/${this.nextHookToken}`,
+        id,
+        stream_id: body.stream_id,
+        bot_user_id,
+        name: body.name,
+        created_at,
+      },
+    }
+  }
+
+  /** `DELETE /v1/plugins/hooks/{id}` — HARD delete; no row → the uniform 404. */
+  respondPluginRevokeHook(id: string): ApiResult<void> {
+    if (this.pluginsError) return { ok: false, error: this.pluginsError }
+    const before = this.pluginHooks.length
+    this.pluginHooks = this.pluginHooks.filter((h) => h.id !== id)
+    if (this.pluginHooks.length === before) return this.notFound()
+    return { ok: true, value: undefined }
+  }
+
   /** The stored wire event for an `event_id` (to emit as a WS frame in a test). */
   wireFor(eventId: string): WireEvent | undefined {
     for (const s of this.streams.values()) {
@@ -903,6 +1076,8 @@ export class FakeSyncServer {
     if (path.startsWith('/v1/search')) return this.respondSearch()
     if (path.startsWith('/v1/admin/members')) return this.respondAdminMembers()
     if (path.startsWith('/v1/admin/invites')) return this.respondAdminInvites()
+    if (path === '/v1/plugins/bots') return this.respondPluginBots()
+    if (path === '/v1/plugins/hooks') return this.respondPluginHooks()
     if (path === '/v1/admin/workspace') return this.respondAdminWorkspace()
     if (path === '/v1/me') return this.respondMe()
     if (path.startsWith('/v1/read-state')) return this.respondGetReadState()
@@ -1018,6 +1193,23 @@ export class FakeHttpClient implements HttpClient {
         body as { role: string; ttl_seconds?: number },
       ) as ApiResult<T>
     }
+    const mintMatch = /^\/v1\/plugins\/bots\/([^/]+)\/tokens$/.exec(path)
+    if (mintMatch?.[1] !== undefined) {
+      return this.server.respondPluginMintToken(
+        decodeURIComponent(mintMatch[1]),
+        body as { scopes?: string[] },
+      ) as ApiResult<T>
+    }
+    if (path === '/v1/plugins/bots') {
+      return this.server.respondPluginCreateBot(
+        body as { name: string; scopes: string[]; stream_ids?: string[] },
+      ) as ApiResult<T>
+    }
+    if (path === '/v1/plugins/hooks') {
+      return this.server.respondPluginCreateHook(
+        body as { stream_id: string; name: string; bot_user_id?: string },
+      ) as ApiResult<T>
+    }
     if (path.startsWith('/v1/files/initiate')) {
       return this.server.respondInitiate(
         body as {
@@ -1042,6 +1234,15 @@ export class FakeHttpClient implements HttpClient {
     if (path.startsWith('/v1/prefs')) {
       return Promise.resolve(
         this.server.respondPutPrefs(body as { stream_id: string; level: string }),
+      ) as Promise<ApiResult<T>>
+    }
+    const grantMatch = /^\/v1\/plugins\/bots\/([^/]+)\/streams\/([^/]+)$/.exec(path)
+    if (grantMatch?.[1] !== undefined && grantMatch[2] !== undefined) {
+      return Promise.resolve(
+        this.server.respondPluginGrantStream(
+          decodeURIComponent(grantMatch[1]),
+          decodeURIComponent(grantMatch[2]),
+        ),
       ) as Promise<ApiResult<T>>
     }
     return Promise.resolve({ ok: true, value: undefined as T })
@@ -1079,6 +1280,28 @@ export class FakeHttpClient implements HttpClient {
     }
     if (path === '/v1/admin/workspace/icon') {
       return Promise.resolve(this.server.respondClearWorkspaceIcon()) as Promise<ApiResult<T>>
+    }
+    const tokenMatch = /^\/v1\/plugins\/bots\/([^/]+)\/tokens\/([^/]+)$/.exec(path)
+    if (tokenMatch?.[1] !== undefined && tokenMatch[2] !== undefined) {
+      return Promise.resolve(
+        this.server.respondPluginRevokeToken(
+          decodeURIComponent(tokenMatch[1]),
+          decodeURIComponent(tokenMatch[2]),
+        ),
+      ) as Promise<ApiResult<T>>
+    }
+    const streamMatch = /^\/v1\/plugins\/bots\/([^/]+)\/streams\/([^/]+)$/.exec(path)
+    if (streamMatch?.[1] !== undefined && streamMatch[2] !== undefined) {
+      return Promise.resolve(
+        this.server.respondPluginRevokeStream(
+          decodeURIComponent(streamMatch[1]),
+          decodeURIComponent(streamMatch[2]),
+        ),
+      ) as Promise<ApiResult<T>>
+    }
+    if (path.startsWith('/v1/plugins/hooks/')) {
+      const id = decodeURIComponent(path.slice('/v1/plugins/hooks/'.length))
+      return Promise.resolve(this.server.respondPluginRevokeHook(id)) as Promise<ApiResult<T>>
     }
     return Promise.resolve({ ok: true, value: undefined as T })
   }

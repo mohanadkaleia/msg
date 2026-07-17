@@ -46,7 +46,7 @@ async function onSubmit(): Promise<void> {
     >
       <div class="space-y-1">
         <h1 class="text-xl font-semibold text-primary">Sign in</h1>
-        <p class="text-sm text-secondary">Welcome back to msg.</p>
+        <p class="text-sm text-secondary">Welcome back to Serin.</p>
       </div>
 
       <p

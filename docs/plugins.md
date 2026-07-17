@@ -1,9 +1,9 @@
-# msg plugin API
+# Serin plugin API
 
-This is the complete public contract for msg plugins (TDD §10, decision D12). A plugin is an
-**external process** that talks to msg over HTTP — there is no in-process plugin runtime, no SDK
+This is the complete public contract for Serin plugins (TDD §10, decision D12). A plugin is an
+**external process** that talks to Serin over HTTP — there is no in-process plugin runtime, no SDK
 you must link, and nothing to import from `msgd`. If your program can send HTTP requests, it can
-be a msg plugin.
+be a Serin plugin.
 
 A plugin may use exactly two surfaces:
 
